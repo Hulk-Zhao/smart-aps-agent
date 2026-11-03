@@ -1,0 +1,44 @@
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+dependency-reduced-pom.xml
+.mvn/wrapper/maven-wrapper.jar
+
+# 前端
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+nbproject/
+*.swp
+*.swo
+
+# 操作系统 / 工具
+.DS_Store
+Thumbs.db
+*.log
+logs/
+tmp/
+
+# 环境变量（仅提交模板 .env.example）
+.env
+
+# 本地临时产物
+.screenshots/

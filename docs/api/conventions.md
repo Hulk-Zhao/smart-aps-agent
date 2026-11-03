@@ -1,0 +1,148 @@
+# API 契约约定（P0-08）
+
+> 生效版本：v0.1（MVP）。状态来源：PRD 第 9.1 节接口清单、`docs/db/schema.md`。
+> 机器可读契约：[docs/api/openapi/](openapi/README.md)。Swagger UI：`/swagger-ui.html`。
+
+## 1. 基础约定
+
+| 项 | 约定 |
+|---|---|
+| 基础路径 | `/api/v1`，版本号只出现在路径，不放在请求头 |
+| 媒体类型 | 请求/响应均为 `application/json; charset=utf-8` |
+| 字段命名 | 驼峰 `camelCase`，由数据库 `snake_case` 映射而来（如 `order_no` → `orderNo`），不在 API 暴露表结构 |
+| 标识 | 主数据用业务编码（`material.code` / `resource.code`）；订单用 `order_no`；BOM/工艺/场景/用户用 UUID；排产任务用 BIGSERIAL `id` |
+| 空值 | 未赋值的可空字段返回 `null`；统一返回体的 `data` 字段始终存在 |
+| 时间 | 时间点用 ISO-8601 UTC（`2026-11-04T08:00:00Z`），对应 `TIMESTAMPTZ`；纯日期用 `yyyy-MM-dd`（`DATE`） |
+| 时区 | 服务端存储与传输一律 UTC；前端按用户时区展示，不做服务端本地化 |
+| 链路追踪 | 响应头必带 `X-Trace-Id`，与响应体 `traceId` 一致 |
+
+## 2. 统一返回体
+
+所有 JSON 接口（含错误）返回同一个信封：
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {},
+  "traceId": "56a8a6223cc647898dc11403037d8477"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `code` | integer | `0` 成功；`4xxxx` 客户端错误；`5xxxx` 服务端错误 |
+| `message` | string | 面向用户的提示，不包含堆栈、类名、SQL 或内部路径 |
+| `data` | any | 成功时为业务数据；失败时为 `null` |
+| `traceId` | string | 本次请求链路标识，同时写入响应头 `X-Trace-Id` |
+
+成功统一 HTTP 200（不额外使用 201/204），错误使用下表中的 HTTP 语义码。
+
+## 3. 错误码
+
+| code | HTTP | message 默认值 | 典型场景 |
+|---|---|---|---|
+| 0 | 200 | success | 成功 |
+| 40000 | 400 | 请求参数不合法 | 校验失败、JSON 不可解析、类型不匹配、幂等键格式非法 |
+| 40100 | 401 | 未认证或凭证已失效 | 令牌缺失/过期（接入认证后启用） |
+| 40300 | 403 | 无权访问该资源 | 角色或租户越权 |
+| 40400 | 404 | 资源不存在 | 订单/物料/任务不存在，路由不存在 |
+| 40500 | 405 | 不支持的请求方法 | 方法不匹配 |
+| 40900 | 409 | 幂等键冲突：相同请求正在处理中 | 重复 `Idempotency-Key` |
+| 40901 | 409 | 资源状态冲突，请刷新后重试 | 乐观锁版本冲突、任务状态不可变更 |
+| 41500 | 415 | 不支持的 Content-Type | 非 JSON 请求体 |
+| 42200 | 422 | 业务规则校验未通过 | 语义校验失败（如数量为负、状态流转非法） |
+| 42900 | 429 | 请求过于频繁，请稍后重试 | 超过限流阈值 |
+| 50000 | 500 | 系统内部错误 | 未预期异常 |
+| 50010 | 500 | 求解引擎不可用 | Timefold/OR-Tools 异常 |
+| 50100 | 501 | 接口尚未实现 | P0 占位契约端点 |
+| 50300 | 503 | 依赖服务暂不可用 | 数据库/求解服务不可用 |
+
+规则：
+
+1. `code` 是业务判断依据，HTTP 状态码只作传输语义，不要仅凭 HTTP 200 判断成功；
+2. 4xxxx 提示可直接展示给用户；5xxxx 只展示默认信息，细节仅进日志；
+3. 新增错误码必须落在对应段内并登记到 `ErrorCode` 与本表。
+
+## 4. 分页
+
+请求（GET 列表）：
+
+| 参数 | 类型 | 默认 | 约束 | 说明 |
+|---|---|---|---|---|
+| `page` | integer | 1 | ≥1 | 页码，从 1 开始 |
+| `size` | integer | 20 | 1–200 | 超过 200 按 200 处理 |
+| `sort` | string | 空 | — | `field,asc\|desc`，多字段逗号分隔，如 `dueDate,asc,priority,desc` |
+
+`data` 使用统一分页结构：
+
+```json
+{
+  "items": [],
+  "page": 1,
+  "size": 20,
+  "total": 45,
+  "totalPages": 3
+}
+```
+
+约束：`size` 默认 20、上限 200；`total` 为 64 位整数；非分页列表（甘特图、树、图数据）不使用该结构。
+
+## 5. 幂等
+
+| 项 | 约定 |
+|---|---|
+| 请求头 | `Idempotency-Key`，8–128 位 `[A-Za-z0-9._:-]` |
+| 适用范围 | `POST` / `PUT` / `PATCH` / `DELETE`；GET 不拦截 |
+| 生效方式 | 首次请求占用键；相同键重复提交返回 `409 + code=40900` |
+| 作用域 | `tenantId + method + path + key`，不同接口/租户互不影响 |
+| 保留期 | 24 小时（MVP 进程内存储，重启后失效） |
+| 失败重试 | 响应状态 ≥400 时自动释放键，允许客户端用同一键重试 |
+| 缺省 | 未携带该头时按非幂等请求处理（兼容期）；生产写接口应携带 |
+
+> MVP 使用 `InMemoryIdempotencyStore`，仅单实例有效。多实例部署前须替换为 Redis 实现（接口 `IdempotencyStore` 不变）。
+
+## 6. 认证与租户
+
+- `Authorization: Bearer <JWT>`（`bearerAuth`）或 `X-API-Key: <key>`（`apiKeyAuth`）。
+- 租户：`X-Tenant-Id`；未传时使用 DEMO 租户 `00000000-0000-0000-0000-000000000001`。
+- **MVP 状态**：认证/RBAC 尚未启用（P0 仅冻结契约），除健康检查外所有 `/api/v1` 端点当前不校验令牌。
+  接入认证后，缺失凭证返回 40100，越权返回 40300，租户过滤由基础设施层强制追加。
+- 密码、令牌、API Key 禁止出现在日志与审计 `before_value/after_value` 中，脱敏规则见
+  [docs/observability.md](../observability.md)。
+
+## 7. 限流
+
+| 项 | 约定 |
+|---|---|
+| 阈值 | 100 req/min/user（按用户 + 租户维度） |
+| 响应头 | `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`（UTC 秒级时间戳） |
+| 超限 | HTTP 429 + `code=42900` |
+| MVP 状态 | **未启用**（P0 仅约定）；接入网关或 Bucket4j 后生效 |
+
+## 8. traceId 与可观测性
+
+- 入口读取 `X-Trace-Id`，仅接受 `[A-Za-z0-9._-]{8,64}`；缺失或非法时由服务端生成。
+- 响应头与响应体 `traceId` 同值；异步任务与求解回调用 `TraceContext.wrap(...)` 透传。
+- 日志字段（`traceId`/`tenantId`/`durationMs`）与脱敏要求见 [docs/observability.md](../observability.md)。
+
+## 9. OpenAPI 分组
+
+| 分组 | 路径前缀 | 内容 | 静态契约 |
+|---|---|---|---|
+| `materials` | `/materials` `/boms` `/resources` `/calendars` `/routings` `/mrp` | 物料与主数据 | [materials.yaml](openapi/materials.yaml) |
+| `orders` | `/orders` `/strategies` `/sandboxes` | 订单、策略、场景 | [orders.yaml](openapi/orders.yaml) |
+| `solve` | `/solve-tasks` `/agent` | 求解任务、Agent | [solve.yaml](openapi/solve.yaml) |
+| `gantt` | `/gantt` `/tasks` `/plans` | 甘特图、调整、发布/回滚 | [gantt.yaml](openapi/gantt.yaml) |
+| `system` | `/health` `/auth` `/users` `/audit-logs` `/configs` | 系统管理 | [system.yaml](openapi/system.yaml) |
+
+- 运行时文档：`/v3/api-docs/{group}`；聚合文档：`/v3/api-docs`；UI：`/swagger-ui.html`。
+- 每个操作在描述中标注 `状态：已实现` 或 `状态：占位`；占位端点当前返回 `501 + code=50100`，**不可当作可用功能**。
+- 静态 YAML 为评审基线，代码注解为运行时视图；两者冲突时以本文件 + YAML 为准并回补注解。
+
+## 10. 兼容与变更
+
+- 路径或字段删除、重命名、类型收窄均属破坏性变更，必须升级 `/api/v2`。
+- 新增可选字段、新增端点、新增错误码为兼容变更。
+- 弃用字段在 YAML 中标记 `deprecated: true`，至少保留一个 MVP 迭代。
+- 契约变更须同步更新 `docs/api/openapi/*.yaml`、Swagger 注解与 `docs/db/schema.md` 的命名映射。

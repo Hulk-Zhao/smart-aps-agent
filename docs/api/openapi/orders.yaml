@@ -1,0 +1,785 @@
+openapi: 3.0.3
+info:
+  title: 衡策 APS - 订单与场景 API
+  version: 0.1.0
+  description: |
+    orders 分组静态契约（P0-08）。GET /orders 与 GET /orders/{orderNo} 已实现，
+    其余为占位；统一约定见 ../../docs/api/conventions.md。
+servers:
+  - url: /api/v1
+tags:
+  - name: 订单
+  - name: 策略
+  - name: 场景
+paths:
+  /orders:
+    get:
+      operationId: listOrders
+      tags: [订单]
+      summary: 订单列表
+      description: 状态：已实现。统一分页出参。
+      x-implementation-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrderPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      operationId: createOrder
+      tags: [订单]
+      summary: 创建订单
+      description: 状态：占位。orderNo 在租户内唯一。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /orders/{orderNo}:
+    get:
+      operationId: getOrder
+      tags: [订单]
+      summary: 订单详情
+      description: 状态：已实现。
+      x-implementation-status: implemented
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          description: 订单业务编码
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /orders/{id}/confirm:
+    put:
+      operationId: confirmOrder
+      tags: [订单]
+      summary: 确认订单
+      description: 状态：占位。路径 id 为 order_no；DRAFT → CONFIRMED。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 订单业务编码 order_no
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /orders/{id}/freeze:
+    put:
+      operationId: freezeOrder
+      tags: [订单]
+      summary: 冻结/解冻订单
+      description: 状态：占位。冻结后人工调整不可移动相关任务。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 订单业务编码 order_no
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderFreezeRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /orders/atp:
+    post:
+      operationId: atp
+      tags: [订单]
+      summary: ATP 交期预估
+      description: 状态：占位。基于可用产能给出最早可承诺交期。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AtpRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfAtp'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /strategies:
+    get:
+      operationId: listStrategies
+      tags: [策略]
+      summary: 策略列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategyPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createStrategy
+      tags: [策略]
+      summary: 创建策略
+      description: 状态：占位。name + strategyVersion 租户内唯一。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategy'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /strategies/{id}/clone:
+    post:
+      operationId: cloneStrategy
+      tags: [策略]
+      summary: 克隆策略
+      description: 状态：占位。生成新 strategyVersion，规则深拷贝。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /sandboxes:
+    get:
+      operationId: listSandboxes
+      tags: [场景]
+      summary: 场景列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSandboxPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createSandbox
+      tags: [场景]
+      summary: 创建场景
+      description: 状态：占位。WHAT_IF 从 BASELINE 复制快照；BASELINE 每租户唯一。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SandboxCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSandbox'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /sandboxes/{id}/apply:
+    post:
+      operationId: applySandbox
+      tags: [场景]
+      summary: 应用场景
+      description: 状态：占位。把 WHAT_IF 结果发布为主计划（BASELINE）。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSandbox'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /sandboxes/{id}/compare:
+    get:
+      operationId: compareSandbox
+      tags: [场景]
+      summary: 场景对比
+      description: 状态：占位。返回交期、利用率、切换次数差异。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: targetId
+          in: query
+          required: true
+          description: 对比目标场景 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSandboxCompare'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+    Sort:
+      name: sort
+      in: query
+      schema:
+        type: string
+        example: dueDate,asc
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 幂等键，8-128 位 [A-Za-z0-9._:-]
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: 参数错误（code=40000）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotFound:
+      description: 资源不存在（code=40400）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Conflict:
+      description: 状态或幂等冲突（code=40900/40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（code=42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotImplemented:
+      description: 占位端点未实现（HTTP 501，code=50100）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+  schemas:
+    Result:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        data:
+          nullable: true
+        traceId:
+          type: string
+    OrderSource:
+      type: string
+      enum: [ERP_SYNC, MANUAL, AGENT]
+    OrderPriority:
+      type: string
+      enum: [URGENT, HIGH, NORMAL, LOW]
+    OrderStatus:
+      type: string
+      enum: [DRAFT, CONFIRMED, SCHEDULED, RELEASED, IN_PROGRESS, COMPLETED, CANCELLED]
+    FreezeStatus:
+      type: string
+      enum: [UNFROZEN, FROZEN, LOCKED_TIME_WINDOW, LOCKED_RESOURCE]
+    Order:
+      type: object
+      properties:
+        orderNo:
+          type: string
+        materialCode:
+          type: string
+          description: 对应 orders.product_id → material.code
+        qty:
+          type: number
+        status:
+          $ref: '#/components/schemas/OrderStatus'
+        freezeStatus:
+          $ref: '#/components/schemas/FreezeStatus'
+        dueDate:
+          type: string
+          format: date
+        priority:
+          $ref: '#/components/schemas/OrderPriority'
+        source:
+          $ref: '#/components/schemas/OrderSource'
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+        routingId:
+          type: string
+          format: uuid
+          nullable: true
+        remark:
+          type: string
+          nullable: true
+        extAttrs:
+          type: object
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    OrderCreateRequest:
+      type: object
+      required: [orderNo, materialCode, qty, dueDate]
+      properties:
+        orderNo:
+          type: string
+          maxLength: 64
+        source:
+          $ref: '#/components/schemas/OrderSource'
+        materialCode:
+          type: string
+        qty:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+        dueDate:
+          type: string
+          format: date
+        priority:
+          $ref: '#/components/schemas/OrderPriority'
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+        routingId:
+          type: string
+          format: uuid
+          nullable: true
+        remark:
+          type: string
+        extAttrs:
+          type: object
+    OrderFreezeRequest:
+      type: object
+      required: [freezeStatus, version]
+      properties:
+        freezeStatus:
+          $ref: '#/components/schemas/FreezeStatus'
+        version:
+          type: integer
+    AtpRequest:
+      type: object
+      required: [materialCode, qty, requestedDate]
+      properties:
+        materialCode:
+          type: string
+        qty:
+          type: number
+        requestedDate:
+          type: string
+          format: date
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+    AtpResult:
+      type: object
+      properties:
+        feasible:
+          type: boolean
+        earliestDate:
+          type: string
+          format: date
+        leadTimeDays:
+          type: integer
+        bottleneckResourceCode:
+          type: string
+          nullable: true
+    StrategyDirection:
+      type: string
+      enum: [FORWARD, BACKWARD, BOTTLENECK]
+    Strategy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        direction:
+          $ref: '#/components/schemas/StrategyDirection'
+        strategyVersion:
+          type: integer
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        initialRules:
+          type: object
+        optimizationRules:
+          type: object
+        applyCondition:
+          type: object
+        version:
+          type: integer
+    StrategyCreateRequest:
+      type: object
+      required: [name, direction, effectiveFrom]
+      properties:
+        name:
+          type: string
+        direction:
+          $ref: '#/components/schemas/StrategyDirection'
+        strategyVersion:
+          type: integer
+          default: 1
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        initialRules:
+          type: object
+        optimizationRules:
+          type: object
+        applyCondition:
+          type: object
+    SandboxType:
+      type: string
+      enum: [BASELINE, WHAT_IF, ARCHIVED]
+    Sandbox:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/SandboxType'
+        parentSandboxId:
+          type: string
+          format: uuid
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        snapshot:
+          type: object
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    SandboxCreateRequest:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/SandboxType'
+        parentSandboxId:
+          type: string
+          format: uuid
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        snapshot:
+          type: object
+    SandboxCompare:
+      type: object
+      properties:
+        sandboxId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        dueDateDeltaMinutes:
+          type: integer
+        utilizationDelta:
+          type: number
+        setupCountDelta:
+          type: integer
+        changedTasks:
+          type: array
+          items:
+            type: object
+            properties:
+              taskId:
+                type: integer
+                format: int64
+              orderNo:
+                type: string
+              resourceCode:
+                type: string
+    ResultOfOrder:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Order'
+    ResultOfOrderPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Order'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfAtp:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AtpResult'
+    ResultOfStrategy:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Strategy'
+    ResultOfStrategyPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Strategy'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfSandbox:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Sandbox'
+    ResultOfSandboxPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Sandbox'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfSandboxCompare:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SandboxCompare'

@@ -1,0 +1,1415 @@
+openapi: 3.0.3
+info:
+  title: 衡策 APS - 物料与主数据 API
+  version: 0.1.0
+  description: |
+    materials 分组静态契约（P0-08）。统一返回体、分页、幂等、时间格式与错误码见
+    ../../docs/api/conventions.md。标注 placeholder 的端点当前返回 501 / code=50100。
+servers:
+  - url: /api/v1
+tags:
+  - name: 物料
+  - name: BOM
+  - name: 资源
+  - name: 日历
+  - name: 工艺路线
+  - name: MRP
+paths:
+  /materials:
+    get:
+      operationId: listMaterials
+      tags: [物料]
+      summary: 物料列表
+      description: 状态：占位。按类型分页查询物料。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/MaterialType'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMaterialPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createMaterial
+      tags: [物料]
+      summary: 创建物料
+      description: 状态：占位。业务编码 code 全局唯一。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialCreateRequest'
+      responses:
+        '200':
+          description: 成功，data 为新建物料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMaterial'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /materials/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: 物料业务编码 material.code
+        schema:
+          type: string
+          maxLength: 64
+    get:
+      operationId: getMaterial
+      tags: [物料]
+      summary: 物料详情
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMaterial'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    put:
+      operationId: updateMaterial
+      tags: [物料]
+      summary: 更新物料
+      description: 状态：占位。需携带 version 做乐观锁校验。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialUpdateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMaterial'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    delete:
+      operationId: deleteMaterial
+      tags: [物料]
+      summary: 删除物料
+      description: 状态：占位。逻辑删除，被 BOM/订单引用时拒绝。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /materials/import:
+    post:
+      operationId: importMaterials
+      tags: [物料]
+      summary: 导入物料
+      description: 状态：占位。multipart/form-data，字段 file（Excel）。
+      x-implementation-status: placeholder
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 成功，data 为导入统计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /boms:
+    get:
+      operationId: listBoms
+      tags: [BOM]
+      summary: BOM 列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfBomPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createBom
+      tags: [BOM]
+      summary: 创建 BOM
+      description: 状态：占位。同父件同版本不可重复。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BomCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfBom'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /boms/{id}/tree:
+    get:
+      operationId: bomTree
+      tags: [BOM]
+      summary: BOM 树
+      description: 状态：占位。默认展开 5 层，超过截断。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: BOM UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfBomTree'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /boms/{id}/activate:
+    post:
+      operationId: activateBom
+      tags: [BOM]
+      summary: 激活 BOM 版本
+      description: 状态：占位。同一父件仅允许一个 ACTIVE 版本。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfBom'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /resources:
+    get:
+      operationId: listResources
+      tags: [资源]
+      summary: 资源列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/ResourceType'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfResourcePage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createResource
+      tags: [资源]
+      summary: 创建资源
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResourceCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfResource'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /resources/{id}/maintenance:
+    post:
+      operationId: maintainResource
+      tags: [资源]
+      summary: 设置资源维护计划
+      description: 状态：占位。维护窗口参与排程不可用计算。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 资源编码 resource.code
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfResource'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /calendars:
+    get:
+      operationId: listCalendars
+      tags: [日历]
+      summary: 日历列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfCalendarPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createCalendar
+      tags: [日历]
+      summary: 创建日历
+      description: 状态：占位。历史日历只读，通过新版本覆盖。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfCalendar'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /calendars/{id}/available:
+    get:
+      operationId: availableWorkingTime
+      tags: [日历]
+      summary: 可用工时
+      description: 状态：占位。返回区间内可用时间片，扣除非工作日与维护窗口。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: from
+          in: query
+          required: true
+          description: ISO-8601 UTC
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: true
+          description: ISO-8601 UTC
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfAvailableTime'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /routings:
+    get:
+      operationId: listRoutings
+      tags: [工艺路线]
+      summary: 工艺路线列表
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfRoutingPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+    post:
+      operationId: createRouting
+      tags: [工艺路线]
+      summary: 创建工艺路线
+      description: 状态：占位。工序节点构成 DAG，不允许环。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutingCreateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfRouting'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /routings/{id}/graph:
+    get:
+      operationId: routingGraph
+      tags: [工艺路线]
+      summary: 工艺路线 DAG
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfRoutingGraph'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /mrp/analysis:
+    post:
+      operationId: mrpAnalysis
+      tags: [MRP]
+      summary: MRP 齐套分析
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MrpAnalysisRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMrpAnalysis'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /mrp/suggestions:
+    get:
+      operationId: mrpSuggestions
+      tags: [MRP]
+      summary: MRP 补料建议
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+        - $ref: '#/components/parameters/Sort'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfMrpSuggestionPage'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+components:
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: 页码，从 1 开始
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      description: 每页条数，默认 20，上限 200
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
+    Sort:
+      name: sort
+      in: query
+      description: field,asc|desc，多字段逗号分隔
+      schema:
+        type: string
+        example: code,asc
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 幂等键，8-128 位 [A-Za-z0-9._:-]
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: 参数错误（code=40000）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotFound:
+      description: 资源不存在（code=40400）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Conflict:
+      description: 状态或幂等冲突（code=40900/40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（code=42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    InternalError:
+      description: 系统错误（code=50000）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotImplemented:
+      description: 占位端点未实现（HTTP 501，code=50100）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+  schemas:
+    Result:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: integer
+          format: int32
+          example: 0
+        message:
+          type: string
+          example: success
+        data:
+          nullable: true
+        traceId:
+          type: string
+          example: 56a8a6223cc647898dc11403037d8477
+    MaterialType:
+      type: string
+      enum: [FINISHED, SEMI, RAW, AUX, PACK]
+    Material:
+      type: object
+      required: [code, name, type, unit]
+      properties:
+        code:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 128
+        type:
+          $ref: '#/components/schemas/MaterialType'
+        spec:
+          type: string
+        unit:
+          type: string
+          maxLength: 16
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        safetyStock:
+          type: number
+        moq:
+          type: number
+        leadTimeDays:
+          type: integer
+        defaultSupplierId:
+          type: string
+          format: uuid
+          nullable: true
+        extAttrs:
+          type: object
+          additionalProperties: true
+        industryAttrs:
+          type: object
+          additionalProperties: true
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    MaterialCreateRequest:
+      type: object
+      required: [code, name, type, unit]
+      properties:
+        code:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 128
+        type:
+          $ref: '#/components/schemas/MaterialType'
+        spec:
+          type: string
+        unit:
+          type: string
+        categoryId:
+          type: string
+          format: uuid
+          nullable: true
+        safetyStock:
+          type: number
+        moq:
+          type: number
+        leadTimeDays:
+          type: integer
+        defaultSupplierId:
+          type: string
+          format: uuid
+          nullable: true
+        extAttrs:
+          type: object
+        industryAttrs:
+          type: object
+    MaterialUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/MaterialCreateRequest'
+        - type: object
+          required: [version]
+          properties:
+            version:
+              type: integer
+              description: 乐观锁版本
+    ImportResult:
+      type: object
+      properties:
+        successCount:
+          type: integer
+        failureCount:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              row:
+                type: integer
+              code:
+                type: string
+              message:
+                type: string
+    BomStatus:
+      type: string
+      enum: [DRAFT, ACTIVE, INACTIVE]
+    BomItem:
+      type: object
+      required: [materialCode, qtyPerUnit]
+      properties:
+        materialCode:
+          type: string
+        qtyPerUnit:
+          type: number
+          minimum: 0
+        scrapRate:
+          type: number
+          minimum: 0
+          maximum: 1
+        position:
+          type: string
+        substitutes:
+          type: array
+          items:
+            type: string
+        isPhantom:
+          type: boolean
+    Bom:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        parentMaterialCode:
+          type: string
+        bomVersion:
+          type: string
+        effectiveDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+          nullable: true
+        status:
+          $ref: '#/components/schemas/BomStatus'
+        isPanel:
+          type: boolean
+        panelSize:
+          type: integer
+          nullable: true
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BomItem'
+        version:
+          type: integer
+    BomCreateRequest:
+      type: object
+      required: [parentMaterialCode, bomVersion, effectiveDate, items]
+      properties:
+        parentMaterialCode:
+          type: string
+        bomVersion:
+          type: string
+        effectiveDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+          nullable: true
+        isPanel:
+          type: boolean
+        panelSize:
+          type: integer
+          nullable: true
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/BomItem'
+    BomTreeNode:
+      type: object
+      properties:
+        bomId:
+          type: string
+          format: uuid
+        parentMaterialCode:
+          type: string
+        materialName:
+          type: string
+        qtyPerUnit:
+          type: number
+        level:
+          type: integer
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/BomTreeNode'
+    ResourceType:
+      type: string
+      enum: [PRIMARY, SECONDARY, HUMAN, TOOL]
+    CapacityMode:
+      type: string
+      enum: [UNIT_PER_HOUR, SECONDS_PER_UNIT, BATCH_SECONDS]
+    Resource:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/ResourceType'
+        groupId:
+          type: string
+          format: uuid
+          nullable: true
+        capacityMode:
+          $ref: '#/components/schemas/CapacityMode'
+        capacityValue:
+          type: number
+        batchCapacity:
+          type: integer
+        efficiency:
+          type: number
+        calendarId:
+          type: string
+          format: uuid
+          nullable: true
+        setupSeconds:
+          type: integer
+        teardownSeconds:
+          type: integer
+        maintenancePlan:
+          type: object
+        industryAttrs:
+          type: object
+        version:
+          type: integer
+    ResourceCreateRequest:
+      type: object
+      required: [code, name, type, capacityMode, capacityValue]
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/ResourceType'
+        groupId:
+          type: string
+          format: uuid
+          nullable: true
+        capacityMode:
+          $ref: '#/components/schemas/CapacityMode'
+        capacityValue:
+          type: number
+        batchCapacity:
+          type: integer
+        efficiency:
+          type: number
+        calendarId:
+          type: string
+          format: uuid
+          nullable: true
+        setupSeconds:
+          type: integer
+        teardownSeconds:
+          type: integer
+        industryAttrs:
+          type: object
+    MaintenanceRequest:
+      type: object
+      required: [effectiveFrom, effectiveTo, windows]
+      properties:
+        effectiveFrom:
+          type: string
+          format: date-time
+        effectiveTo:
+          type: string
+          format: date-time
+        windows:
+          type: array
+          items:
+            type: object
+            required: [startTime, endTime]
+            properties:
+              startTime:
+                type: string
+                format: date-time
+              endTime:
+                type: string
+                format: date-time
+              reason:
+                type: string
+    CalendarType:
+      type: string
+      enum: [FACTORY, RESOURCE, SHIFT]
+    Shift:
+      type: object
+      required: [startTime, endTime, daysOfWeek]
+      properties:
+        startTime:
+          type: string
+          example: '08:00'
+        endTime:
+          type: string
+          example: '20:00'
+        daysOfWeek:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+            maximum: 7
+    Holiday:
+      type: object
+      required: [date, name, kind]
+      properties:
+        date:
+          type: string
+          format: date
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [LEGAL, COMPANY, MAKEUP]
+    Calendar:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        calendarVersion:
+          type: string
+        type:
+          $ref: '#/components/schemas/CalendarType'
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+        resourceGroupId:
+          type: string
+          format: uuid
+          nullable: true
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        shifts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Shift'
+        holidays:
+          type: array
+          items:
+            $ref: '#/components/schemas/Holiday'
+        version:
+          type: integer
+    CalendarCreateRequest:
+      type: object
+      required: [name, calendarVersion, type, effectiveFrom, shifts]
+      properties:
+        name:
+          type: string
+        calendarVersion:
+          type: string
+        type:
+          $ref: '#/components/schemas/CalendarType'
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+        resourceGroupId:
+          type: string
+          format: uuid
+          nullable: true
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        shifts:
+          type: array
+          items:
+            $ref: '#/components/schemas/Shift'
+        holidays:
+          type: array
+          items:
+            $ref: '#/components/schemas/Holiday'
+    AvailableTime:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              startTime:
+                type: string
+                format: date-time
+              endTime:
+                type: string
+                format: date-time
+              minutes:
+                type: integer
+    RoutingNode:
+      type: object
+      required: [operationCode, operationName, resourceCode]
+      properties:
+        operationCode:
+          type: string
+        operationName:
+          type: string
+        resourceCode:
+          type: string
+        sequence:
+          type: integer
+        standardSeconds:
+          type: number
+        setupSeconds:
+          type: number
+        industryAttrs:
+          type: object
+    RoutingEdge:
+      type: object
+      required: [from, to]
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        minLagMinutes:
+          type: integer
+    Routing:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        productCode:
+          type: string
+        routingVersion:
+          type: string
+        effectiveDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+          nullable: true
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingEdge'
+        version:
+          type: integer
+    RoutingCreateRequest:
+      type: object
+      required: [productCode, routingVersion, effectiveDate, nodes, edges]
+      properties:
+        productCode:
+          type: string
+        routingVersion:
+          type: string
+        effectiveDate:
+          type: string
+          format: date
+        expiryDate:
+          type: string
+          format: date
+          nullable: true
+        nodes:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoutingNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingEdge'
+    RoutingGraph:
+      type: object
+      properties:
+        routingId:
+          type: string
+          format: uuid
+        nodes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingNode'
+        edges:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoutingEdge'
+    MrpAnalysisRequest:
+      type: object
+      required: [sandboxId]
+      properties:
+        sandboxId:
+          type: string
+          format: uuid
+        orderNos:
+          type: array
+          items:
+            type: string
+        includeSuggestions:
+          type: boolean
+          default: true
+    MrpAnalysis:
+      type: object
+      properties:
+        sandboxId:
+          type: string
+          format: uuid
+        analyzedAt:
+          type: string
+          format: date-time
+        shortages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MrpSuggestion'
+    MrpSuggestion:
+      type: object
+      properties:
+        materialCode:
+          type: string
+        requiredQty:
+          type: number
+        availableQty:
+          type: number
+        shortageQty:
+          type: number
+        suggestedPurchaseDate:
+          type: string
+          format: date-time
+        supplierCode:
+          type: string
+          nullable: true
+    ResultOfMaterial:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Material'
+    ResultOfMaterialPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Material'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfBom:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Bom'
+    ResultOfBomPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Bom'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfBomTree:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/BomTreeNode'
+    ResultOfResource:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Resource'
+    ResultOfResourcePage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Resource'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfCalendar:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Calendar'
+    ResultOfCalendarPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Calendar'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfAvailableTime:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AvailableTime'
+    ResultOfRouting:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/Routing'
+    ResultOfRoutingPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Routing'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    ResultOfRoutingGraph:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/RoutingGraph'
+    ResultOfMrpAnalysis:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/MrpAnalysis'
+    ResultOfMrpSuggestionPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/MrpSuggestion'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer

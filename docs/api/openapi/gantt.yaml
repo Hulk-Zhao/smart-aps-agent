@@ -1,0 +1,426 @@
+openapi: 3.0.3
+info:
+  title: 衡策 APS - 甘特图与计划 API
+  version: 0.1.0
+  description: |
+    gantt 分组静态契约（P0-08），当前全部为占位。统一约定见 ../../docs/api/conventions.md。
+    甘特图接口返回非分页结构；时间字段为 ISO-8601 UTC。
+servers:
+  - url: /api/v1
+tags:
+  - name: 甘特图
+  - name: 计划
+paths:
+  /gantt/resource:
+    get:
+      operationId: resourceGantt
+      tags: [甘特图]
+      summary: 资源甘特图
+      description: 状态：占位。按资源泳道返回任务条。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/SandboxId'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: resourceCodes
+          in: query
+          description: 资源编码，逗号分隔；为空表示全部
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfResourceGantt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /gantt/order:
+    get:
+      operationId: orderGantt
+      tags: [甘特图]
+      summary: 订单甘特图
+      description: 状态：占位。按订单泳道返回工序链。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/SandboxId'
+        - $ref: '#/components/parameters/From'
+        - $ref: '#/components/parameters/To'
+        - name: orderNos
+          in: query
+          description: 订单号，逗号分隔；为空表示全部
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrderGantt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /tasks/{id}/adjust:
+    post:
+      operationId: adjustTask
+      tags: [计划]
+      summary: 人工调整任务
+      description: 状态：占位。需携带 version 做乐观锁校验；冻结任务拒绝调整。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 排产任务 BIGSERIAL id
+          schema:
+            type: integer
+            format: int64
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskAdjustRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfGanttTask'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /plans/{id}/publish:
+    post:
+      operationId: publishPlan
+      tags: [计划]
+      summary: 发布计划
+      description: 状态：占位。把场景任务固化为主计划并写入审计。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 场景/计划 UUID
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfPlanAction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /plans/{id}/rollback:
+    post:
+      operationId: rollbackPlan
+      tags: [计划]
+      summary: 回滚计划
+      description: 状态：占位。回滚到上一个已发布版本。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfPlanAction'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+components:
+  parameters:
+    SandboxId:
+      name: sandboxId
+      in: query
+      required: true
+      description: 场景 UUID
+      schema:
+        type: string
+        format: uuid
+    From:
+      name: from
+      in: query
+      required: true
+      description: ISO-8601 UTC
+      schema:
+        type: string
+        format: date-time
+    To:
+      name: to
+      in: query
+      required: true
+      description: ISO-8601 UTC
+      schema:
+        type: string
+        format: date-time
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 幂等键，8-128 位 [A-Za-z0-9._:-]
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: 参数错误（code=40000）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotFound:
+      description: 资源不存在（code=40400）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Conflict:
+      description: 状态或幂等冲突（code=40900/40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（code=42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotImplemented:
+      description: 占位端点未实现（HTTP 501，code=50100）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+  schemas:
+    Result:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        data:
+          nullable: true
+        traceId:
+          type: string
+    TaskStatus:
+      type: string
+      enum: [PLANNED, FROZEN, IN_PROGRESS, COMPLETED]
+    GanttTask:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        orderNo:
+          type: string
+        operationIndex:
+          type: integer
+        operationName:
+          type: string
+          nullable: true
+        resourceCode:
+          type: string
+          nullable: true
+        secondaryResourceCodes:
+          type: array
+          items:
+            type: string
+        startTime:
+          type: string
+          format: date-time
+          nullable: true
+        endTime:
+          type: string
+          format: date-time
+          nullable: true
+        setupStartTime:
+          type: string
+          format: date-time
+          nullable: true
+        setupEndTime:
+          type: string
+          format: date-time
+          nullable: true
+        qty:
+          type: number
+          nullable: true
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        sequenceInResource:
+          type: integer
+          nullable: true
+        version:
+          type: integer
+    GanttResourceRow:
+      type: object
+      properties:
+        resourceCode:
+          type: string
+        resourceName:
+          type: string
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/GanttTask'
+    GanttOrderRow:
+      type: object
+      properties:
+        orderNo:
+          type: string
+        materialCode:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/GanttTask'
+    TaskAdjustRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: 乐观锁版本
+        resourceCode:
+          type: string
+          nullable: true
+        secondaryResourceCodes:
+          type: array
+          items:
+            type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        frozen:
+          type: boolean
+          default: false
+        reason:
+          type: string
+    PlanAction:
+      type: object
+      properties:
+        planId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        publishedAt:
+          type: string
+          format: date-time
+        affectedTaskCount:
+          type: integer
+    ResultOfResourceGantt:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                sandboxId:
+                  type: string
+                  format: uuid
+                from:
+                  type: string
+                  format: date-time
+                to:
+                  type: string
+                  format: date-time
+                resources:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/GanttResourceRow'
+    ResultOfOrderGantt:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                sandboxId:
+                  type: string
+                  format: uuid
+                from:
+                  type: string
+                  format: date-time
+                to:
+                  type: string
+                  format: date-time
+                orders:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/GanttOrderRow'
+    ResultOfGanttTask:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/GanttTask'
+    ResultOfPlanAction:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PlanAction'

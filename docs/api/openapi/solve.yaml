@@ -1,0 +1,495 @@
+openapi: 3.0.3
+info:
+  title: 衡策 APS - 求解与 Agent API
+  version: 0.1.0
+  description: |
+    solve 分组静态契约（P0-08）。POST /solve-tasks 已实现（同步 MVP），其余为占位。
+    统一约定见 ../../docs/api/conventions.md。
+    WebSocket 进度推送：/ws/solve-tasks/{id}，消息 {taskId,status,progress,message}，不纳入 OpenAPI paths。
+servers:
+  - url: /api/v1
+tags:
+  - name: 求解
+  - name: Agent
+x-websocket-endpoints:
+  /ws/solve-tasks/{id}:
+    description: 求解进度推送（STOMP over WebSocket）
+    messageSchema:
+      $ref: '#/components/schemas/SolveProgress'
+paths:
+  /solve-tasks:
+    post:
+      operationId: submitSolveTask
+      tags: [求解]
+      summary: 提交求解任务
+      description: |
+        状态：已实现（同步 MVP）。请求 engine 为空时使用 timefold。
+        当前实现返回的任务时间为本地时间（无偏移）；契约目标为 ISO-8601 UTC，M1 统一。
+      x-implementation-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SolveSubmitRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSolve'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /solve-tasks/{id}:
+    get:
+      operationId: getSolveTask
+      tags: [求解]
+      summary: 求解任务详情
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 求解任务 ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSolveTaskDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /solve-tasks/{id}/cancel:
+    post:
+      operationId: cancelSolveTask
+      tags: [求解]
+      summary: 取消求解任务
+      description: 状态：占位。仅 PENDING/RUNNING 可取消。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSolveTaskDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /agent/events:
+    post:
+      operationId: reportAgentEvent
+      tags: [Agent]
+      summary: 上报异常事件
+      description: 状态：占位。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEventRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /agent/nl-to-dsl:
+    post:
+      operationId: nlToDsl
+      tags: [Agent]
+      summary: 自然语言转 DSL
+      description: 状态：占位。输出仅生成候选 DSL，需人工确认后应用。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NlToDslRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfNlToDsl'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /agent/explain/{taskId}:
+    get:
+      operationId: explainTask
+      tags: [Agent]
+      summary: 归因解释
+      description: 状态：占位。例如加急未满足、资源瓶颈。
+      x-implementation-status: placeholder
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfExplain'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /agent/whatif:
+    post:
+      operationId: whatIf
+      tags: [Agent]
+      summary: 对话式 what-if
+      description: 状态：占位。基于 WHAT_IF 场景试算，不直接修改主计划。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WhatIfRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfWhatIf'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: 幂等键，8-128 位 [A-Za-z0-9._:-]
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  responses:
+    BadRequest:
+      description: 参数错误（code=40000）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotFound:
+      description: 资源不存在（code=40400）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Conflict:
+      description: 状态或幂等冲突（code=40900/40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（code=42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotImplemented:
+      description: 占位端点未实现（HTTP 501，code=50100）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+  schemas:
+    Result:
+      type: object
+      required: [code, message, traceId]
+      properties:
+        code:
+          type: integer
+          format: int32
+        message:
+          type: string
+        data:
+          nullable: true
+        traceId:
+          type: string
+    SolverEngine:
+      type: string
+      enum: [timefold, ortools]
+      default: timefold
+    SolveSubmitRequest:
+      type: object
+      properties:
+        taskNo:
+          type: string
+          description: 求解任务号；为空时由服务端生成
+        engine:
+          $ref: '#/components/schemas/SolverEngine'
+        orderNos:
+          type: array
+          items:
+            type: string
+        parameters:
+          type: object
+          additionalProperties: true
+    SolveStatus:
+      type: string
+      enum: [SUCCESS, FAILED, UNSUPPORTED]
+    ScheduledTask:
+      type: object
+      required: [orderNo, resourceCode, startTime, endTime]
+      properties:
+        orderNo:
+          type: string
+        resourceCode:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+          description: 契约目标 ISO-8601 UTC；当前同步实现为无偏移本地时间
+        endTime:
+          type: string
+          format: date-time
+    SolveResult:
+      type: object
+      properties:
+        taskNo:
+          type: string
+        status:
+          $ref: '#/components/schemas/SolveStatus'
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledTask'
+        message:
+          type: string
+          nullable: true
+    SolveTaskStatus:
+      type: string
+      enum: [PENDING, RUNNING, SOLVED, FAILED, CANCELLED, TIMEOUT]
+    SolveTaskDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        taskNo:
+          type: string
+        sandboxId:
+          type: string
+          format: uuid
+        strategyId:
+          type: string
+          format: uuid
+          nullable: true
+        engine:
+          $ref: '#/components/schemas/SolverEngine'
+        status:
+          $ref: '#/components/schemas/SolveTaskStatus'
+        scoreHard:
+          type: integer
+          format: int64
+          nullable: true
+        scoreSoft:
+          type: integer
+          format: int64
+          nullable: true
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        metrics:
+          type: object
+        errorMessage:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+    SolveProgress:
+      type: object
+      properties:
+        taskId:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/SolveTaskStatus'
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        message:
+          type: string
+    AgentEventRequest:
+      type: object
+      required: [eventType, occurredAt]
+      properties:
+        eventType:
+          type: string
+          enum: [EQUIPMENT_DOWN, MATERIAL_SHORTAGE, ORDER_RUSH, CAPACITY_ABNORMAL]
+        orderNo:
+          type: string
+          nullable: true
+        resourceCode:
+          type: string
+          nullable: true
+        occurredAt:
+          type: string
+          format: date-time
+        payload:
+          type: object
+    NlToDslRequest:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+        sandboxId:
+          type: string
+          format: uuid
+          nullable: true
+        context:
+          type: object
+    NlToDslResult:
+      type: object
+      properties:
+        dsl:
+          type: object
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        warnings:
+          type: array
+          items:
+            type: string
+    ExplainResult:
+      type: object
+      properties:
+        taskId:
+          type: integer
+          format: int64
+        summary:
+          type: string
+        causes:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              description:
+                type: string
+              evidence:
+                type: object
+        suggestions:
+          type: array
+          items:
+            type: string
+    WhatIfRequest:
+      type: object
+      required: [sandboxId, question]
+      properties:
+        sandboxId:
+          type: string
+          format: uuid
+        question:
+          type: string
+        parameters:
+          type: object
+    WhatIfResult:
+      type: object
+      properties:
+        answer:
+          type: string
+        appliedChanges:
+          type: array
+          items:
+            type: object
+        impact:
+          type: object
+    ResultOfSolve:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SolveResult'
+    ResultOfSolveTaskDetail:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SolveTaskDetail'
+    ResultOfNlToDsl:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/NlToDslResult'
+    ResultOfExplain:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ExplainResult'
+    ResultOfWhatIf:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/WhatIfResult'

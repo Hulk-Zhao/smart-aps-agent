@@ -20,5 +20,14 @@
             <groupId>com.hengce.aps</groupId>
             <artifactId>aps-common</artifactId>
         </dependency>
+        <!--
+          仅注解包：BaseEntity 需要 @TableId/@Version/@TableLogic/@TableField 标记，
+          不引入 MyBatis-Plus 运行时；版本统一由父 pom 的 mybatis-plus.version 管理。
+        -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-annotation</artifactId>
+            <version>${mybatis-plus.version}</version>
+        </dependency>
     </dependencies>
 </project>

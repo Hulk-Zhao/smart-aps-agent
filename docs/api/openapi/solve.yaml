@@ -4,8 +4,10 @@ info:
   version: 0.1.0
   description: |
     solve 分组静态契约（P0-08）。POST /solve-tasks 已实现（同步 MVP），其余为占位。
+    M2 冻结：C20（异步生命周期/取消/STOMP 进度）、C21（增量重排）、C28（引擎降级）。
     统一约定见 ../../docs/api/conventions.md。
-    WebSocket 进度推送：/ws/solve-tasks/{id}，消息 {taskId,status,progress,message}，不纳入 OpenAPI paths。
+    WebSocket 进度推送：/ws/solve-tasks/{id}，STOMP 订阅 /topic/solve-tasks/{id}，消息 SolveProgress，不纳入 OpenAPI paths。
+    GET /solve-tasks/{id} 是唯一事实源；STOMP 只推送，断线后前端回退 2 秒轮询。
 servers:
   - url: /api/v1
 tags:
@@ -13,7 +15,11 @@ tags:
   - name: Agent
 x-websocket-endpoints:
   /ws/solve-tasks/{id}:
-    description: 求解进度推送（STOMP over WebSocket）
+    description: |
+      求解进度推送（STOMP over WebSocket）；{id} 为 solve_task BIGSERIAL id。
+      订阅目的地：/topic/solve-tasks/{id}；连接成功后服务端立即推送一条当前快照。
+      推送节流：状态变化立即推送，progress/bestScore 最多 1 次/秒；终态必推一次并含 resultTaskId。
+      不重放历史消息；事实源为 GET /solve-tasks/{id}。回滚开关 aps.solve.progress-push=poll。
     messageSchema:
       $ref: '#/components/schemas/SolveProgress'
 paths:
@@ -23,8 +29,10 @@ paths:
       tags: [求解]
       summary: 提交求解任务
       description: |
-        状态：已实现（同步 MVP）。请求 engine 为空时使用 timefold。
-        当前实现返回的任务时间为本地时间（无偏移）；契约目标为 ISO-8601 UTC，M1 统一。
+        状态：已实现。请求 engine 为空时使用 timefold。
+        一律返回 SolveTaskDetail（C20）：状态使用六值枚举
+        PENDING/RUNNING/SOLVED/FAILED/CANCELLED/TIMEOUT，SUCCESS 已废弃；
+        SOLVED 时 tasks[] 返回场景任务快照。调用方按 GET /solve-tasks/{id} 轮询终态。
       x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -40,7 +48,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResultOfSolve'
+                $ref: '#/components/schemas/ResultOfSolveTaskDetail'
         '400':
           $ref: '#/components/responses/BadRequest'
         '422':
@@ -50,15 +58,17 @@ paths:
       operationId: getSolveTask
       tags: [求解]
       summary: 求解任务详情
-      description: 状态：占位。
-      x-implementation-status: placeholder
+      description: |
+        状态：已实现（C20 事实源）。返回 SolveTaskDetail；终态 SOLVED 时含 tasks[] 场景任务快照。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
           required: true
-          description: 求解任务 ID
+          description: 求解任务 BIGSERIAL id
           schema:
-            type: string
+            type: integer
+            format: int64
       responses:
         '200':
           description: 成功
@@ -68,21 +78,23 @@ paths:
                 $ref: '#/components/schemas/ResultOfSolveTaskDetail'
         '404':
           $ref: '#/components/responses/NotFound'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /solve-tasks/{id}/cancel:
     post:
       operationId: cancelSolveTask
       tags: [求解]
       summary: 取消求解任务
-      description: 状态：占位。仅 PENDING/RUNNING 可取消。
+      description: |
+        状态：占位（契约已冻结 C20，实现归 W3）。仅 PENDING/RUNNING 可取消；其他状态返回 40901。
+        取消后任务进入 CANCELLED，并终止正在运行的 Solver。
       x-implementation-status: placeholder
       parameters:
         - name: id
           in: path
           required: true
+          description: 求解任务 BIGSERIAL id
           schema:
-            type: string
+            type: integer
+            format: int64
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
@@ -97,6 +109,39 @@ paths:
           $ref: '#/components/responses/Conflict'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /solve-tasks/incremental:
+    post:
+      operationId: submitIncrementalSolveTask
+      tags: [求解]
+      summary: 提交增量重排任务
+      description: |
+        M2 冻结 C21。以 baseSolveTaskId 为 startingSolution，仅重排 affectedTaskIds 中的非冻结任务。
+        写入新 solve_task 行，并在计划域生成新的 plan_version(DRAFT)；不得覆盖已 PUBLISHED 的任务。
+        FROZEN 优先级高于 lockType(FROZEN/TIME_WINDOW/RESOURCE) 高于 M1 的 frozen 布尔别名。
+      x-implementation-status: placeholder
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IncrementalSolveRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSolveTaskDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
   /agent/events:
     post:
       operationId: reportAgentEvent
@@ -268,7 +313,18 @@ components:
       properties:
         taskNo:
           type: string
-          description: 求解任务号；为空时由服务端生成
+          description: |
+            客户端关联号（非主键），响应原样回显；为空时由服务端生成展示用编号。
+            M1 的求解任务主键统一为 solve_task 的 BIGSERIAL id。
+        sandboxId:
+          type: string
+          format: uuid
+          description: 场景 UUID；为空时取默认 BASELINE 00000000-0000-0000-0000-000000000401
+        strategyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: 排产策略 UUID；为空表示使用默认策略
         engine:
           $ref: '#/components/schemas/SolverEngine'
         orderNos:
@@ -278,9 +334,6 @@ components:
         parameters:
           type: object
           additionalProperties: true
-    SolveStatus:
-      type: string
-      enum: [SUCCESS, FAILED, UNSUPPORTED]
     ScheduledTask:
       type: object
       required: [orderNo, resourceCode, startTime, endTime]
@@ -292,35 +345,22 @@ components:
         startTime:
           type: string
           format: date-time
-          description: 契约目标 ISO-8601 UTC；当前同步实现为无偏移本地时间
+          description: ISO-8601 UTC（C7）
         endTime:
           type: string
           format: date-time
-    SolveResult:
-      type: object
-      properties:
-        taskNo:
-          type: string
-        status:
-          $ref: '#/components/schemas/SolveStatus'
-        tasks:
-          type: array
-          items:
-            $ref: '#/components/schemas/ScheduledTask'
-        message:
-          type: string
-          nullable: true
     SolveTaskStatus:
       type: string
       enum: [PENDING, RUNNING, SOLVED, FAILED, CANCELLED, TIMEOUT]
     SolveTaskDetail:
       type: object
+      description: C20 唯一求解响应体；DB 与 API 使用同一六值状态枚举（SUCCESS 已废弃）
+      required: [taskId, status]
       properties:
-        id:
+        taskId:
           type: integer
           format: int64
-        taskNo:
-          type: string
+          description: solve_task BIGSERIAL 主键（数字 id）
         sandboxId:
           type: string
           format: uuid
@@ -329,9 +369,24 @@ components:
           format: uuid
           nullable: true
         engine:
-          $ref: '#/components/schemas/SolverEngine'
+          type: string
+          description: 引擎编码，大写落库值 TIMEFOLD/ORTOOLS/RULE_BASED
         status:
           $ref: '#/components/schemas/SolveTaskStatus'
+        progress:
+          type: number
+          minimum: 0
+          maximum: 1
+        phase:
+          type: string
+          enum: [QUEUED, ASSEMBLING, SOLVING, PERSISTING, DONE, FAILED, CANCELLED, TIMEOUT]
+          description: |
+            当前阶段，始终输出。PENDING=QUEUED；RUNNING 期间为 ASSEMBLING/SOLVING/PERSISTING；
+            SOLVED 对应 DONE；其余终态对应同名值（FAILED/CANCELLED/TIMEOUT）。
+            不得混用 C19 策略规则 phase（INITIAL/OPTIMIZATION/FINALIZING）或 status 值。
+        bestScore:
+          type: string
+          nullable: true
         scoreHard:
           type: integer
           format: int64
@@ -340,6 +395,25 @@ components:
           type: integer
           format: int64
           nullable: true
+        elapsedMs:
+          type: integer
+          format: int64
+        resultTaskId:
+          type: integer
+          format: int64
+          nullable: true
+        errorCode:
+          type: string
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+        degraded:
+          type: boolean
+          description: C28 是否发生引擎异常/超时降级
+        metrics:
+          type: object
+          description: C28 降级标记键 engineFallback/engineFallbackReason/fallbackMode/fallbackAt/terminationReason
         startedAt:
           type: string
           format: date-time
@@ -348,16 +422,22 @@ components:
           type: string
           format: date-time
           nullable: true
-        metrics:
-          type: object
-        errorMessage:
-          type: string
-          nullable: true
         createdAt:
           type: string
           format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        tasks:
+          type: array
+          description: status=SOLVED 时返回 sandbox 场景任务快照；其余状态为空数组
+          items:
+            $ref: '#/components/schemas/ScheduledTask'
     SolveProgress:
       type: object
+      description: |
+        C20 STOMP 进度消息；progress 0-1，终态=1。
+        声明的字段一律输出（null 表示该阶段无此值），键存在性不承载业务含义。
       properties:
         taskId:
           type: integer
@@ -368,8 +448,48 @@ components:
           type: number
           minimum: 0
           maximum: 1
+        phase:
+          type: string
+          enum: [QUEUED, ASSEMBLING, SOLVING, PERSISTING, DONE, FAILED, CANCELLED, TIMEOUT]
+          description: 与 SolveTaskDetail.phase 同一枚举；始终输出
+        bestScore:
+          type: string
+          nullable: true
+          description: Timefold 分数文本；未知时为 null，键仍存在
+        elapsedMs:
+          type: integer
+          format: int64
+        resultTaskId:
+          type: integer
+          format: int64
+          nullable: true
+          description: 仅 SOLVED 有值，其余为 null
+        errorCode:
+          type: string
+          nullable: true
+          description: 失败/超时原因码（ENGINE_ERROR/TIMEOUT/FAILED/CANCELLED）；成功为 null
         message:
           type: string
+          nullable: true
+    IncrementalSolveRequest:
+      type: object
+      required: [baseSolveTaskId]
+      properties:
+        baseSolveTaskId:
+          type: integer
+          format: int64
+        affectedTaskIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+        sandboxId:
+          type: string
+          format: uuid
+          nullable: true
+        reason:
+          type: string
+          nullable: true
     AgentEventRequest:
       type: object
       required: [eventType, occurredAt]
@@ -458,13 +578,6 @@ components:
             type: object
         impact:
           type: object
-    ResultOfSolve:
-      allOf:
-        - $ref: '#/components/schemas/Result'
-        - type: object
-          properties:
-            data:
-              $ref: '#/components/schemas/SolveResult'
     ResultOfSolveTaskDetail:
       allOf:
         - $ref: '#/components/schemas/Result'

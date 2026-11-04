@@ -52,6 +52,17 @@
         <springdoc.version>2.6.0</springdoc.version>
         <!-- 结构化 JSON 日志编码器；8.x 对应 Logback 1.5（Spring Boot 3.3 内置版本） -->
         <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
+        <!-- 与父 POM（spring-boot-starter-parent）保持一致；用于显式锁定 Boot starter 版本 -->
+        <spring-boot.version>3.3.13</spring-boot.version>
+        <!--
+          M1 预置：MyBatis-Plus 3.5.9 是 3.3 线最后一个官方对齐版本（按 Spring Boot 3.3.4 构建）；
+          3.5.10+ 已转向 Boot 3.4/3.5，不跟随。
+        -->
+        <mybatis-plus.version>3.5.9</mybatis-plus.version>
+        <!-- Testcontainers 1.x 最新线；2.x 为破坏性大版本，M1 不跟随 -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+        <!-- M2 Excel 导入导出（W9 使用）；Spring Boot 不管理 POI 版本，根 POM 统一锁定 -->
+        <poi.version>5.3.0</poi.version>
     </properties>
 
     <dependencyManagement>
@@ -62,6 +73,65 @@
                 <version>${timefold.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+
+            <!-- M1 预置：Testcontainers BOM（含 junit-jupiter / postgresql 模块版本） -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- M1 预置：持久化（仅版本管理，各模块按需引用） -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+            <!-- 3.5.9 起分页插件所需 JSqlParser 独立模块 -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-jsqlparser</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+
+            <!-- Spring Boot 已管理；这里显式锁定，避免子模块漂移 -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-actuator</artifactId>
+                <version>${spring-boot.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-validation</artifactId>
+                <version>${spring-boot.version}</version>
+            </dependency>
+            <!-- M2 C20：STOMP over WebSocket 进度推送（W3 使用） -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-websocket</artifactId>
+                <version>${spring-boot.version}</version>
+            </dependency>
+            <!-- M2 异步求解/限流多实例演进（W3 使用） -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-starter-data-redis</artifactId>
+                <version>${spring-boot.version}</version>
+            </dependency>
+            <!-- M2 C26：Excel 导入导出（W9 使用） -->
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-ooxml</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+
+            <!-- PostgreSQL JDBC 驱动；版本沿用既有 postgresql.version -->
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
             </dependency>
 
             <!-- 内部模块统一版本 -->

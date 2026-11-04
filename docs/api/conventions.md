@@ -44,14 +44,16 @@
 |---|---|---|---|
 | 0 | 200 | success | 成功 |
 | 40000 | 400 | 请求参数不合法 | 校验失败、JSON 不可解析、类型不匹配、幂等键格式非法 |
-| 40100 | 401 | 未认证或凭证已失效 | 令牌缺失/过期（接入认证后启用） |
+| 40100 | 401 | 未认证或凭证已失效 | 令牌/API Key 缺失、错误或过期 |
 | 40300 | 403 | 无权访问该资源 | 角色或租户越权 |
 | 40400 | 404 | 资源不存在 | 订单/物料/任务不存在，路由不存在 |
 | 40500 | 405 | 不支持的请求方法 | 方法不匹配 |
 | 40900 | 409 | 幂等键冲突：相同请求正在处理中 | 重复 `Idempotency-Key` |
 | 40901 | 409 | 资源状态冲突，请刷新后重试 | 乐观锁版本冲突、任务状态不可变更 |
+| 40903 | 409 | 已发布的计划/任务不可回滚或覆盖 | 计划回滚遇已执行任务、增量覆盖已发布任务（C24/C21） |
 | 41500 | 415 | 不支持的 Content-Type | 非 JSON 请求体 |
 | 42200 | 422 | 业务规则校验未通过 | 语义校验失败（如数量为负、状态流转非法） |
+| 42201 | 422 | 调整不可行 | 甘特调整触发行程/依赖/资源冲突（C22） |
 | 42900 | 429 | 请求过于频繁，请稍后重试 | 超过限流阈值 |
 | 50000 | 500 | 系统内部错误 | 未预期异常 |
 | 50010 | 500 | 求解引擎不可用 | Timefold/OR-Tools 异常 |
@@ -106,8 +108,13 @@
 
 - `Authorization: Bearer <JWT>`（`bearerAuth`）或 `X-API-Key: <key>`（`apiKeyAuth`）。
 - 租户：`X-Tenant-Id`；未传时使用 DEMO 租户 `00000000-0000-0000-0000-000000000001`。
-- **MVP 状态**：认证/RBAC 尚未启用（P0 仅冻结契约），除健康检查外所有 `/api/v1` 端点当前不校验令牌。
-  接入认证后，缺失凭证返回 40100，越权返回 40300，租户过滤由基础设施层强制追加。
+- **M2 状态（C27）**：按 profile 分级启用，不再是“全部未启用”。
+  - `prod`：所有模块强制 JWT（HS256）；缺失/过期 `40100`，签名有效但缺少 `APS_USER` 角色 `40300`。
+  - `dev`（默认非 prod）：仅写端点（POST/PUT/PATCH/DELETE）强制认证；`X-API-Key` 直通（写密钥 200，读密钥 `40300`，缺失/错误 `40100`）；GET 放行。
+  - `off`：`APS_SECURITY_MODE=off` 全放行，仅本地排障/回归。
+  - 校验顺序：TraceId → 认证 → 限流 → 幂等 → Controller。
+  - 登录页与令牌签发属 M3-FE-02，M2 的 `/auth/login` 保持 `50100`；联调使用 API Key。
+  - 租户过滤由基础设施层强制追加；RBAC 角色权限属 M3。
 - 密码、令牌、API Key 禁止出现在日志与审计 `before_value/after_value` 中，脱敏规则见
   [docs/observability.md](../observability.md)。
 
@@ -118,7 +125,8 @@
 | 阈值 | 100 req/min/user（按用户 + 租户维度） |
 | 响应头 | `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset`（UTC 秒级时间戳） |
 | 超限 | HTTP 429 + `code=42900` |
-| MVP 状态 | **未启用**（P0 仅约定）；接入网关或 Bucket4j 后生效 |
+| M2 状态 | **已启用**（C27，单实例内存令牌桶）；`off` 模式默认关闭，多实例需换 Redis |
+| 计数维度 | `tenantId + 调用方标识`（JWT `sub` 或 API Key 指纹）；认证失败不消耗额度 |
 
 ## 8. traceId 与可观测性
 
@@ -130,12 +138,32 @@
 
 | 分组 | 路径前缀 | 内容 | 静态契约 |
 |---|---|---|---|
-| `materials` | `/materials` `/boms` `/resources` `/calendars` `/routings` `/mrp` | 物料与主数据 | [materials.yaml](openapi/materials.yaml) |
+| `materials` | `/materials` `/boms` `/resources` `/calendars` `/mrp` | 物料与主数据 | [materials.yaml](openapi/materials.yaml) |
+| `process` | `/operation-templates` `/routings` | 工序模版、工艺路线 | [materials.yaml](openapi/materials.yaml)（静态契约暂共用，待拆 `process.yaml`） |
 | `orders` | `/orders` `/strategies` `/sandboxes` | 订单、策略、场景 | [orders.yaml](openapi/orders.yaml) |
 | `solve` | `/solve-tasks` `/agent` | 求解任务、Agent | [solve.yaml](openapi/solve.yaml) |
 | `gantt` | `/gantt` `/tasks` `/plans` | 甘特图、调整、发布/回滚 | [gantt.yaml](openapi/gantt.yaml) |
 | `system` | `/health` `/auth` `/users` `/audit-logs` `/configs` | 系统管理 | [system.yaml](openapi/system.yaml) |
 
+**`OpenApiConfiguration` 分组规则（照抄）**：
+
+```java
+// process：工序模版 + 工艺路线
+GroupedOpenApi.builder()
+        .group("process")
+        .pathsToMatch("/api/v1/operation-templates/**", "/api/v1/routings/**")
+        .build();
+
+// materials：必须移除 "/api/v1/routings/**"，避免与 process 重复
+GroupedOpenApi.builder()
+        .group("materials")
+        .pathsToMatch("/api/v1/materials/**", "/api/v1/boms/**", "/api/v1/resources/**",
+                "/api/v1/calendars/**", "/api/v1/mrp/**")
+        .build();
+```
+
+- 分组名固定为 `process`；`/v3/api-docs/process` 必须能看到 `/operation-templates/**` 与 `/routings/**`。
+- `materials` 分组不得再包含 `/routings/**`；否则同一端点在两个分组重复出现。
 - 运行时文档：`/v3/api-docs/{group}`；聚合文档：`/v3/api-docs`；UI：`/swagger-ui.html`。
 - 每个操作在描述中标注 `状态：已实现` 或 `状态：占位`；占位端点当前返回 `501 + code=50100`，**不可当作可用功能**。
 - 静态 YAML 为评审基线，代码注解为运行时视图；两者冲突时以本文件 + YAML 为准并回补注解。

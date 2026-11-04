@@ -21,7 +21,13 @@
 
 约束：Timefold 类型只允许出现在 `solver-timefold`，不得泄漏到 `aps-service` / `aps-web`。
 
-技术栈：Spring Boot 3.3.13、Java 21、Maven 3.9+、Timefold Solver 2.8.0、Vue 3.5、Vite 8、Element Plus、Pinia、Vue Router、Axios。
+技术栈：Spring Boot 3.3.13、Java 21、Maven 3.9+、Timefold Solver 2.8.0、MyBatis-Plus 3.5.9、Testcontainers 1.21.4、Vue 3.5、Vite 8、Element Plus、Pinia、Vue Router、Axios。
+
+## M1 契约冻结
+
+- 契约基线：[docs/api/contract-freeze.md](docs/api/contract-freeze.md)；枚举字典：[docs/api/enums.md](docs/api/enums.md)。
+- **业务流不得编辑** `aps-web/src/main/java/com/hengce/aps/web/controller/contract/**` 与 `docs/api/openapi/*.yaml`；字段变更走契约变更单。
+- 数据库迁移号段见 [docs/db/README.md](docs/db/README.md)：M1 默认零迁移，只有 S0 发号，禁止修改 `V1__init.sql`。
 
 ## 本地启动
 

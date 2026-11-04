@@ -43,6 +43,10 @@ COPY aps-solver/solver-dsl/src aps-solver/solver-dsl/src
 COPY aps-solver/solver-timefold/src aps-solver/solver-timefold/src
 COPY aps-solver/solver-ortools/src aps-solver/solver-ortools/src
 
+# Flyway 迁移脚本：aps-admin/pom.xml 将 ../db/migration 作为 resources 打入
+# classpath:db/migration，因此必须在 mvn package 之前就位；只复制该目录，避免带入整个 db/。
+COPY db/migration db/migration
+
 RUN mvn -B -ntp -DskipTests -Dcheckstyle.skip=true -Dpmd.skip=true package \
     && cp aps-admin/target/aps-admin-*.jar /workspace/app.jar
 
@@ -54,6 +58,8 @@ ENV TZ=Asia/Shanghai \
     JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+UseG1GC -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
 
 # 非 root 运行；curl 供 HEALTHCHECK 使用
+# 说明：Debian 基础镜像的 curl 版本随上游滚动，锁死版本会导致构建漂移，故忽略 DL3008
+# hadolint ignore=DL3008
 RUN groupadd --system --gid 1001 aps \
     && useradd --system --uid 1001 --gid aps --home-dir /app --no-create-home --shell /usr/sbin/nologin aps \
     && apt-get update \
@@ -63,11 +69,11 @@ RUN groupadd --system --gid 1001 aps \
 WORKDIR /app
 COPY --from=build --chown=aps:aps /workspace/app.jar /app/app.jar
 
-USER aps
+USER 1001:1001
 EXPOSE 8080
 
 # 健康检查直接打业务健康接口（与 README 一致：GET /api/v1/health）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8080/api/v1/health || exit 1
+    CMD ["curl", "-fsS", "http://127.0.0.1:8080/api/v1/health"]
 
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]

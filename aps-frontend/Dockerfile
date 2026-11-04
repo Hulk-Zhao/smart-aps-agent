@@ -20,15 +20,17 @@ COPY . .
 RUN npm run build
 
 # --------------------------- 运行阶段 ---------------------------------------
-FROM nginx:alpine AS runtime
+# nginx 非特权镜像：以 uid 101 运行，容器内监听 8080（非 <1024 特权端口）。
+# 注意：宿主机端口映射需指向容器 8080。
+FROM nginxinc/nginx-unprivileged:1.31-alpine AS runtime
 
-# 后端地址由 compose/运行时注入；默认指向 compose 内服务名 aps-admin
-ENV APS_BACKEND_URL=http://aps-admin:8080
+# 后端地址由 compose/运行时注入；默认与 compose 服务名 aps-backend 保持一致
+ENV APS_BACKEND_URL=http://aps-backend:8080
 
 COPY nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html
 
-EXPOSE 80
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-    CMD wget -qO- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1
+    CMD ["wget", "-qO-", "http://127.0.0.1:8080/healthz"]

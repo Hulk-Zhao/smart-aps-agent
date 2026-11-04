@@ -1,23 +1,12 @@
-import http from './http'
-import type {
-  ApiResponse,
-  HealthStatus,
-  ProductionOrder,
-  SolveRequest,
-  SolveResult
-} from '@/types/api'
-
-export async function fetchHealth(): Promise<ApiResponse<HealthStatus>> {
-  const response = await http.get<ApiResponse<HealthStatus>>('/health')
-  return response.data
-}
-
-export async function fetchOrders(): Promise<ApiResponse<ProductionOrder[]>> {
-  const response = await http.get<ApiResponse<ProductionOrder[]>>('/orders')
-  return response.data
-}
-
-export async function submitSolveTask(payload: SolveRequest): Promise<ApiResponse<SolveResult>> {
-  const response = await http.post<ApiResponse<SolveResult>>('/solve-tasks', payload)
-  return response.data
-}
+/**
+ * 聚合出口：仅做 re-export，禁止在此追加接口实现。
+ * 各域接口请写入 src/api/<domain>.ts。
+ */
+export * from './materials'
+export * from './orders'
+export * from './mrp'
+export * from './solve'
+export * from './gantt'
+export * from './system'
+export * from './http'
+export { default as http } from './http'

@@ -1,40 +1,10 @@
-export interface ApiResponse<T> {
-  code: number
-  message: string
-  data: T
-}
-
-export interface HealthStatus {
-  status: string
-  service: string
-}
-
-export interface ProductionOrder {
-  orderNo: string
-  materialCode: string
-  qty: number
-  status: string
-  freezeStatus: string
-  dueDate: string
-}
-
-export interface SolveRequest {
-  taskNo: string
-  engine: string
-  orderNos: string[]
-  parameters: Record<string, unknown>
-}
-
-export interface ScheduledTask {
-  orderNo: string
-  resourceCode: string
-  startTime: string
-  endTime: string
-}
-
-export interface SolveResult {
-  taskNo: string
-  status: string
-  tasks: ScheduledTask[]
-  message: string
-}
+/**
+ * 聚合出口：仅做 re-export，禁止在此追加类型定义。
+ * 各域类型请写入 src/types/<domain>.ts。
+ */
+export * from './common'
+export * from './materials'
+export * from './orders'
+export * from './solve'
+export * from './gantt'
+export * from './system'

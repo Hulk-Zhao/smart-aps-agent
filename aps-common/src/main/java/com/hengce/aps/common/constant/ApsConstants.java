@@ -38,6 +38,21 @@ public final class ApsConstants {
     public static final String HEADER_IDEMPOTENCY_KEY = "Idempotency-Key";
 
     /**
+     * API Key 请求头（M2 开发模式认证）。
+     */
+    public static final String HEADER_API_KEY = "X-API-Key";
+
+    /**
+     * 认证请求头。
+     */
+    public static final String HEADER_AUTHORIZATION = "Authorization";
+
+    /**
+     * 开发态操作人请求头（仅 dev 模式生效，必须为合法 UUID；prod 走 JWT subject）。
+     */
+    public static final String HEADER_USER_ID = "X-User-Id";
+
+    /**
      * 租户请求头（MVP 占位，接入认证后由网关/令牌解析）。
      */
     public static final String HEADER_TENANT_ID = "X-Tenant-Id";

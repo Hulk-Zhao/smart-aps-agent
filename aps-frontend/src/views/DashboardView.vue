@@ -2,17 +2,16 @@
 import { onMounted, ref } from 'vue'
 
 import { fetchHealth } from '@/api'
-import type { HealthStatus } from '@/types/api'
+import type { Health } from '@/types/api'
 
-const health = ref<HealthStatus | null>(null)
+const health = ref<Health | null>(null)
 const loading = ref(false)
 const error = ref('')
 
 onMounted(async () => {
   loading.value = true
   try {
-    const response = await fetchHealth()
-    health.value = response.data
+    health.value = await fetchHealth()
   } catch (exception) {
     error.value = exception instanceof Error ? exception.message : '健康检查失败'
   } finally {

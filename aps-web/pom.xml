@@ -41,9 +41,26 @@
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
             <version>${springdoc.version}</version>
         </dependency>
+        <!-- M2-SE-03：求解进度 STOMP 推送（原生 WebSocket + SimpleBroker） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-websocket</artifactId>
+        </dependency>
+        <!-- M2-SE-03：Controller 直接引用 aps-infrastructure 的持久化实体与仓储（如 RoutingController），
+             且测试需加载 SolveTaskRepository，故按 compile 作用域显式声明（覆盖 aps-service 的传递依赖） -->
+        <dependency>
+            <groupId>com.hengce.aps</groupId>
+            <artifactId>aps-infrastructure</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- M2-SE-03 真库验收测试：仅测试作用域使用 PostgreSQL 驱动 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

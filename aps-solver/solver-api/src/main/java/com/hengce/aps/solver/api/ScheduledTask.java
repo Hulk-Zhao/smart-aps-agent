@@ -1,18 +1,20 @@
 package com.hengce.aps.solver.api;
 
-import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 
 /**
- * 单个排产结果：订单在资源上的时间占用。
+ * HTTP 过渡排产结果：订单在资源上的时间窗口占用。
+ *
+ * <p>按 C7，时间字段为 ISO-8601 UTC（{@link java.time.ZoneOffset#UTC}）。</p>
  *
  * @param orderNo 订单号
  * @param resourceCode 资源编码
- * @param startTime 开始时间
- * @param endTime 结束时间
+ * @param startTime 加工开始时间
+ * @param endTime 加工结束时间
  */
 public record ScheduledTask(
         String orderNo,
         String resourceCode,
-        LocalDateTime startTime,
-        LocalDateTime endTime) {
+        OffsetDateTime startTime,
+        OffsetDateTime endTime) {
 }

@@ -17,6 +17,40 @@ spring:
   flyway:
     enabled: false
 
+# MyBatis-Plus 持久层基座（M1-BD-01）：仅新增本段，不涉及数据源 / Flyway / springdoc
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+  global-config:
+    banner: false
+    db-config:
+      # 主键由调用方或数据库默认值提供（UUID / BIGSERIAL 两种策略并存）
+      id-type: input
+      # 与 V1 的 deleted BOOLEAN 对齐
+      logic-delete-field: deleted
+      logic-delete-value: "true"
+      logic-not-delete-value: "false"
+
+# M2-SE-03 求解异步生命周期与进度推送（C20/C28）
+aps:
+  solve:
+    # POST /solve-tasks 一律返回 SolveTaskDetail（C20），执行方式不影响响应结构；
+    # 此处不再提供 async-enabled 部署开关。
+    # stomp：STOMP 实时推送；none：只缓存快照，前端回退轮询
+    progress-push: ${APS_SOLVE_PROGRESS_PUSH:stomp}
+    # SE-06 引擎异常/超时/不可用降级标记开关
+    fallback-enabled: ${APS_SOLVE_FALLBACK_ENABLED:true}
+    # 有界队列容量；单工作线程保证每场景最多 1 个 RUNNING
+    queue-capacity: ${APS_SOLVE_QUEUE_CAPACITY:32}
+    # 超时看门狗宽限秒数，避免与引擎内部 spentLimit 竞争
+    timeout-grace-seconds: ${APS_SOLVE_TIMEOUT_GRACE_SECONDS:5}
+  # 审计身份（C27）：仅 dev 模式生效，用于填充 created_by/updated_by/published_by
+  audit:
+    # 开发态缺省操作人 UUID（X-User-Id 未带时使用）；生产禁用，prod 走 JWT subject
+    dev-user-id: ${APS_AUDIT_DEV_USER_ID:}
+
 logging:
   level:
     root: INFO

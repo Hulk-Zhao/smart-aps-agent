@@ -150,6 +150,55 @@ backend:test:
     expire_in: 1 week
 
 # -----------------------------------------------------------------------------
+# test:realdb：真实数据库集成测试（M1 遗留补齐）
+#   M1 全量 verify 中 23 条真实库 IT 依赖 APS_TEST_DB_ENABLED，未设置即被 JUnit
+#   条件静默跳过；本 job 显式开启并初始化 V1 schema，确保门禁真正执行这些用例。
+# -----------------------------------------------------------------------------
+backend:test:realdb:
+  stage: test
+  image: maven:3.9-eclipse-temurin-21
+  services:
+    - name: postgres:15
+      alias: postgres
+      variables:
+        POSTGRES_DB: aps_local
+        POSTGRES_USER: aps
+        POSTGRES_PASSWORD: aps_dev_pwd
+  variables:
+    APS_TEST_DB_ENABLED: "true"
+    APS_TEST_DB_HOST: "postgres"
+    APS_TEST_DB_PORT: "5432"
+    APS_TEST_DB_NAME: "aps_local"
+    APS_TEST_DB_USER: "aps"
+    APS_TEST_DB_PASSWORD: "aps_dev_pwd"
+    PGPASSWORD: "aps_dev_pwd"
+  cache:
+    key:
+      files:
+        - pom.xml
+        - aps-solver/pom.xml
+    fallback_keys:
+      - maven-fallback
+    paths:
+      - .m2/repository
+    policy: pull
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends postgresql-client
+    - until pg_isready -h postgres -p 5432 -U aps -d aps_local; do sleep 2; done
+    - psql -h postgres -p 5432 -U aps -d aps_local -v ON_ERROR_STOP=1 -f db/migration/V1__init.sql
+  script:
+    - >
+      mvn $MAVEN_CLI_OPTS -Dcheckstyle.skip=true -Dpmd.skip=true
+      -pl aps-service -am test
+  artifacts:
+    when: always
+    paths:
+      - "aps-service/target/surefire-reports/**"
+    reports:
+      junit: "aps-service/target/surefire-reports/TEST-*.xml"
+    expire_in: 1 week
+
+# -----------------------------------------------------------------------------
 # package：制品归档（可运行 jar + 前端 dist 打包成发布压缩包）
 # -----------------------------------------------------------------------------
 package:bundle:

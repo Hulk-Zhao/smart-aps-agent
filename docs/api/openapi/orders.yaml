@@ -84,15 +84,62 @@ paths:
                 $ref: '#/components/schemas/ResultOfOrder'
         '404':
           $ref: '#/components/responses/NotFound'
-  /orders/{id}/confirm:
+    put:
+      operationId: updateOrder
+      tags: [订单]
+      summary: 更新订单
+      description: |
+        状态：占位。仅 `DRAFT` 可修改；非 `DRAFT` 返回 42200。
+        乐观锁：请求必须携带当前 `version`，与服务端 `orders.version` 不一致返回 40901。
+        `orderNo` 不可修改；允许修改 materialCode/qty/dueDate/priority/customerId/routingId/remark/extAttrs。
+        路径参数为 order_no。
+      x-implementation-status: placeholder
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          description: 订单业务编码 order_no
+          schema:
+            type: string
+            maxLength: 64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderUpdateRequest'
+      responses:
+        '200':
+          description: 成功，返回更新后的订单（version 已递增）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 版本冲突（40901）或重复/幂等冲突（40900）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
+  /orders/{orderNo}/confirm:
     put:
       operationId: confirmOrder
       tags: [订单]
       summary: 确认订单
-      description: 状态：占位。路径 id 为 order_no；DRAFT → CONFIRMED。
+      description: |
+        状态：占位。路径参数为 order_no；DRAFT → CONFIRMED。
+        幂等：重复确认返回 200，不重复执行副作用；目标状态幂等，不强制 Idempotency-Key。
       x-implementation-status: placeholder
       parameters:
-        - name: id
+        - name: orderNo
           in: path
           required: true
           description: 订单业务编码 order_no
@@ -114,15 +161,22 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '501':
           $ref: '#/components/responses/NotImplemented'
-  /orders/{id}/freeze:
+  /orders/{orderNo}/freeze:
     put:
       operationId: freezeOrder
       tags: [订单]
       summary: 冻结/解冻订单
-      description: 状态：占位。冻结后人工调整不可移动相关任务。
+      description: |
+        状态：占位（契约已冻结 C23，实现归 W5）。路径参数为 order_no。
+        同一端点承载四态冻结与解冻：body `freezeStatus=UNFROZEN` 即解冻，**不提供独立 `/unfreeze`**。
+        - LOCKED_TIME_WINDOW 必填 lockFrom/lockTo，to > from；缺失返回 400/40000
+        - LOCKED_RESOURCE 必填 lockedResourceCodes（trim+去重后非空），否则 42200
+        - UNFROZEN/FROZEN 自动清空锁信息（幂等，不报错）
+        锁信息落 orders.ext_attrs.freezeLock，不新增列；OrderView 暴露只读 freezeLock。
+        version 不一致返回 40901。
       x-implementation-status: placeholder
       parameters:
-        - name: id
+        - name: orderNo
           in: path
           required: true
           description: 订单业务编码 order_no
@@ -148,6 +202,112 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /orders/{orderNo}/priority:
+    put:
+      operationId: updateOrderPriority
+      tags: [订单]
+      summary: 修改订单优先级
+      description: |
+        状态：占位（契约已冻结 C23，实现归 W5）。
+        优先级只影响软约束 PRIORITY_RESPECT，不改硬约束；URGENT 不提供抢占/插队语义。
+        version 不一致返回 40901。
+      x-implementation-status: placeholder
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderPriorityRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /orders/{orderNo}/release:
+    put:
+      operationId: releaseOrder
+      tags: [订单]
+      summary: 释放订单
+      description: |
+        M2 纳入（C23）。DRAFT/CONFIRMED -> RELEASED，并自动冻结该订单当前全部任务（lock_type=FROZEN）。
+        body 可空：{reason?, version?}。重复释放幂等返回 200，version 不变且不重复写审计。
+        非法状态流转返回 42200；version 不一致返回 40901。
+      x-implementation-status: placeholder
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderVersionRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /orders/{orderNo}/start:
+    put:
+      operationId: startOrder
+      tags: [订单]
+      summary: 订单开工
+      description: |
+        M2 纳入（C23）。RELEASED -> IN_PROGRESS，同样自动冻结该订单全部任务。
+      x-implementation-status: placeholder
+      parameters:
+        - name: orderNo
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderVersionRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfOrder'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
   /orders/atp:
     post:
       operationId: atp
@@ -462,6 +622,24 @@ components:
           $ref: '#/components/schemas/OrderStatus'
         freezeStatus:
           $ref: '#/components/schemas/FreezeStatus'
+        freezeLock:
+          type: object
+          readOnly: true
+          nullable: true
+          description: C23 只读投影，来源 orders.ext_attrs.freezeLock；未冻结/无锁时为 null
+          properties:
+            from:
+              type: string
+              format: date-time
+              nullable: true
+            to:
+              type: string
+              format: date-time
+              nullable: true
+            resourceCodes:
+              type: array
+              items:
+                type: string
         dueDate:
           type: string
           format: date
@@ -522,6 +700,40 @@ components:
           type: string
         extAttrs:
           type: object
+    OrderUpdateRequest:
+      type: object
+      required: [version]
+      description: 仅 DRAFT 可改；orderNo 不可修改；未传字段保持原值。
+      properties:
+        materialCode:
+          type: string
+          description: 对应 orders.product_id → material.code；变更时校验物料存在
+        qty:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+        dueDate:
+          type: string
+          format: date
+        priority:
+          $ref: '#/components/schemas/OrderPriority'
+        customerId:
+          type: string
+          format: uuid
+          nullable: true
+        routingId:
+          type: string
+          format: uuid
+          nullable: true
+        remark:
+          type: string
+          nullable: true
+        extAttrs:
+          type: object
+        version:
+          type: integer
+          minimum: 1
+          description: 乐观锁版本；必须与当前 orders.version 一致
     OrderFreezeRequest:
       type: object
       required: [freezeStatus, version]
@@ -530,6 +742,38 @@ components:
           $ref: '#/components/schemas/FreezeStatus'
         version:
           type: integer
+          description: 与 orders.version 不一致返回 40901
+        lockFrom:
+          type: string
+          format: date-time
+          nullable: true
+          description: freezeStatus=LOCKED_TIME_WINDOW 时必填；缺失返回 400/40000
+        lockTo:
+          type: string
+          format: date-time
+          nullable: true
+          description: freezeStatus=LOCKED_TIME_WINDOW 时必填，且大于 lockFrom
+        lockedResourceCodes:
+          type: array
+          items:
+            type: string
+          description: freezeStatus=LOCKED_RESOURCE 时必填且非空；服务端按 trim+去重规范化
+    OrderPriorityRequest:
+      type: object
+      required: [priority, version]
+      properties:
+        priority:
+          $ref: '#/components/schemas/OrderPriority'
+        version:
+          type: integer
+    OrderVersionRequest:
+      type: object
+      properties:
+        version:
+          type: integer
+        reason:
+          type: string
+          nullable: true
     AtpRequest:
       type: object
       required: [materialCode, qty, requestedDate]

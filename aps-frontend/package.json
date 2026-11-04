@@ -14,7 +14,12 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@infectoone/vue-ganttastic": "^2.3.2",
+    "@stomp/stompjs": "^7.5.0",
+    "@vue-flow/core": "^1.48.2",
     "axios": "^1.21.0",
+    "dayjs": "^1.11.21",
+    "echarts": "^6.1.0",
     "element-plus": "^2.14.7",
     "pinia": "^4.1.0",
     "vue": "^3.5.44",
@@ -27,6 +32,7 @@
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^10.12.0",
+    "globals": "^17.14.0",
     "prettier": "^3.9.10",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.1",

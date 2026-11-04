@@ -32,11 +32,17 @@ public enum ErrorCode {
     /** 资源状态冲突，如乐观锁版本不一致（409）。 */
     STATE_CONFLICT(40901, "资源状态冲突，请刷新后重试"),
 
+    /** 已发布的计划/任务不可回滚或覆盖（409）。 */
+    PUBLISHED_CONFLICT(40903, "已发布的计划/任务不可回滚或覆盖"),
+
     /** 不支持的媒体类型（415）。 */
     UNSUPPORTED_MEDIA_TYPE(41500, "不支持的 Content-Type"),
 
     /** 业务规则校验未通过（422）。 */
     UNPROCESSABLE_ENTITY(42200, "业务规则校验未通过"),
+
+    /** 甘特调整不可行（422）。 */
+    ADJUSTMENT_INFEASIBLE(42201, "调整不可行"),
 
     /** 请求频率超限（429）。 */
     TOO_MANY_REQUESTS(42900, "请求过于频繁，请稍后重试"),

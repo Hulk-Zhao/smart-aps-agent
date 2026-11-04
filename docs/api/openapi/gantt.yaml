@@ -4,6 +4,8 @@ info:
   version: 0.1.0
   description: |
     gantt 分组静态契约（P0-08），当前全部为占位。统一约定见 ../../docs/api/conventions.md。
+    M2 冻结：C21（增量重排锁定）、C22（人工调整/撤销重做）、C24（计划版本发布回滚）、C29（订单甘特读接口）。
+    所有时间字段为 ISO-8601 UTC；planId 一律使用 plan_version.id（UUID），不再以 sandboxId 充当计划 id。
     甘特图接口返回非分页结构；时间字段为 ISO-8601 UTC。
 servers:
   - url: /api/v1
@@ -16,8 +18,12 @@ paths:
       operationId: resourceGantt
       tags: [甘特图]
       summary: 资源甘特图
-      description: 状态：占位。按资源泳道返回任务条。
+      description: |
+        状态：占位。按资源泳道返回任务条。
+        实现归属：求解流（S3）；契约见 docs/api/contract-freeze.md C4。
+        返回与 [from, to) 有交集的任务，按 resourceCode、sequenceInResource 稳定排序。
       x-implementation-status: placeholder
+      x-owner: solve-flow
       parameters:
         - $ref: '#/components/parameters/SandboxId'
         - $ref: '#/components/parameters/From'
@@ -49,7 +55,12 @@ paths:
       operationId: orderGantt
       tags: [甘特图]
       summary: 订单甘特图
-      description: 状态：占位。按订单泳道返回工序链。
+      description: |
+        状态：占位（契约已冻结 C29，实现归 W4）。按订单泳道返回工序链。
+        late = 任务 endTime 超过订单 dueDate 当日 UTC 23:59:59；订单级 lateMinutes 为整数分钟，
+        仅 late=true 时给出，late=false 时省略或 null（不得填 0 冒充）。
+        任务 lockType：M2 由 task.status 推导 FROZEN|NONE，V5 生效后回读 task.lock_type（可扩展 TIME_WINDOW|RESOURCE）。
+        非分页结构，排序固定为 orderNo, operationIndex，不按交期；from/to 只做窗口过滤不改排序。
       x-implementation-status: placeholder
       parameters:
         - $ref: '#/components/parameters/SandboxId'
@@ -82,7 +93,10 @@ paths:
       operationId: adjustTask
       tags: [计划]
       summary: 人工调整任务
-      description: 状态：占位。需携带 version 做乐观锁校验；冻结任务拒绝调整。
+      description: |
+        状态：占位（契约已冻结 C22，实现归 W4）。
+        operation=MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 枚举已冻结但 M2 返回 50100。
+        version 与 task.version 不一致返回 40901；FROZEN 任务 MOVE 返回 42201；dryRun=true 只校验不落库。
       x-implementation-status: placeholder
       parameters:
         - name: id
@@ -105,9 +119,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResultOfGanttTask'
+                $ref: '#/components/schemas/ResultOfTaskAdjust'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '403':
+          description: 无调整权限（M2 占位放行，M3 接 RBAC）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
@@ -116,22 +136,118 @@ paths:
           $ref: '#/components/responses/Unprocessable'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /tasks/adjustments/{adjustmentId}/undo:
+    post:
+      operationId: undoTaskAdjustment
+      tags: [计划]
+      summary: 撤销任务调整
+      description: 状态：占位。按任务栈撤销最近一次调整；每任务最多 50 步。
+      x-implementation-status: placeholder
+      parameters:
+        - name: adjustmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfTaskAdjust'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tasks/adjustments/{adjustmentId}/redo:
+    post:
+      operationId: redoTaskAdjustment
+      tags: [计划]
+      summary: 重做任务调整
+      description: 状态：占位。重做被撤销的调整。
+      x-implementation-status: placeholder
+      parameters:
+        - name: adjustmentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfTaskAdjust'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /tasks/{id}/adjustments:
+    get:
+      operationId: listTaskAdjustments
+      tags: [计划]
+      summary: 任务调整历史
+      description: 状态：占位。分页返回该任务的调整记录。
+      x-implementation-status: placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /plans/{id}/publish:
     post:
       operationId: publishPlan
       tags: [计划]
       summary: 发布计划
-      description: 状态：占位。把场景任务固化为主计划并写入审计。
-      x-implementation-status: placeholder
+      description: |
+        状态：已实现（C24，W5）。
+        把 plan_version(id=UUID) 的任务快照固化为 PUBLISHED，并回填 task.plan_version_id；重复发布幂等返回 200。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
           required: true
-          description: 场景/计划 UUID
+          description: 计划版本 UUID（plan_version.id）
           schema:
             type: string
             format: uuid
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanPublishRequest'
       responses:
         '200':
           description: 成功
@@ -145,23 +261,30 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /plans/{id}/rollback:
     post:
       operationId: rollbackPlan
       tags: [计划]
       summary: 回滚计划
-      description: 状态：占位。回滚到上一个已发布版本。
-      x-implementation-status: placeholder
+      description: |
+        状态：已实现（C24，W5）。
+        回滚生成新 plan_version（rollback_of=原版本），不物理回退；存在已执行任务（IN_PROGRESS/COMPLETED）时返回 40903。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
           required: true
+          description: 当前计划版本 UUID（plan_version.id）
           schema:
             type: string
             format: uuid
         - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanRollbackRequest'
       responses:
         '200':
           description: 成功
@@ -175,18 +298,17 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
 components:
   parameters:
     SandboxId:
       name: sandboxId
       in: query
-      required: true
-      description: 场景 UUID
+      required: false
+      description: 场景 UUID；为空时取默认 BASELINE 00000000-0000-0000-0000-000000000401
       schema:
         type: string
         format: uuid
+        default: 00000000-0000-0000-0000-000000000401
     From:
       name: from
       in: query
@@ -305,6 +427,13 @@ components:
           nullable: true
         version:
           type: integer
+        lockType:
+          type: string
+          enum: [NONE, TIME_WINDOW, RESOURCE, FROZEN]
+          description: C21 锁定类型；缺省 NONE。M2 由 task.status 推导 FROZEN|NONE，V5 生效后回读 task.lock_type
+        late:
+          type: boolean
+          description: C29 是否晚于订单交期
     GanttResourceRow:
       type: object
       properties:
@@ -312,6 +441,19 @@ components:
           type: string
         resourceName:
           type: string
+        resourceType:
+          type: string
+          description: PRIMARY/SECONDARY/HUMAN/TOOL
+        calendarId:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            C4 增量：该资源生效日历的 calendar.id（优先级：资源专属 > 资源组 > 全厂默认）。
+            未绑定任何日历时为 null，前端按全厂默认日历兜底，禁止逐个再查 /calendars。
+        calendarBound:
+          type: boolean
+          description: C4 增量：是否已绑定专属/资源组日历摘要；calendarId 为 null 时固定 false
         tasks:
           type: array
           items:
@@ -326,17 +468,34 @@ components:
         dueDate:
           type: string
           format: date
+        priority:
+          type: string
+          enum: [URGENT, HIGH, NORMAL, LOW]
+        freezeStatus:
+          type: string
+          enum: [UNFROZEN, FROZEN, LOCKED_TIME_WINDOW, LOCKED_RESOURCE]
+        late:
+          type: boolean
+          description: 任务 endTime 是否超过订单 dueDate 当日 UTC 23:59:59
+        lateMinutes:
+          type: integer
+          nullable: true
+          description: 仅 late=true 时给出，整数分钟；late=false 时省略或 null
         tasks:
           type: array
           items:
             $ref: '#/components/schemas/GanttTask'
     TaskAdjustRequest:
       type: object
-      required: [version]
+      required: [operation, version]
       properties:
+        operation:
+          type: string
+          enum: [MOVE, LOCK, FREEZE, UNFREEZE, SPLIT, MERGE]
+          description: SPLIT/MERGE 在 M2 返回 50100
         version:
           type: integer
-          description: 乐观锁版本
+          description: 乐观锁版本，过期返回 40901
         resourceCode:
           type: string
           nullable: true
@@ -347,25 +506,104 @@ components:
         startTime:
           type: string
           format: date-time
+          nullable: true
         endTime:
           type: string
           format: date-time
-        frozen:
+          nullable: true
+        lockFrom:
+          type: string
+          format: date-time
+          nullable: true
+          description: LOCK 时的时间窗起点
+        lockTo:
+          type: string
+          format: date-time
+          nullable: true
+          description: LOCK 时的时间窗终点，必须大于 lockFrom
+        lockedResourceCodes:
+          type: array
+          items:
+            type: string
+          description: LOCK 时可选的资源锁；为空表示仅锁时间
+        dryRun:
           type: boolean
           default: false
         reason:
           type: string
+          nullable: true
+          description: FREEZE 时必填
+        frozen:
+          type: boolean
+          default: false
+          deprecated: true
+          description: M1 兼容别名，等价 operation=FREEZE/UNFREEZE
+    TaskAdjustResult:
+      type: object
+      properties:
+        adjustmentId:
+          type: string
+          format: uuid
+        applied:
+          type: boolean
+        dryRun:
+          type: boolean
+        task:
+          $ref: '#/components/schemas/GanttTask'
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              message:
+                type: string
+              relatedTaskIds:
+                type: array
+                items:
+                  type: integer
+                  format: int64
+    PlanPublishRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          nullable: true
+        approver:
+          type: string
+          nullable: true
+    PlanRollbackRequest:
+      type: object
+      required: [targetVersionNo]
+      properties:
+        targetVersionNo:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          nullable: true
     PlanAction:
       type: object
       properties:
         planId:
           type: string
           format: uuid
+        planNo:
+          type: string
+          nullable: true
         version:
           type: integer
+        targetVersionNo:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [DRAFT, REVIEW, PUBLISHED, ARCHIVED]
         publishedAt:
           type: string
           format: date-time
+          nullable: true
         affectedTaskCount:
           type: integer
     ResultOfResourceGantt:
@@ -417,6 +655,13 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/GanttTask'
+    ResultOfTaskAdjust:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/TaskAdjustResult'
     ResultOfPlanAction:
       allOf:
         - $ref: '#/components/schemas/Result'

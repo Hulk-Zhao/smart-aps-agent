@@ -45,8 +45,10 @@ public class RestExceptionHandler {
             Map.entry(ErrorCode.METHOD_NOT_ALLOWED, HttpStatus.METHOD_NOT_ALLOWED),
             Map.entry(ErrorCode.IDEMPOTENCY_CONFLICT, HttpStatus.CONFLICT),
             Map.entry(ErrorCode.STATE_CONFLICT, HttpStatus.CONFLICT),
+            Map.entry(ErrorCode.PUBLISHED_CONFLICT, HttpStatus.CONFLICT),
             Map.entry(ErrorCode.UNSUPPORTED_MEDIA_TYPE, HttpStatus.UNSUPPORTED_MEDIA_TYPE),
             Map.entry(ErrorCode.UNPROCESSABLE_ENTITY, HttpStatus.UNPROCESSABLE_ENTITY),
+            Map.entry(ErrorCode.ADJUSTMENT_INFEASIBLE, HttpStatus.UNPROCESSABLE_ENTITY),
             Map.entry(ErrorCode.TOO_MANY_REQUESTS, HttpStatus.TOO_MANY_REQUESTS),
             Map.entry(ErrorCode.NOT_IMPLEMENTED, HttpStatus.NOT_IMPLEMENTED),
             Map.entry(ErrorCode.SERVICE_UNAVAILABLE, HttpStatus.SERVICE_UNAVAILABLE));

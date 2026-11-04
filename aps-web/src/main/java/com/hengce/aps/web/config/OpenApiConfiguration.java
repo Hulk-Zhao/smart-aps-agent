@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * OpenAPI / Swagger 分组配置。
  *
- * <p>按 PRD 9.1 的域拆分为 materials / orders / solve / gantt / system 五组，
+ * <p>按 C16 的域拆分规则分为 materials / process / orders / solve / gantt / system 六组，
  * 访问 {@code /v3/api-docs/{group}} 获取对应文档；静态契约与分组说明见 {@code docs/api/openapi/}。</p>
  */
 @Configuration
@@ -30,8 +30,8 @@ public class OpenApiConfiguration {
                         .title("衡策 APS 开源版 API")
                         .version("v0.1.0")
                         .description("""
-                                MVP 契约骨架。统一返回体见 Result；分页、幂等、错误码与时间格式约定见 docs/api/conventions.md。
-                                标注“占位”的端点尚未实现，调用返回 501 + code=50100。
+                                M2 契约已冻结 C19–C29。统一返回体见 Result；分页、幂等、错误码、时间格式与认证分级见 docs/api/conventions.md。
+                                标注“占位”的端点尚未实现，调用返回 501 + code=50100；标注 implemented 的为当前已落地实现。
                                 """)
                         .license(new License().name("Apache-2.0")))
                 .components(new Components()
@@ -46,7 +46,23 @@ public class OpenApiConfiguration {
     }
 
     /**
+     * 工艺与订单流域。
+     *
+     * @return 分组文档
+     */
+    @Bean
+    public GroupedOpenApi processOpenApi() {
+        return GroupedOpenApi.builder()
+                .group("process")
+                .pathsToMatch("/api/v1/operation-templates/**", "/api/v1/routings/**")
+                .build();
+    }
+
+    /**
      * 物料与主数据域。
+     *
+     * <p>按 C16 规则，工艺路线（{@code /routings/**}）归属 {@code process} 分组，
+     * 此处不再纳入，避免同一路径出现在两个分组导致前端类型重复。</p>
      *
      * @return 分组文档
      */
@@ -55,7 +71,7 @@ public class OpenApiConfiguration {
         return GroupedOpenApi.builder()
                 .group("materials")
                 .pathsToMatch("/api/v1/materials/**", "/api/v1/boms/**", "/api/v1/resources/**",
-                        "/api/v1/calendars/**", "/api/v1/routings/**", "/api/v1/mrp/**")
+                        "/api/v1/calendars/**", "/api/v1/mrp/**", "/api/v1/inventory/**")
                 .build();
     }
 

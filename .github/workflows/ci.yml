@@ -71,6 +71,28 @@ jobs:
     name: 单元测试 + 覆盖率
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 真库集成测试（M1-QA-01）需要 PostgreSQL；用 service 容器提供，避免 Testcontainers
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: aps_local
+          POSTGRES_USER: aps
+          POSTGRES_PASSWORD: aps_dev_pwd
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aps -d aps_local"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APS_TEST_DB_ENABLED: 'true'
+      APS_TEST_DB_HOST: 127.0.0.1
+      APS_TEST_DB_PORT: '5432'
+      APS_TEST_DB_NAME: aps_local
+      APS_TEST_DB_USER: aps
+      APS_TEST_DB_PASSWORD: aps_dev_pwd
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -82,6 +104,13 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
           cache: maven
           cache-dependency-path: '**/pom.xml'
+
+      - name: 初始化测试库
+        # 复用 postgres:15 镜像内的 psql；host 网络访问 service 容器映射端口
+        run: |
+          docker run --rm -i --network host -e PGPASSWORD=aps_dev_pwd postgres:15 \
+            psql -h 127.0.0.1 -p 5432 -U aps -d aps_local -v ON_ERROR_STOP=1 \
+            -f - < db/migration/V1__init.sql
 
       - name: 执行单测并生成 JaCoCo 报告
         # pom.xml 尚未接入 jacoco（属骨架/P0-02 范围），此处以命令行插件方式

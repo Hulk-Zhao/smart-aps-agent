@@ -1,11 +1,12 @@
 # =============================================================================
 # 前端 Nginx 配置模板（由 nginx 官方镜像启动时 envsubst 渲染到 conf.d/default.conf）
-#   APS_BACKEND_URL 由部署环境注入，默认 http://aps-admin:8080
+#   APS_BACKEND_URL 由部署环境注入，默认 http://aps-backend:8080
 #   SPA 路由：createWebHistory 需要所有未命中静态资源的路径回退到 /index.html
+#   运行镜像为 nginx-unprivileged（uid 101），仅能监听非特权端口，故使用 8080
 # =============================================================================
 server {
-    listen 80;
-    listen [::]:80;
+    listen 8080;
+    listen [::]:8080;
     server_name _;
 
     root /usr/share/nginx/html;

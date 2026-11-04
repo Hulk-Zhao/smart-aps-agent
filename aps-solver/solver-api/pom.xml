@@ -20,5 +20,15 @@
             <groupId>com.hengce.aps</groupId>
             <artifactId>aps-common</artifactId>
         </dependency>
+        <!-- C20 §8.3：SolveProgress/SolveTaskDetail 使用 @JsonInclude 保证字段恒输出（null 亦输出） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

@@ -1,7 +1,7 @@
 package com.hengce.aps.web.controller.contract;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.hengce.aps.common.api.Result;
+import com.hengce.aps.service.schedule.TaskAdjustService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -13,45 +13,25 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 甘特图与计划调整域占位契约（gantt 分组）。
+ * 甘特图与计划调整域契约（gantt 分组，C22）。
  *
- * <p>字段契约见 {@code docs/api/openapi/gantt.yaml}。</p>
+ * <p>字段契约见 {@code docs/api/openapi/gantt.yaml}。本控制器是
+ * {@code /tasks/{id}/adjust} 及其撤销/重做/历史的唯一映射，禁止在其它控制器重复注册同路径。</p>
  */
 @RestController
 @RequestMapping("/api/v1")
-@Tag(name = "甘特图与计划", description = "甘特图、人工调整、计划发布/回滚（P0 占位契约）")
+@Tag(name = "甘特图与计划", description = "甘特图、人工调整、计划发布/回滚")
 public class GanttContractController {
 
-    /**
-     * 资源甘特图。
-     *
-     * @param sandboxId 场景 UUID
-     * @param from 起始时间
-     * @param to 结束时间
-     * @return 占位响应
-     */
-    @Operation(summary = "资源甘特图", description = "状态：占位。from/to 为 ISO-8601 UTC。")
-    @GetMapping("/gantt/resource")
-    public Result<Void> resourceGantt(@RequestParam String sandboxId,
-                                      @RequestParam String from,
-                                      @RequestParam String to) {
-        throw ContractSupport.notImplemented();
-    }
+    private final TaskAdjustService taskAdjustService;
 
     /**
-     * 订单甘特图。
+     * 构造控制器。
      *
-     * @param sandboxId 场景 UUID
-     * @param from 起始时间
-     * @param to 结束时间
-     * @return 占位响应
+     * @param taskAdjustService 人工调整服务
      */
-    @Operation(summary = "订单甘特图", description = "状态：占位。from/to 为 ISO-8601 UTC。")
-    @GetMapping("/gantt/order")
-    public Result<Void> orderGantt(@RequestParam String sandboxId,
-                                   @RequestParam String from,
-                                   @RequestParam String to) {
-        throw ContractSupport.notImplemented();
+    public GanttContractController(TaskAdjustService taskAdjustService) {
+        this.taskAdjustService = taskAdjustService;
     }
 
     /**
@@ -59,36 +39,56 @@ public class GanttContractController {
      *
      * @param id 排产任务 ID
      * @param body 调整内容
-     * @return 占位响应
+     * @return 调整结果；dryRun 时不落库
      */
-    @Operation(summary = "人工调整任务", description = "状态：占位。请求字段见 TaskAdjustRequest。")
+    @Operation(summary = "人工调整任务",
+            description = "状态：已实现（C22）。MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 返回 50100。"
+                    + "version 过期 40901，不可行 42201，已执行任务 40903。")
     @PostMapping("/tasks/{id}/adjust")
-    public Result<Void> adjustTask(@PathVariable String id,
-                                   @RequestBody(required = false) JsonNode body) {
-        throw ContractSupport.notImplemented();
+    public Result<TaskAdjustService.TaskAdjustResult> adjustTask(
+            @PathVariable Long id,
+            @RequestBody(required = false) TaskAdjustService.TaskAdjustCommand body) {
+        return Result.success(taskAdjustService.adjust(id, body));
     }
 
     /**
-     * 发布计划。
+     * 撤销最近一次人工调整。
      *
-     * @param id 计划/场景 UUID
-     * @return 占位响应
+     * @param adjustmentId 调整记录 ID
+     * @return 撤销后的任务视图
      */
-    @Operation(summary = "发布计划", description = "状态：占位。")
-    @PostMapping("/plans/{id}/publish")
-    public Result<Void> publishPlan(@PathVariable String id) {
-        throw ContractSupport.notImplemented();
+    @Operation(summary = "撤销人工调整", description = "状态：已实现（C22）。只允许撤销任务栈上最近一次调整。")
+    @PostMapping("/tasks/adjustments/{adjustmentId}/undo")
+    public Result<TaskAdjustService.TaskAdjustResult> undoAdjustment(@PathVariable Long adjustmentId) {
+        return Result.success(taskAdjustService.undo(adjustmentId));
     }
 
     /**
-     * 回滚计划。
+     * 重做已撤销的人工调整。
      *
-     * @param id 计划/场景 UUID
-     * @return 占位响应
+     * @param adjustmentId 调整记录 ID
+     * @return 重做后的任务视图
      */
-    @Operation(summary = "回滚计划", description = "状态：占位。")
-    @PostMapping("/plans/{id}/rollback")
-    public Result<Void> rollbackPlan(@PathVariable String id) {
-        throw ContractSupport.notImplemented();
+    @Operation(summary = "重做人工调整", description = "状态：已实现（C22）。若该调整之后已有新调整则 40901。")
+    @PostMapping("/tasks/adjustments/{adjustmentId}/redo")
+    public Result<TaskAdjustService.TaskAdjustResult> redoAdjustment(@PathVariable Long adjustmentId) {
+        return Result.success(taskAdjustService.redo(adjustmentId));
+    }
+
+    /**
+     * 查询任务人工调整历史。
+     *
+     * @param id 排产任务 ID
+     * @param page 页码，1 起始
+     * @param size 页大小
+     * @return 调整历史分页
+     */
+    @Operation(summary = "任务调整历史", description = "状态：已实现（C22）。")
+    @GetMapping("/tasks/{id}/adjustments")
+    public Result<TaskAdjustService.AdjustmentPage> adjustmentHistory(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return Result.success(taskAdjustService.history(id, page, size));
     }
 }

@@ -1,0 +1,127 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+
+import { StatusTag } from '@/components/common'
+import type { Material } from '@/types/materials'
+
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean
+    material?: Material | null
+  }>(),
+  {
+    material: null
+  }
+)
+
+const emit = defineEmits<{
+  'update:modelValue': [value: boolean]
+  deactivate: [material: Material]
+  edit: [material: Material]
+}>()
+
+const extAttrsText = computed(() =>
+  props.material?.extAttrs && Object.keys(props.material.extAttrs).length > 0
+    ? JSON.stringify(props.material.extAttrs, null, 2)
+    : '—'
+)
+
+const industryAttrsText = computed(() =>
+  props.material?.industryAttrs && Object.keys(props.material.industryAttrs).length > 0
+    ? JSON.stringify(props.material.industryAttrs, null, 2)
+    : '—'
+)
+
+function close() {
+  emit('update:modelValue', false)
+}
+</script>
+
+<template>
+  <el-drawer
+    :model-value="modelValue"
+    title="物料详情"
+    size="520px"
+    @update:model-value="emit('update:modelValue', $event)"
+  >
+    <template v-if="material">
+      <el-descriptions :column="1" border>
+        <el-descriptions-item label="物料编码">{{ material.code }}</el-descriptions-item>
+        <el-descriptions-item label="物料名称">{{ material.name }}</el-descriptions-item>
+        <el-descriptions-item label="类型">
+          <StatusTag enum-key="materialType" :value="material.type" />
+        </el-descriptions-item>
+        <el-descriptions-item label="规格">{{ material.spec || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="计量单位">{{ material.unit }}</el-descriptions-item>
+        <el-descriptions-item label="分类">{{ material.categoryId || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="安全库存">
+          {{ material.safetyStock ?? '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="最小起订量">{{ material.moq ?? '—' }}</el-descriptions-item>
+        <el-descriptions-item label="采购提前期">
+          {{ material.leadTimeDays ?? '—' }} 天
+        </el-descriptions-item>
+        <el-descriptions-item label="默认供应商">
+          {{ material.defaultSupplierId || '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="版本号">{{ material.version }}</el-descriptions-item>
+        <el-descriptions-item label="创建时间">
+          {{ material.createdAt || '—' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="更新时间">
+          {{ material.updatedAt || '—' }}
+        </el-descriptions-item>
+      </el-descriptions>
+
+      <div class="section-title">扩展属性 ext_attrs</div>
+      <pre class="json-block">{{ extAttrsText }}</pre>
+
+      <div class="section-title">行业属性 industry_attrs</div>
+      <pre class="json-block">{{ industryAttrsText }}</pre>
+
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="停用为软删除语义：物料从列表隐藏，历史 BOM/订单引用保留；被引用时后端将返回 42200。"
+      />
+
+      <div class="drawer-actions">
+        <el-button @click="emit('edit', material)">编辑</el-button>
+        <el-button type="danger" plain @click="emit('deactivate', material)">停用物料</el-button>
+        <el-button type="primary" @click="close">关闭</el-button>
+      </div>
+    </template>
+    <el-empty v-else description="未选择物料" />
+  </el-drawer>
+</template>
+
+<style scoped>
+.section-title {
+  margin: 20px 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.json-block {
+  margin: 0 0 16px;
+  padding: 12px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 4px;
+  background: #f5f7fa;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.drawer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+</style>

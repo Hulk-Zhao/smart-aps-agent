@@ -9,7 +9,7 @@
 | `.github/workflows/ci.yml` | GitHub Actions 主流水线（打包 / 单测 / 静态检查 / 前端 / 镜像） |
 | `.gitlab-ci.yml` | GitLab CI 等价流水线（build / lint / test / package / image） |
 | `aps-admin/Dockerfile` | 后端 multi-stage 镜像（Maven/Temurin 21 JDK 构建 → Temurin 21 JRE 运行，非 root） |
-| `aps-frontend/Dockerfile` | 前端 multi-stage 镜像（Node 22 构建 → nginx:alpine 托管 dist） |
+| `aps-frontend/Dockerfile` | 前端 multi-stage 镜像（Node 22 构建 → nginx-unprivileged 托管 dist，非 root / 8080） |
 | `aps-frontend/nginx/default.conf.template` | SPA 路由回退、静态资源缓存、`/api` 反向代理 |
 | `scripts/ci-build.ps1` / `scripts/ci-build.sh` | 本地复现 CI 的构建脚本（与流水线命令一致） |
 | `.dockerignore` / `aps-frontend/.dockerignore` | 缩小镜像构建上下文 |
@@ -99,6 +99,7 @@ workflow:
 ### 6.1 后端 `aps-admin/Dockerfile`
 
 - 构建阶段：`eclipse-temurin:21-jdk`，Maven 3.9 从官方 `maven:3.9-eclipse-temurin-21` 镜像以 `COPY --from` 方式复制（不引入额外下载步骤）；先复制全部 POM 预热依赖缓存，再复制源码 `package`。
+- Flyway 迁移：`aps-admin/pom.xml` 将仓库根目录 `db/migration` 作为 resources 打进 `classpath:db/migration`；Dockerfile 在 `mvn package` 前 `COPY db/migration db/migration`（只复制该目录）。因此镜像自带 `V1__init.sql` 等脚本，空库启动即可建表，**部署侧无需再挂载迁移目录或覆盖 `SPRING_FLYWAY_LOCATIONS`**。
 - 运行阶段：`eclipse-temurin:21-jre-jammy`（glibc 基础镜像，兼容 OR-Tools 的 JNI 原生库；不使用 Alpine/musl）。
 - 安全：`aps` 系统用户（uid/gid 1001）非 root 运行，仅暴露 8080。
 - JVM：`JAVA_OPTS` 默认 `-XX:MaxRAMPercentage=75 -XX:+UseG1GC`，时区 `Asia/Shanghai`。
@@ -108,11 +109,12 @@ workflow:
 ### 6.2 前端 `aps-frontend/Dockerfile`
 
 - 构建阶段 `node:22-alpine`：`npm ci` → `npm run build`（含 `vue-tsc --noEmit` 类型检查）。
-- 运行阶段 `nginx:alpine`：`dist` 拷贝到 `/usr/share/nginx/html`，配置模板由镜像入口 `envsubst` 渲染。
+- 运行阶段 `nginxinc/nginx-unprivileged:1.31-alpine`：以 **uid 101** 非 root 运行，`dist` 拷贝到 `/usr/share/nginx/html`，配置模板由镜像入口 `envsubst` 渲染。
+- 监听端口：容器内为 **8080**（非特权镜像不能绑定 <1024 端口），`EXPOSE 8080`；宿主机端口映射必须指向容器 8080（如 `${APS_FRONTEND_PORT:-80}:8080`），健康检查也改为 `http://127.0.0.1:8080/healthz`。
 - SPA 路由：`try_files $uri $uri/ /index.html` 兜底 `createWebHistory` 的深链路由。
-- 接口代理：`/api/` → `${APS_BACKEND_URL}`，默认 `http://aps-admin:8080`；使用变量 + `resolver 127.0.0.11`，后端容器未启动时 nginx 仍可正常启动。
+- 接口代理：`/api/` → `${APS_BACKEND_URL}`，默认 `http://aps-backend:8080`（与 compose 服务名一致）；使用变量 + `resolver 127.0.0.11`，后端容器未启动时 nginx 仍可正常启动。
   - `127.0.0.11` 为 Docker 内置 DNS；迁移到 Kubernetes 等非 Docker 环境时，需改为对应 DNS/服务发现方式（或由 Ingress 直接承接 `/api`）。
-- 健康检查：`GET /healthz` 返回 `200 ok`。
+- 健康检查：`GET /healthz`（容器 8080）返回 `200 ok`。
 - `index.html` 不缓存，`/assets/` 长缓存（一年 + immutable），确保发版立即生效。
 - 注意：前端 API 基址默认 `/api/v1`（相对路径），由 Nginx 同源代理，因此镜像**无需在构建期注入后端地址**；跨域部署时通过 `APS_BACKEND_URL` 调整。
 
@@ -175,9 +177,10 @@ workflow:
 
 - P0-03（分支与 PR 门禁）：若分支模型改为 `feature/*` 等，需同步调整两份配置的 `branches` / `workflow.rules`。`CONTRIBUTING.md` 与 `docs/coding-standard.md` 已由并行任务落盘，本任务未修改。
 - 部署编排（P0-06）：`deploy/docker-compose*.yml` 当前只有 PG/Redis/MinIO。接入应用服务时建议：
-  - 服务名 `aps-admin`（镜像 `mfg-aps-admin`），暴露 8080（或仅内网）；
-  - 服务名 `aps-frontend`（镜像 `mfg-aps-frontend`），暴露 80，`APS_BACKEND_URL=http://aps-admin:8080`；
+  - 服务名 `aps-backend`（镜像 `mfg-aps-admin`），容器端口 8080，可仅内网或发布到宿主机；
+  - 服务名 `aps-frontend`（镜像 `mfg-aps-frontend`），容器端口 **8080**，宿主映射形如 `${APS_FRONTEND_PORT:-80}:8080`，`APS_BACKEND_URL=http://aps-backend:8080`；
   - 两者加入 `aps-net`；健康检查已内置，compose 可直接 `depends_on: condition: service_healthy`。
+- M1-QA-02 一键栈（`deploy/docker-compose.yml`）随本次镜像修复需同步：可删除 `SPRING_FLYWAY_LOCATIONS: "filesystem:/app/db/migration"` 与其只读挂载（迁移脚本已进 jar）；前端 `ports` 与 `healthcheck` 的容器端口由 80 改为 8080。compose 与 `docs/deploy/docker-compose.md` 由 QA-02 维护，本任务未修改。
 
 ## 9. 本地复现
 
@@ -213,7 +216,7 @@ docker build -f aps-frontend/Dockerfile -t aps-frontend:local aps-frontend
 
 # 本地联调（前端 nginx 代理到宿主机后端）
 docker run --rm -p 8080:8080 aps-admin:local
-docker run --rm -p 8081:80 -e APS_BACKEND_URL=http://host.docker.internal:8080 aps-frontend:local
+docker run --rm -p 8081:8080 -e APS_BACKEND_URL=http://host.docker.internal:8080 aps-frontend:local
 ```
 
 代理：本机拉依赖/镜像统一走 clash（`127.0.0.1:7890`）；脚本通过 `-UseProxy` / `--proxy` 设置 `HTTP_PROXY`、`npm_config_proxy` 与 `MAVEN_OPTS`，Docker 需在 Docker Desktop 中单独配置代理。
@@ -224,10 +227,12 @@ docker run --rm -p 8081:80 -e APS_BACKEND_URL=http://host.docker.internal:8080 a
 - PowerShell 脚本：`scripts/ci-build.ps1` 已通过 PowerShell AST 解析（0 错误）。脚本以 **UTF-8 with BOM** 保存，以兼容 Windows PowerShell 5.1 对中文的解析。
 - Bash 脚本：`scripts/ci-build.sh` 已通过 Git Bash `bash -n` 语法检查。
 - 前端可复现性：已核对 `aps-frontend/package.json` 与 `package-lock.json` 的依赖声明一致（`npm ci` 可用）。
+- Dockerfile 静态检查：Hadolint v2.15.1 检查 `aps-admin/Dockerfile` 与 `aps-frontend/Dockerfile` 均通过（exit 0）；`DL3008`（apt 版本锁定）按注释显式豁免，理由是基础镜像 curl 版本随上游滚动。
+- 结构校验脚本：确认迁移脚本 `COPY` 早于 `mvn package`、前端模板/`EXPOSE`/`HEALTHCHECK` 端口均为 8080、`APS_BACKEND_URL` 默认值与 compose 服务名 `aps-backend` 一致、后端 `USER 1001:1001` 非 root。
 - 未验证（本机环境限制）：
   - 本机无 `java` / `mvn` / `node`，未实际执行 Maven、npm 构建与 lint；
   - Docker CLI 存在（v29.8.2）但 daemon 未启动（`dockerDesktopLinuxEngine` 不可达），`docker build` 已实际尝试并因守护进程缺失失败，未执行 `docker run`，镜像可构建性仅由配置与 CI 保证；
   - 未执行 GitHub Actions / GitLab CI 实跑（本地无 Git 仓库与 Runner）。
 - Node 矩阵按需求固定为 20 / 22；如需跟随最新 LTS（Node 24+），在 `ci.yml` 的 matrix 与 `NODE_VERSION` 中调整即可。
 - 无 `mvnw`：流水线使用 Runner/镜像内 Maven 3.9（GitHub Runner 预装，GitLab 用 `maven:3.9-eclipse-temurin-21`）。若后续提交 Maven Wrapper，可把命令替换为 `./mvnw`。
-- 前端镜像使用 `nginx:alpine`（root master 进程）；若需完全非 root，可改用 `nginxinc/nginx-unprivileged`，需同步调整监听端口与 `EXPOSE`。
+- 前端镜像使用 `nginxinc/nginx-unprivileged:1.31-alpine`（uid 101 非 root），容器端口因此为 **8080**；改用其他 nginx 变体或回退到 `nginx:alpine` 时需同步 `listen`、`EXPOSE`、健康检查与宿主映射（M1-QA-02 的 `deploy/docker-compose.yml` 需相应调整）。

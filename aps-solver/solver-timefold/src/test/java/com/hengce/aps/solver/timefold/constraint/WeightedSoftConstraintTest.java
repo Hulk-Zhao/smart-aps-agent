@@ -5,6 +5,7 @@ import com.hengce.aps.solver.api.ScheduleSolution;
 import com.hengce.aps.solver.api.SchedulingOperation;
 import com.hengce.aps.solver.api.SchedulingOrder;
 import com.hengce.aps.solver.api.SchedulingResource;
+import com.hengce.aps.solver.api.SetupMatrixEntry;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.TaskAssignment;
 import com.hengce.aps.solver.timefold.TimefoldSolverAdapter;
@@ -36,7 +37,7 @@ class WeightedSoftConstraintTest {
 
     @Test
     void disabledSoftConstraintsKeepSoftScoreZero() {
-        ScheduleSolution solution = new TimefoldSolverAdapter().solve(frozenSingleTaskProblem(), config());
+        ScheduleSolution solution = new TimefoldSolverAdapter().solve(frozenSetupPairProblem(), config());
 
         assertEquals(0L, solution.score().softScore().longValueExact());
         assertEquals(0L, solution.score().hardScore().longValueExact());
@@ -44,11 +45,8 @@ class WeightedSoftConstraintTest {
 
     @Test
     void weightsChangeSoftScoreDeterministically() {
-        SoftConstraintWeights.activate(weights(ConstraintCodes.MIN_SETUP_TIME));
-        long setupScore = solveSoftScore();
-
-        SoftConstraintWeights.activate(weights(ConstraintCodes.MIN_MAKESPAN));
-        long makespanScore = solveSoftScore();
+        long setupScore = solveSoftScore(weights(ConstraintCodes.MIN_SETUP_TIME));
+        long makespanScore = solveSoftScore(weights(ConstraintCodes.MIN_MAKESPAN));
 
         assertTrue(setupScore < 0, "换型权重应产生负软得分");
         assertTrue(makespanScore < 0, "总完工时间权重应产生负软得分");
@@ -65,9 +63,19 @@ class WeightedSoftConstraintTest {
         assertEquals("软约束权重之和必须为 100，实际为 115", exception.getMessage());
     }
 
-    private long solveSoftScore() {
-        ScheduleSolution solution = new TimefoldSolverAdapter().solve(frozenSingleTaskProblem(), config());
+    private long solveSoftScore(Map<String, Integer> weights) {
+        ScheduleSolution solution = new TimefoldSolverAdapter().solve(
+                frozenSetupPairProblem(), configWithWeights(weights));
         return solution.score().softScore().longValueExact();
+    }
+
+    /**
+     * 权重必须随请求进入 {@code SolveConfig.parameters}：适配器在未携带 {@code softWeights} 时
+     * 会显式 disable 进程级注册表，直接 {@code activate()} 再求解的旧写法会被清空。
+     */
+    private static SolveConfig configWithWeights(Map<String, Integer> weights) {
+        return new SolveConfig("timefold", 1, 1, "LATE_ACCEPTANCE", 1L, 0L, 0,
+                "FORWARD", true, Map.<String, Object>of("softWeights", weights));
     }
 
     private static Map<String, Integer> weights(String enabledCode) {
@@ -78,12 +86,50 @@ class WeightedSoftConstraintTest {
         return weights;
     }
 
-    private static ScheduleProblem frozenSingleTaskProblem() {
+    /**
+     * 同一主资源上的一对任务：OP-05（前序，06:00–08:00）与 OP-10（08:00 起）。
+     *
+     * <p>两个任务的静态换型都设为 0，换型只可能来自矩阵；矩阵对该资源上的相邻对双向都配
+     * 1800 秒，因此无论求解器把哪一个排在前面，后一个任务都会真实产生 1800 秒换型
+     * （30 分钟），换型权重激活后软得分必为负且与总完工时间得分不同。</p>
+     */
+    private static ScheduleProblem frozenSetupPairProblem() {
         UUID primaryResourceId = UUID.randomUUID();
-        UUID secondaryResourceId = UUID.randomUUID();
         SchedulingResource primary = resource(primaryResourceId, "R-CNC");
-        SchedulingResource secondary = resource(secondaryResourceId, "R-ASSEMBLY");
+        LocalDateTime upstreamStart = LocalDateTime.of(2026, 1, 5, 6, 0);
         LocalDateTime pinnedStart = LocalDateTime.of(2026, 1, 5, 8, 0);
+
+        TaskAssignment upstream = new TaskAssignment(
+                null,
+                UUID.randomUUID(),
+                "SO-UPSTREAM",
+                5,
+                "工序 5",
+                null,
+                primaryResourceId,
+                "R-CNC",
+                List.of(),
+                upstreamStart.atOffset(ZoneOffset.UTC),
+                upstreamStart.atOffset(ZoneOffset.UTC),
+                upstreamStart.atOffset(ZoneOffset.UTC),
+                upstreamStart.atOffset(ZoneOffset.UTC).plusSeconds(7200),
+                BigDecimal.valueOf(12),
+                0,
+                "FROZEN",
+                true,
+                1);
+        SchedulingOrder upstreamOrder = new SchedulingOrder(
+                upstream.orderId(),
+                upstream.orderNo(),
+                "MAT-SO-UPSTREAM",
+                BigDecimal.valueOf(12),
+                LocalDate.of(2026, 1, 10),
+                "NORMAL",
+                "FROZEN",
+                UUID.randomUUID(),
+                List.of(new SchedulingOperation(5, "OP-05", "工序 5", null,
+                        BigDecimal.valueOf(600), BigDecimal.ZERO, primaryResourceId,
+                        null, List.of(), true)));
         TaskAssignment frozen = new TaskAssignment(
                 null,
                 UUID.randomUUID(),
@@ -97,7 +143,7 @@ class WeightedSoftConstraintTest {
                 pinnedStart.atOffset(ZoneOffset.UTC),
                 pinnedStart.atOffset(ZoneOffset.UTC),
                 pinnedStart.atOffset(ZoneOffset.UTC),
-                pinnedStart.atOffset(ZoneOffset.UTC).plusSeconds(7800),
+                pinnedStart.atOffset(ZoneOffset.UTC).plusSeconds(7200),
                 BigDecimal.valueOf(12),
                 0,
                 "FROZEN",
@@ -113,18 +159,22 @@ class WeightedSoftConstraintTest {
                 "FROZEN",
                 UUID.randomUUID(),
                 List.of(new SchedulingOperation(10, "OP-10", "工序 10", null,
-                        BigDecimal.valueOf(600), BigDecimal.valueOf(600), primaryResourceId,
+                        BigDecimal.valueOf(600), BigDecimal.ZERO, primaryResourceId,
                         null, List.of(), true)));
+        List<SetupMatrixEntry> setupMatrix = List.of(
+                new SetupMatrixEntry(primaryResourceId, "OPERATION_CODE", "OP-05", "OP-10", 1800),
+                new SetupMatrixEntry(primaryResourceId, "OPERATION_CODE", "OP-10", "OP-05", 1800));
         return new ScheduleProblem(
                 "tenant-demo",
                 ScheduleProblem.DEFAULT_SANDBOX_ID,
                 null,
                 null,
                 "FORWARD",
-                List.of(order),
-                List.of(primary, secondary),
-                List.of(frozen),
-                List.of());
+                List.of(upstreamOrder, order),
+                List.of(primary),
+                List.of(upstream, frozen),
+                List.of(),
+                setupMatrix);
     }
 
     private static SolveConfig config() {

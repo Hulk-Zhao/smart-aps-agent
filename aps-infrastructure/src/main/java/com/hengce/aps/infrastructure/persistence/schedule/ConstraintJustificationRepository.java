@@ -2,6 +2,7 @@ package com.hengce.aps.infrastructure.persistence.schedule;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,7 +39,10 @@ public class ConstraintJustificationRepository {
     }
 
     /**
-     * 按求解任务读取归因，按创建时间排序。
+     * 按求解任务读取归因，排序遵循契约 C19 §24.1.1：
+     * {@code deduction DESC, constraintCode ASC}（即 {@code deduction DESC, constraint_id ASC}）。
+     *
+     * <p>排序只在 SQL 中实现，服务层与接口层不得再次排序，避免两处规则漂移。</p>
      *
      * @param tenantId 租户标识
      * @param solveTaskId 求解任务主键
@@ -47,10 +51,11 @@ public class ConstraintJustificationRepository {
     public List<JustificationRow> findBySolveTaskId(UUID tenantId, long solveTaskId) {
         String sql = """
                 SELECT id, solve_task_id, constraint_id, constraint_name, score_impact,
-                       implicated_facts::text AS facts_json, explanation_zh, created_at
+                       implicated_facts::text AS facts_json, explanation_zh,
+                       weight, deduction, created_at
                   FROM constraint_justification
                  WHERE tenant_id = ? AND solve_task_id = ? AND deleted = false
-                 ORDER BY created_at, id
+                 ORDER BY deduction DESC, constraint_id ASC
                 """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new JustificationRow(
                 rs.getObject("id", UUID.class),
@@ -60,6 +65,8 @@ public class ConstraintJustificationRepository {
                 rs.getString("score_impact"),
                 parseTaskIds(rs.getString("facts_json")),
                 rs.getString("explanation_zh"),
+                rs.getObject("weight", Integer.class),
+                rs.getBigDecimal("deduction"),
                 rs.getObject("created_at", OffsetDateTime.class)), tenantId, solveTaskId);
     }
 
@@ -150,6 +157,8 @@ public class ConstraintJustificationRepository {
      * @param scoreImpact 评分影响类型：HARD/SOFT，可空
      * @param taskIds 受影响任务主键
      * @param description 面向人的说明，可空
+     * @param weight 软约束权重，可空
+     * @param deduction 软约束扣分，硬约束为 0
      * @param createdAt 创建时间
      */
     public record JustificationRow(
@@ -160,6 +169,8 @@ public class ConstraintJustificationRepository {
             String scoreImpact,
             List<Long> taskIds,
             String description,
+            Integer weight,
+            BigDecimal deduction,
             OffsetDateTime createdAt
     ) {
     }

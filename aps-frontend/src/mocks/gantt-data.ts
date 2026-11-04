@@ -8,8 +8,10 @@ import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
 import type { Calendar } from '@/types/calendars'
 import type {
   GanttCalendarBinding,
+  GanttOrderRow,
   GanttResourceRow,
   GanttTask,
+  OrderGanttData,
   ResourceCalendarResolution,
   ResourceGanttData,
   TaskStatus
@@ -27,7 +29,13 @@ export interface GanttDatasetProfile {
 }
 
 export const GANTT_DATASET_PROFILES: readonly GanttDatasetProfile[] = [
-  { key: '48x8', label: '48 任务 × 8 资源（FE-01 验收档）', taskCount: 48, resourceCount: 8, seed: 20261107 },
+  {
+    key: '48x8',
+    label: '48 任务 × 8 资源（FE-01 验收档）',
+    taskCount: 48,
+    resourceCount: 8,
+    seed: 20261107
+  },
   { key: '500x50', label: '500 任务 × 50 资源', taskCount: 500, resourceCount: 50, seed: 20261105 },
   { key: '100x10', label: '100 任务 × 10 资源', taskCount: 100, resourceCount: 10, seed: 20261106 }
 ]
@@ -52,7 +60,7 @@ const RESOURCE_SLOTS: readonly ResourceKind[] = [
   { type: 'PRIMARY', prefix: 'SMT', name: 'SMT 贴片机' },
   { type: 'PRIMARY', prefix: 'ASSY', name: '总装线' },
   { type: 'PRIMARY', prefix: 'ASSY', name: '总装线' },
-  { type: 'PRIMARY', prefix: 'AGE', name: '老化测试柜' },
+  { type: 'PRIMARY', prefix: 'AGE', name: '老化烘烤柜' },
   { type: 'SECONDARY', prefix: 'FIX', name: '工装夹具' },
   { type: 'HUMAN', prefix: 'OP', name: '操作工位' },
   { type: 'TOOL', prefix: 'MOLD', name: '模具' }
@@ -106,11 +114,11 @@ function buildResources(count: number): Array<{
     const kind = RESOURCE_SLOTS[index % RESOURCE_SLOTS.length]
     const sequence = (counters.get(kind.prefix) ?? 0) + 1
     counters.set(kind.prefix, sequence)
-    const code = `RES-${kind.prefix}-${String(sequence).padStart(2, '0')}`
+    const code = `RES-${kind.prefix}-${String(100 + sequence).padStart(3, '0')}`
     return {
       row: {
         resourceCode: code,
-        resourceName: `${kind.name} ${String(sequence).padStart(2, '0')}`,
+        resourceName: `${kind.name} ${100 + sequence} 号`,
         resourceType: kind.type
       },
       kind,
@@ -162,7 +170,7 @@ function generateDenseResourceGanttData(
       const start = setupStart + setupMinutes * MINUTE
       const end = start + runMinutes * MINUTE
       const orderIndex = Math.floor(taskIndex / 3) + 1
-      const orderNo = `SO-2026-${String(orderIndex).padStart(4, '0')}`
+      const orderNo = `SO-20261105-${String(orderIndex).padStart(4, '0')}`
       const operationIndex = (taskIndex % 3) + 1
       bucket.push({
         id: 500001 + taskIndex,
@@ -171,7 +179,7 @@ function generateDenseResourceGanttData(
         operationName: OPERATION_NAMES[(operationIndex - 1) % OPERATION_NAMES.length],
         resourceCode: resource.row.resourceCode,
         secondaryResourceCodes:
-          random() < 0.2 && resource.kind.type === 'PRIMARY' ? ['RES-FIX-01'] : [],
+          random() < 0.2 && resource.kind.type === 'PRIMARY' ? ['RES-FIX-101'] : [],
         setupStartTime: iso(setupStart),
         setupEndTime: iso(start),
         startTime: iso(start),
@@ -199,6 +207,68 @@ function generateDenseResourceGanttData(
   }
 }
 
+/**
+ * 订单视图 Mock（M2-FE-02）：直接复用资源档的任务集合，按 orderNo 分组，
+ * 不另造一份任务时间，保证订单甘特与资源甘特的口径同源。
+ * dueDateLine 固定为 dueDate 当日 UTC 23:59:59（与 C29 一致）；每 3 个订单制造 1 个延期样本。
+ */
+export function generateOrderGanttData(
+  datasetKey: GanttDatasetKey = '48x8',
+  sandboxId: string = DEFAULT_SANDBOX_ID
+): OrderGanttData {
+  const resourceData = generateResourceGanttData(datasetKey, sandboxId)
+  const grouped = new Map<string, GanttTask[]>()
+  resourceData.resources.forEach((resource) => {
+    resource.tasks.forEach((task) => {
+      const bucket = grouped.get(task.orderNo) ?? []
+      bucket.push(task)
+      grouped.set(task.orderNo, bucket)
+    })
+  })
+
+  const priorities = ['HIGH', 'NORMAL', 'URGENT', 'LOW'] as const
+  const orders: GanttOrderRow[] = [...grouped.entries()]
+    .map(([orderNo, tasks], index): GanttOrderRow => {
+      tasks.sort((left, right) => left.operationIndex - right.operationIndex)
+      const lastEnd = Math.max(...tasks.map((task) => Date.parse(task.endTime ?? '')))
+      const makeLate = index % 3 === 1 && index >= 4
+      const dueMs = lastEnd + (makeLate ? -1 : 1) * 24 * 60 * MINUTE
+      const dueDate = new Date(dueMs).toISOString().slice(0, 10)
+      const dueDateLine = `${dueDate}T23:59:59Z`
+      const late = lastEnd > Date.parse(dueDateLine)
+      const lateMinutes = late ? Math.ceil((lastEnd - Date.parse(dueDateLine)) / MINUTE) : null
+      const frozenOrder = index === 3
+      const rowTasks = tasks.map((task): GanttTask => {
+        const isLate =
+          Boolean(task.endTime) && Date.parse(task.endTime ?? '') > Date.parse(dueDateLine)
+        return {
+          ...task,
+          lockType: task.status === 'FROZEN' ? 'FROZEN' : 'NONE',
+          late: isLate
+        }
+      })
+      return {
+        orderNo,
+        materialCode: ['MAT-FG-001', 'MAT-SF-001', 'MAT-FG-002'][index % 3],
+        dueDate,
+        dueDateLine,
+        priority: priorities[index % priorities.length],
+        freezeStatus: frozenOrder ? 'FROZEN' : 'UNFROZEN',
+        late,
+        lateMinutes,
+        lateTaskCount: rowTasks.filter((task) => task.late).length,
+        tasks: rowTasks
+      }
+    })
+    .sort((left, right) => left.orderNo.localeCompare(right.orderNo))
+
+  return {
+    sandboxId,
+    from: resourceData.from,
+    to: resourceData.to,
+    orders
+  }
+}
 /**
  * Mock 工作日历（结构对齐 C14：班次 + 例外日 + 生效期），仅用于演示停机层与热力分母。
  * 这些对象不属于 C4 响应；真实接口通过 GET /resources 的 calendarId + GET /calendars/{id} 获取。
@@ -230,8 +300,8 @@ const EVERY_DAY = [1, 2, 3, 4, 5, 6, 7]
 
 /** 常白班：08:00-12:00 / 13:00-17:00，周一至周五；含 1 个法定停产日 + 1 个调休上班日；生效期到 11-10。 */
 const MOCK_CAL_DAY = mockCalendar(
-  'CAL-FE-DAY',
-  'FE 常白班日历',
+  'CAL-RES-DAY-01',
+  '常白班日历',
   '2026-11-01',
   '2026-11-10',
   [
@@ -246,8 +316,8 @@ const MOCK_CAL_DAY = mockCalendar(
 
 /** 两班制：08:00-20:00，周一至周六；11-10 公司停产检修。 */
 const MOCK_CAL_TWO = mockCalendar(
-  'CAL-FE-TWO',
-  'FE 两班制日历',
+  'CAL-RES-TWO-01',
+  '两班制日历',
   '2026-11-01',
   null,
   [{ startTime: '08:00', endTime: '20:00', daysOfWeek: WEEKDAY_SATURDAY }],
@@ -255,13 +325,9 @@ const MOCK_CAL_TWO = mockCalendar(
 )
 
 /** 连续生产：00:00-24:00，每天。 */
-const MOCK_CAL_CONTINUOUS = mockCalendar(
-  'CAL-FE-24',
-  'FE 连续生产日历',
-  '2026-10-01',
-  null,
-  [{ startTime: '00:00', endTime: '24:00', daysOfWeek: EVERY_DAY }]
-)
+const MOCK_CAL_CONTINUOUS = mockCalendar('CAL-FAC-7X24', '全厂 7×24 日历', '2026-01-01', null, [
+  { startTime: '00:00', endTime: '24:00', daysOfWeek: EVERY_DAY }
+])
 
 const MOCK_CALENDARS: Record<string, Calendar> = {
   [MOCK_CAL_DAY.id]: MOCK_CAL_DAY,
@@ -271,18 +337,18 @@ const MOCK_CALENDARS: Record<string, Calendar> = {
 
 /** 48×8 验收档的日历绑定；null 表示资源存在但未绑日历，MISSING 表示资源列表查不到。 */
 const FE01_CALENDAR_IDS: Record<string, string | null> = {
-  'RES-SMT-01': 'CAL-FE-DAY',
-  'RES-SMT-02': 'CAL-FE-DAY',
-  'RES-ASSY-01': 'CAL-FE-TWO',
-  'RES-ASSY-02': 'CAL-FE-TWO',
-  'RES-AGE-01': 'CAL-FE-24',
-  'RES-AGE-02': 'CAL-FE-TWO',
-  'RES-FIX-02': null
+  'RES-SMT-01': 'CAL-FAC-7X24',
+  'RES-SMT-02': 'CAL-FAC-7X24',
+  'RES-ASSY-01': 'CAL-FAC-7X24',
+  'RES-ASSY-101': 'CAL-RES-TWO-01',
+  'RES-AGE-01': 'CAL-FAC-7X24',
+  'RES-AGE-101': 'CAL-RES-TWO-01',
+  'RES-FIX-102': null
 }
 
-const FE01_MISSING_RESOURCES = new Set(['RES-FIX-01'])
+const FE01_MISSING_RESOURCES = new Set(['RES-FIX-101'])
 
-const FALLBACK_CALENDAR_ROTATION = ['CAL-FE-DAY', 'CAL-FE-TWO', 'CAL-FE-24']
+const FALLBACK_CALENDAR_ROTATION = ['CAL-RES-DAY-01', 'CAL-RES-TWO-01', 'CAL-FAC-7X24']
 
 /**
  * Mock 日历绑定解析：演示 BOUND / UNBOUND / MISSING 三种状态。
@@ -344,19 +410,18 @@ interface Fe01Resource {
   name: string
   type: ResourceType
 }
-
 const FE01_RESOURCES: readonly Fe01Resource[] = [
   { code: 'RES-SMT-01', name: 'SMT 贴片机 1 号', type: 'PRIMARY' },
   { code: 'RES-SMT-02', name: 'SMT 贴片机 2 号', type: 'PRIMARY' },
-  { code: 'RES-ASSY-01', name: '总装线 A', type: 'PRIMARY' },
-  { code: 'RES-ASSY-02', name: '总装线 B', type: 'PRIMARY' },
-  { code: 'RES-AGE-01', name: '老化测试柜 1 号', type: 'PRIMARY' },
-  { code: 'RES-AGE-02', name: '老化测试柜 2 号', type: 'PRIMARY' },
-  { code: 'RES-FIX-01', name: '夹具工位 1', type: 'SECONDARY' },
-  { code: 'RES-FIX-02', name: '夹具工位 2', type: 'SECONDARY' }
+  { code: 'RES-ASSY-01', name: '电池包总装线 1 号', type: 'PRIMARY' },
+  { code: 'RES-ASSY-101', name: '总装线 101 号', type: 'PRIMARY' },
+  { code: 'RES-AGE-01', name: '储能老化柜 1 号', type: 'PRIMARY' },
+  { code: 'RES-AGE-101', name: '老化测试柜 101 号', type: 'PRIMARY' },
+  { code: 'RES-FIX-101', name: '夹具工位 101 号', type: 'SECONDARY' },
+  { code: 'RES-FIX-102', name: '夹具工位 102 号', type: 'SECONDARY' }
 ]
 
-const FE01_OPERATIONS = ['SMT 贴片', '电池包总装', '老化测试', '夹具校验'] as const
+const FE01_OPERATIONS = ['SMT 贴片', '电池包总装', '老化烘烤', '夹具校验'] as const
 const FE01_OPERATION_RESOURCES: readonly [number, number, number, number] = [0, 2, 4, 6]
 
 function resourceOf(baseIndex: number, pair: 1 | 2): Fe01Resource {
@@ -379,7 +444,7 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
 
   for (let orderIndex = 0; orderIndex < orderCount; orderIndex += 1) {
     const pair: 1 | 2 = orderIndex % 2 === 0 ? 1 : 2
-    const orderNo = `SO-2026-${String(101 + orderIndex).padStart(4, '0')}`
+    const orderNo = `SO-20261105-${String(101 + orderIndex).padStart(4, '0')}`
     let cursor = orderStart + orderIndex * 12 * 60 * MINUTE
     for (let operation = 1; operation <= FE01_OPERATIONS.length; operation += 1) {
       const resource = resourceOf(FE01_OPERATION_RESOURCES[operation - 1], pair)
@@ -404,7 +469,7 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
         operationIndex: operation,
         operationName: FE01_OPERATIONS[operation - 1],
         resourceCode: resource.code,
-        secondaryResourceCodes: operation < 4 ? [`RES-FIX-0${pair}`] : [],
+        secondaryResourceCodes: operation < 4 ? [`RES-FIX-10${pair}`] : [],
         setupStartTime: iso(setupStart),
         setupEndTime: iso(start),
         startTime: iso(start),
@@ -420,11 +485,11 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
 
   // 可复现异常 1：订单 0105 首道工序被提前，与订单 0103 首道工序在同一 SMT 资源上重叠。
   const conflictTask = tasks.find(
-    (task) => task.orderNo === 'SO-2026-0105' && task.operationIndex === 1
+    (task) => task.orderNo === 'SO-20261105-0105' && task.operationIndex === 1
   )
   if (conflictTask) {
     const anchor = tasks.find(
-      (task) => task.orderNo === 'SO-2026-0103' && task.operationIndex === 1
+      (task) => task.orderNo === 'SO-20261105-0103' && task.operationIndex === 1
     )
     if (anchor) {
       const anchorStart = Date.parse(anchor.startTime ?? '')
@@ -439,15 +504,16 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
 
   // 可复现异常 2：订单 0102 第二道工序提前 45 分钟，早于首道工序结束 → 工序依赖违例。
   const dependentTask = tasks.find(
-    (task) => task.orderNo === 'SO-2026-0102' && task.operationIndex === 2
+    (task) => task.orderNo === 'SO-20261105-0102' && task.operationIndex === 2
   )
   const predecessor = tasks.find(
-    (task) => task.orderNo === 'SO-2026-0102' && task.operationIndex === 1
+    (task) => task.orderNo === 'SO-20261105-0102' && task.operationIndex === 1
   )
   if (dependentTask && predecessor) {
     const predecessorEnd = Date.parse(predecessor.endTime ?? '')
     const start = predecessorEnd - 45 * MINUTE
-    const duration = Date.parse(dependentTask.endTime ?? '') - Date.parse(dependentTask.startTime ?? '')
+    const duration =
+      Date.parse(dependentTask.endTime ?? '') - Date.parse(dependentTask.startTime ?? '')
     dependentTask.startTime = iso(start)
     dependentTask.endTime = iso(start + duration)
     dependentTask.setupEndTime = dependentTask.startTime
@@ -479,8 +545,7 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
     resourceName: resource.name,
     resourceType: resource.type,
     tasks: (byResource.get(resource.code) ?? []).sort(
-      (left, right) =>
-        (left.sequenceInResource ?? 0) - (right.sequenceInResource ?? 0)
+      (left, right) => (left.sequenceInResource ?? 0) - (right.sequenceInResource ?? 0)
     )
   }))
 
@@ -491,4 +556,3 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
     resources: rows
   }
 }
-

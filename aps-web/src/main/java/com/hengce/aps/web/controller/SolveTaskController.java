@@ -134,7 +134,7 @@ public class SolveTaskController {
         List<ConstraintJustification> body = lifecycleService.justifications(id).stream()
                 .map(row -> new ConstraintJustification(row.constraintId(),
                         row.scoreImpact() == null ? "HARD" : row.scoreImpact(),
-                        row.taskIds(), row.description()))
+                        row.taskIds(), row.description(), row.weight(), row.deduction()))
                 .toList();
         return Result.success(body);
     }

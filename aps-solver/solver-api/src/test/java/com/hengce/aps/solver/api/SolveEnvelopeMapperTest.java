@@ -59,7 +59,8 @@ class SolveEnvelopeMapperTest {
 
         assertEquals("timefold", config.engine());
         assertEquals(60, config.timeoutSeconds());
-        assertTrue(config.moveThreadCount() >= 1);
+        assertEquals(0, config.moveThreadCount(),
+                "未传 moveThreadCount 时必须保持 0（引擎默认），不得在入口补成 CPU-1");
         assertEquals("LATE_ACCEPTANCE", config.acceptor());
         assertEquals(0L, config.randomSeed());
         assertEquals(0L, config.maximumStepCount());

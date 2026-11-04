@@ -2,6 +2,7 @@ package com.hengce.aps.service.schedule;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -24,6 +25,7 @@ import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.SolverEngine;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
+import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -38,6 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 
 /**
  * 求解任务生命周期单测：PENDING/RUNNING、取消、超时与引擎异常降级、幂等、同步校验 422。
@@ -177,6 +180,49 @@ class SolveTaskLifecycleServiceTest {
         assertTrue(repository.rows.values().iterator().next().metricsJson().contains("validationFailure"));
     }
 
+    @Test
+    void submitWithUnknownSandboxShouldReturnNotFoundInsteadOfForeignKey500() {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        repository.markSandboxMissing();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, mockScheduleService(60), true, true);
+
+        BizException exception = assertThrows(BizException.class, () -> lifecycle.submit(request(), null));
+
+        assertEquals(ErrorCode.NOT_FOUND, exception.getErrorCode());
+        assertEquals(0L, repository.countActiveBySandbox(TENANT_ID, SANDBOX_ID));
+    }
+
+    @Test
+    void submitShouldMapConcurrentSandboxDeletionToNotFoundInsteadOf500() {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        repository.markSandboxDeletedConcurrently();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, mockScheduleService(60), true, true);
+
+        BizException exception = assertThrows(BizException.class, () -> lifecycle.submit(request(), null));
+
+        assertEquals(ErrorCode.NOT_FOUND, exception.getErrorCode());
+    }
+
+    @Test
+    void detailShouldTolerateNullValuedMetricsOnFailedTask() {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        long taskId = repository.create(TENANT_ID, SANDBOX_ID, null, "TIMEFOLD", "{}", null, "PENDING");
+        repository.finish(TENANT_ID, taskId, "FAILED", null, null,
+                "{\"phase\":null,\"progress\":1.0,\"bestScore\":null,\"engineFallback\":true,"
+                        + "\"engineFallbackReason\":null,\"fallbackMode\":\"HARD_ONLY\"}", "引擎异常");
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, mockScheduleService(60), true, true);
+
+        SolveTaskDetail detail = lifecycle.detail(taskId);
+
+        assertEquals("FAILED", detail.status());
+        assertEquals("FAILED", detail.phase());
+        assertEquals("FAILED", detail.errorCode());
+        assertNull(detail.bestScore());
+        assertTrue(detail.metrics().containsKey("bestScore"), "metrics 应保留原 JSON 的 null 键");
+        assertNull(detail.metrics().get("bestScore"));
+        assertTrue(detail.degraded());
+    }
+
     private static SolveTaskLifecycleService lifecycle(FakeSolveTaskRepository repository,
                                                       ScheduleService scheduleService,
                                                       boolean asyncEnabled,
@@ -189,7 +235,9 @@ class SolveTaskLifecycleServiceTest {
 
     private static ScheduleService mockScheduleService(int timeoutSeconds) {
         ScheduleService scheduleService = mock(ScheduleService.class);
-        when(scheduleService.resolveEngine(any())).thenReturn(SolverEngine.TIMEFOLD);
+        when(scheduleService.route(any())).thenReturn(new EngineRoute("timefold",
+                EngineRoute.SOURCE_DEFAULT, SolverEngine.TIMEFOLD, SolverEngine.TIMEFOLD,
+                false, null, null, null));
         when(scheduleService.toConfig(any(), any())).thenReturn(config(timeoutSeconds));
         return scheduleService;
     }
@@ -247,6 +295,23 @@ class SolveTaskLifecycleServiceTest {
 
         private final AtomicLong sequence = new AtomicLong();
 
+        private boolean sandboxMissing;
+
+        private boolean sandboxFkViolation;
+
+        void markSandboxMissing() {
+            this.sandboxMissing = true;
+        }
+
+        void markSandboxDeletedConcurrently() {
+            this.sandboxFkViolation = true;
+        }
+
+        @Override
+        public boolean sandboxExists(UUID tenantId, UUID sandboxId) {
+            return !sandboxMissing;
+        }
+
         private FakeSolveTaskRepository() {
             super(null);
         }
@@ -254,6 +319,11 @@ class SolveTaskLifecycleServiceTest {
         @Override
         public long create(UUID tenantId, UUID sandboxId, UUID strategyId, String engine, String configJson,
                            String idempotencyKey, String status) {
+            if (sandboxFkViolation) {
+                throw new DataIntegrityViolationException("insert violates fk_solve_task_sandbox",
+                        new SQLException("ERROR: insert or update on table \"solve_task\" violates foreign key "
+                                + "constraint \"fk_solve_task_sandbox\""));
+            }
             long id = sequence.incrementAndGet();
             OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
             OffsetDateTime startedAt = "RUNNING".equals(status) ? now : null;

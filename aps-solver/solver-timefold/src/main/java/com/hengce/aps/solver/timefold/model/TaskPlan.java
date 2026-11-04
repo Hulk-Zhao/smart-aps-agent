@@ -240,6 +240,46 @@ public class TaskPlan {
     }
 
     /**
+     * 任务在“资源—时间”维度上的占用切片：主资源按 {@code [startTime, endTime)}（含换型），
+     * 辅助资源按 {@code [processingStart, endTime)}（仅加工窗口，C12 §17.4）。
+     *
+     * <p>供 {@link com.hengce.aps.solver.timefold.constraint.ApsConstraintProvider}
+     * 先按 {@code resourceId} 分组再在组内配对，避免全表 {@code forEachUniquePair} 的 O(n²)。
+     * 返回顺序固定（主资源在前，辅助资源按声明顺序去重），保证约束口径与
+     * {@link #getOccupiedResourceIds()} / {@link #getOccupancyStart(UUID)} 一致。</p>
+     *
+     * @return 占用切片；任务未排位时为空列表
+     */
+    public List<OccupancySlot> occupancySlots() {
+        if (startTime == null) {
+            return List.of();
+        }
+        UUID primary = getResourceId();
+        if (primary == null) {
+            return List.of();
+        }
+        List<OccupancySlot> slots = new ArrayList<>(1 + secondaryResourceIds.size());
+        slots.add(new OccupancySlot(primary, startTime, getEndTime()));
+        LocalDateTime processingStart = getProcessingStartTime();
+        for (UUID secondary : new LinkedHashSet<>(secondaryResourceIds)) {
+            if (secondary != null && !secondary.equals(primary)) {
+                slots.add(new OccupancySlot(secondary, processingStart, getEndTime()));
+            }
+        }
+        return slots;
+    }
+
+    /**
+     * 单个资源上的占用区间。
+     *
+     * @param resourceId 资源主键
+     * @param start 占用开始（主资源含换型，辅助资源为加工开始）
+     * @param end 占用结束
+     */
+    public record OccupancySlot(UUID resourceId, LocalDateTime start, LocalDateTime end) {
+    }
+
+    /**
      * 任务占用的全部资源（主资源 + 辅助资源，去重）。
      *
      * @return 资源主键

@@ -3,7 +3,7 @@ info:
   title: 衡策 APS - 甘特图与计划 API
   version: 0.1.0
   description: |
-    gantt 分组静态契约（P0-08），当前全部为占位。统一约定见 ../../docs/api/conventions.md。
+    gantt 分组静态契约（P0-08）。当前已实现：C4（资源甘特）、C24（计划版本发布/回滚/列表/详情）、C29（订单甘特）；C21/C22 仍为占位。统一约定见 ../../docs/api/conventions.md。
     M2 冻结：C21（增量重排锁定）、C22（人工调整/撤销重做）、C24（计划版本发布回滚）、C29（订单甘特读接口）。
     所有时间字段为 ISO-8601 UTC；planId 一律使用 plan_version.id（UUID），不再以 sandboxId 充当计划 id。
     甘特图接口返回非分页结构；时间字段为 ISO-8601 UTC。
@@ -19,10 +19,11 @@ paths:
       tags: [甘特图]
       summary: 资源甘特图
       description: |
-        状态：占位。按资源泳道返回任务条。
+        状态：已实现（C4）。按资源泳道返回任务条。
         实现归属：求解流（S3）；契约见 docs/api/contract-freeze.md C4。
         返回与 [from, to) 有交集的任务，按 resourceCode、sequenceInResource 稳定排序。
-      x-implementation-status: placeholder
+        每行增量返回 calendarId（可空）与 calendarBound（摘要），解析优先级 资源专属 > 资源组 > 全厂默认。
+      x-implementation-status: implemented
       x-owner: solve-flow
       parameters:
         - $ref: '#/components/parameters/SandboxId'
@@ -56,12 +57,13 @@ paths:
       tags: [甘特图]
       summary: 订单甘特图
       description: |
-        状态：占位（契约已冻结 C29，实现归 W4）。按订单泳道返回工序链。
+        状态：已实现（C29）。按订单泳道返回工序链。
         late = 任务 endTime 超过订单 dueDate 当日 UTC 23:59:59；订单级 lateMinutes 为整数分钟，
         仅 late=true 时给出，late=false 时省略或 null（不得填 0 冒充）。
+        订单行额外返回 orderId、productFamily、dueDateLine、orderStatus、lateTaskCount（见 GanttOrderRow）。
         任务 lockType：M2 由 task.status 推导 FROZEN|NONE，V5 生效后回读 task.lock_type（可扩展 TIME_WINDOW|RESOURCE）。
         非分页结构，排序固定为 orderNo, operationIndex，不按交期；from/to 只做窗口过滤不改排序。
-      x-implementation-status: placeholder
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/SandboxId'
         - $ref: '#/components/parameters/From'
@@ -94,10 +96,11 @@ paths:
       tags: [计划]
       summary: 人工调整任务
       description: |
-        状态：占位（契约已冻结 C22，实现归 W4）。
+        状态：代码已落地（C22，W4）；未做制品级 HTTP 验收，故标 partial。
         operation=MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 枚举已冻结但 M2 返回 50100。
         version 与 task.version 不一致返回 40901；FROZEN 任务 MOVE 返回 42201；dryRun=true 只校验不落库。
-      x-implementation-status: placeholder
+        目标任务是 IN_PROGRESS/COMPLETED → 409/40903（任务级：只判目标任务；与 C21/C24 同一语义，不得拆码）。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -141,8 +144,8 @@ paths:
       operationId: undoTaskAdjustment
       tags: [计划]
       summary: 撤销任务调整
-      description: 状态：占位。按任务栈撤销最近一次调整；每任务最多 50 步。
-      x-implementation-status: placeholder
+      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。按任务栈撤销最近一次调整；每任务最多 50 步。
+      x-implementation-status: partial
       parameters:
         - name: adjustmentId
           in: path
@@ -167,8 +170,8 @@ paths:
       operationId: redoTaskAdjustment
       tags: [计划]
       summary: 重做任务调整
-      description: 状态：占位。重做被撤销的调整。
-      x-implementation-status: placeholder
+      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。重做被撤销的调整。
+      x-implementation-status: partial
       parameters:
         - name: adjustmentId
           in: path
@@ -193,8 +196,8 @@ paths:
       operationId: listTaskAdjustments
       tags: [计划]
       summary: 任务调整历史
-      description: 状态：占位。分页返回该任务的调整记录。
-      x-implementation-status: placeholder
+      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。分页返回该任务的调整记录。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -224,6 +227,78 @@ paths:
                 $ref: '#/components/schemas/Result'
         '404':
           $ref: '#/components/responses/NotFound'
+  /plans:
+    get:
+      operationId: listPlans
+      tags: [计划]
+      summary: 计划版本列表
+      description: |
+        状态：已实现（W5，2026-11-04 真实 HTTP 验收：空沙箱 200+items:[]、越界页回边界、缺 sandboxId 400/40000、排序 v5→v1）。
+        按 sandboxId 分页返回场景内计划版本轨迹，排序固定 published_at DESC, id DESC（DESC 为 PostgreSQL NULLS FIRST，未发布版本排在最前），
+        不含任务明细（明细走 GET /plans/{id}）。
+      x-implementation-status: implemented
+      parameters:
+        - name: sandboxId
+          in: query
+          required: true
+          description: 场景 UUID，必填
+          schema:
+            type: string
+            format: uuid
+        - name: page
+          in: query
+          required: false
+          description: 页码，从 1 开始
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: size
+          in: query
+          required: false
+          description: 每页条数；默认 20，上限 200，超限按 200
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 20
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfPlanVersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /plans/{id}:
+    get:
+      operationId: getPlanDetail
+      tags: [计划]
+      summary: 计划版本详情
+      description: |
+        状态：代码已落地（C24，W5）；尚未做制品级 HTTP 验收，故标 partial。
+        返回版本元信息与该版本不可变快照任务（来自 plan_version.snapshot，不随 task 表变化）。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 计划版本主键（对外 planId）
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfPlanDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /plans/{id}/publish:
     post:
       operationId: publishPlan
@@ -231,7 +306,9 @@ paths:
       summary: 发布计划
       description: |
         状态：已实现（C24，W5）。
-        把 plan_version(id=UUID) 的任务快照固化为 PUBLISHED，并回填 task.plan_version_id；重复发布幂等返回 200。
+        把 plan_version(id=UUID) 的任务快照固化为 PUBLISHED，并回填 task.plan_version_id；重复发布同一版本幂等返回 200（affectedTaskCount=0）。
+        场景已有 PUBLISHED 版本时再发布另一 DRAFT/REVIEW 版本同样返回 200（版本演进），发布路径不返回 40903。
+        approver 未传或 trim 后为空时存 NULL，不回退到 published_by（审批人必须是真人）。
       x-implementation-status: implemented
       parameters:
         - name: id
@@ -268,7 +345,7 @@ paths:
       summary: 回滚计划
       description: |
         状态：已实现（C24，W5）。
-        回滚生成新 plan_version（rollback_of=原版本），不物理回退；存在已执行任务（IN_PROGRESS/COMPLETED）时返回 40903。
+        回滚生成新 plan_version（rollback_of=原版本），不物理回退；场景内存在已执行任务（IN_PROGRESS/COMPLETED）时返回 409/40903（场景级判定）。
       x-implementation-status: implemented
       parameters:
         - name: id
@@ -461,19 +538,35 @@ components:
     GanttOrderRow:
       type: object
       properties:
+        orderId:
+          type: string
+          format: uuid
+          description: 订单主键，供任务跳转/钻取锚点
         orderNo:
           type: string
         materialCode:
           type: string
+        productFamily:
+          type: string
+          nullable: true
+          description: 产品族（物料分类编码）
         dueDate:
           type: string
           format: date
+        dueDateLine:
+          type: string
+          format: date-time
+          nullable: true
+          description: 交期线（交期日 23:59:59 UTC）
         priority:
           type: string
           enum: [URGENT, HIGH, NORMAL, LOW]
         freezeStatus:
           type: string
           enum: [UNFROZEN, FROZEN, LOCKED_TIME_WINDOW, LOCKED_RESOURCE]
+        orderStatus:
+          type: string
+          description: 订单业务状态（orders.status）
         late:
           type: boolean
           description: 任务 endTime 是否超过订单 dueDate 当日 UTC 23:59:59
@@ -481,6 +574,9 @@ components:
           type: integer
           nullable: true
           description: 仅 late=true 时给出，整数分钟；late=false 时省略或 null
+        lateTaskCount:
+          type: integer
+          description: 晚交任务数
         tasks:
           type: array
           items:
@@ -573,6 +669,7 @@ components:
         approver:
           type: string
           nullable: true
+          description: 审批人；未传或 trim 后为空时存 NULL，不回退到 published_by（不得用机器标识冒充审批人）
     PlanRollbackRequest:
       type: object
       required: [targetVersionNo]
@@ -669,3 +766,75 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/PlanAction'
+    PlanDetail:
+      type: object
+      description: 计划版本详情；tasks 来自不可变快照，不随 task 表变化
+      properties:
+        action:
+          $ref: '#/components/schemas/PlanAction'
+        tasks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ResultOfPlanDetail:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/PlanDetail'
+    PlanVersionSummary:
+      type: object
+      description: 计划版本列表项；不含任务明细（明细走 GET /plans/{id}）
+      properties:
+        planId:
+          type: string
+          format: uuid
+        planNo:
+          type: string
+        version:
+          type: integer
+          description: 业务版本号（version_no），不是乐观锁列 version
+        status:
+          type: string
+          enum: [DRAFT, REVIEW, PUBLISHED, ARCHIVED]
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        publishedBy:
+          type: string
+          format: uuid
+          nullable: true
+        approver:
+          type: string
+          nullable: true
+          description: 审批人；未填时为 null，响应如实返回 null，前端不得用 publishedBy 顶替显示
+        taskCount:
+          type: integer
+        rollbackOf:
+          type: string
+          format: uuid
+          nullable: true
+    ResultOfPlanVersionPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PlanVersionSummary'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer

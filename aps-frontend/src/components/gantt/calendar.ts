@@ -15,8 +15,7 @@ import type { GanttCalendarBinding, GanttCalendarBindingState } from '@/types/ga
 const MINUTE_MS = 60_000
 const DAY_MS = 86_400_000
 
-export const GANTT_CALENDAR_TIMEZONE =
-  Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+export const GANTT_CALENDAR_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 export const GANTT_CALENDAR_TIMEZONE_NOTE = `班次按工厂墙钟解释，前端按浏览器时区 ${GANTT_CALENDAR_TIMEZONE} 换算；C14 未定义时区字段（契约缺口）`
 
@@ -365,11 +364,7 @@ export function computeCalendarLayers(
       if (shiftResult.makeupAssumption) {
         makeupDays += 1
       }
-      const workingSegments = clipSegments(
-        shiftResult.segments,
-        effectiveStart,
-        effectiveEnd
-      )
+      const workingSegments = clipSegments(shiftResult.segments, effectiveStart, effectiveEnd)
       const workingMinutes = Math.round(
         overlapMs(workingSegments, effectiveStart, effectiveEnd) / MINUTE_MS
       )

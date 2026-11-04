@@ -382,6 +382,10 @@ WHAT_IF ──应用为 BASELINE──▶ 覆盖 BASELINE（需 SCHEDULE_PUBLISH
  { "type": "ORDER", "id": "uuid" }, { "type": "MATERIAL", "id": "uuid" }]
 ```
 
+> V7（M2-SE-05）新增 `weight`（INTEGER，软约束生效权重，硬约束为空）与
+> `deduction`（NUMERIC(18,2)，软约束扣分 = 权重 × 违反量，正数；硬约束为 0）。
+> `constraint_id` 存储 `RuleCode`（如 `MIN_TARDINESS`），不存中文标题。
+
 ### 5.12 `task_adjustment.before_value` / `after_value`（object）
 
 ```json

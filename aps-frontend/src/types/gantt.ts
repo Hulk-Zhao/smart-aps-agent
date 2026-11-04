@@ -5,8 +5,13 @@
 
 import type { Calendar } from './calendars'
 import type { ResourceType } from './materials'
+import type { OrderPriority } from './orders'
+
+export type { OrderPriority } from './orders'
 
 export type TaskStatus = 'PLANNED' | 'FROZEN' | 'IN_PROGRESS' | 'COMPLETED'
+export type TaskLockType = 'NONE' | 'TIME_WINDOW' | 'RESOURCE' | 'FROZEN'
+export type OrderFreezeStatus = 'UNFROZEN' | 'FROZEN' | 'LOCKED_TIME_WINDOW' | 'LOCKED_RESOURCE'
 
 export interface GanttTask {
   id: number
@@ -24,6 +29,10 @@ export interface GanttTask {
   status: TaskStatus
   sequenceInResource?: number | null
   version: number
+  /** C29：M2 由 status 推导 FROZEN|NONE，V5 后可扩展 TIME_WINDOW|RESOURCE。 */
+  lockType?: TaskLockType
+  /** C29：任务 endTime 是否超过订单 dueDate 当日 UTC 23:59:59。 */
+  late?: boolean
 }
 
 export interface GanttResourceRow {
@@ -34,9 +43,19 @@ export interface GanttResourceRow {
 }
 
 export interface GanttOrderRow {
+  orderId?: string
   orderNo: string
   materialCode: string
   dueDate: string
+  /** 后端 C29 增量字段：交期线时间点（dueDate 当日 UTC 23:59:59）；缺失时前端按 dueDate 推导。 */
+  dueDateLine?: string
+  priority?: OrderPriority
+  freezeStatus?: OrderFreezeStatus
+  orderStatus?: string
+  late?: boolean
+  /** 仅 late=true 时给出，整数分钟；late=false 时为 null/缺失，不得当 0 使用。 */
+  lateMinutes?: number | null
+  lateTaskCount?: number
   tasks: GanttTask[]
 }
 
@@ -70,13 +89,35 @@ export interface OrderGanttData {
 }
 
 export interface TaskAdjustRequest {
+  /** C22：MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 由后端返回 50100。 */
+  operation: 'MOVE' | 'LOCK' | 'FREEZE' | 'UNFREEZE' | 'SPLIT' | 'MERGE'
   version: number
   resourceCode?: string | null
   secondaryResourceCodes?: string[]
   startTime?: string
   endTime?: string
-  frozen?: boolean
+  lockFrom?: string | null
+  lockTo?: string | null
+  lockedResourceCodes?: string[]
   reason?: string
+  dryRun?: boolean
+  /** M1 兼容别名，等价 operation=FREEZE/UNFREEZE。 */
+  frozen?: boolean
+}
+
+export interface TaskAdjustConflict {
+  type: string
+  message: string
+  relatedTaskIds: number[]
+}
+
+/** C22 响应 TaskAdjustResult；dryRun 返回 applied=true 但不产生 adjustment 行。 */
+export interface TaskAdjustResult {
+  adjustmentId: string | null
+  applied: boolean
+  dryRun: boolean
+  task: GanttTask | null
+  conflicts: TaskAdjustConflict[]
 }
 
 export interface PlanAction {

@@ -63,5 +63,13 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 真库测试上下文与生产装配对齐：JacksonAutoConfiguration 依赖 spring-web 提供的
+             Jackson2ObjectMapperBuilder 才会创建 ObjectMapper bean；生产由 aps-web（starter-web）
+             引入，服务层测试类路径缺失，此处仅测试作用域补齐 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

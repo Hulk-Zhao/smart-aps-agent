@@ -3,19 +3,14 @@ import { computed, onMounted, ref } from 'vue'
 
 import { getEnumLabel, getEnumTagType } from '@/constants/enums'
 import { heatLevelOf } from './analysis'
-import type {
-  GanttAnalysis,
-  GanttHeatCell,
-  GanttIdleGap,
-  GanttLayerFlags
-} from './analysis'
+import type { GanttAnalysis, GanttHeatCell, GanttIdleGap, GanttLayerFlags } from './analysis'
 import type {
   GanttCalendarRowState,
   GanttCalendarWindow,
   GanttCalendarWindowKind
 } from './calendar'
-import type { GanttBarModel, GanttDataset, GanttZoom } from './index'
-import type { TaskStatus } from '@/types/gantt'
+import type { GanttBarModel, GanttDataset, GanttRowModel, GanttZoom } from './index'
+import type { GanttCalendarBinding, TaskStatus } from '@/types/gantt'
 
 const props = withDefaults(
   defineProps<{
@@ -28,12 +23,15 @@ const props = withDefaults(
     analysis?: GanttAnalysis | null
     /** 图层开关：日历停机（C14）/ 可插空档（推导）/ 依赖 / 热力 / 冲突 / 冻结。 */
     layers?: GanttLayerFlags
+    /** 订单视图选中任务（M2-FE-03 调整面板使用），为空表示未选。 */
+    selectedTaskId?: number | null
   }>(),
   {
     rowHeight: 34,
     labelWidth: 232,
     height: 460,
     analysis: null,
+    selectedTaskId: null,
     layers: () => ({
       calendar: true,
       idle: true,
@@ -44,6 +42,7 @@ const props = withDefaults(
     })
   }
 )
+const emit = defineEmits<{ (event: 'select', taskId: number): void }>()
 
 const scrollRef = ref<HTMLElement | null>(null)
 const headsRef = ref<HTMLElement | null>(null)
@@ -147,21 +146,46 @@ const conflictReasons = computed(() => {
   return map
 })
 
-const frozenSet = computed(() => {
-  if (!props.layers.freeze || !props.analysis) {
-    return new Set<number>()
-  }
-  return new Set(props.analysis.frozenTaskIds)
-})
-
 const conflictCountByRow = computed(() => {
   const map = new Map<string, number>()
-  props.analysis?.conflicts.forEach((conflict) => {
-    if (!conflict.resourceCode) {
-      return
-    }
-    map.set(conflict.resourceCode, (map.get(conflict.resourceCode) ?? 0) + 1)
+  const rowKeysByTask = new Map<number, string[]>()
+  rows.value.forEach((row) => {
+    row.bars.forEach((bar) => {
+      const list = rowKeysByTask.get(bar.taskId) ?? []
+      list.push(row.key)
+      rowKeysByTask.set(bar.taskId, list)
+    })
   })
+  const seen = new Set<string>()
+  props.analysis?.conflicts.forEach((conflict, index) => {
+    conflict.taskIds.forEach((taskId) => {
+      ;(rowKeysByTask.get(taskId) ?? []).forEach((rowKey) => {
+        const key = `${rowKey}:${index}`
+        if (seen.has(key)) {
+          return
+        }
+        seen.add(key)
+        map.set(rowKey, (map.get(rowKey) ?? 0) + 1)
+      })
+    })
+  })
+  return map
+})
+
+/** 订单视图：C14 资源日历绑定状态按资源编码索引；资源视图的行 key 本身即资源编码。 */
+const calendarBindingByCode = computed(() => {
+  const map = new Map<string, GanttCalendarBinding>()
+  props.dataset.calendarBindings?.forEach((binding) => map.set(binding.resourceCode, binding))
+  return map
+})
+
+/** 订单视图：任务落在其资源日历非工作时段的校验结果（由「日历停机」图层开关控制显隐）。 */
+const calendarCheckByTask = computed(() => {
+  const map = new Map<number, number>()
+  if (!props.layers.calendar) {
+    return map
+  }
+  props.analysis?.calendarChecks.forEach((check) => map.set(check.taskId, check.offCalendarMinutes))
   return map
 })
 
@@ -192,6 +216,8 @@ interface RenderRow {
   heat: RenderBox[]
   idle: RenderBox[]
   calendar: RenderBox[]
+  /** 订单交期线在画布上的 x 坐标；资源视图或交期不在窗口内时为 null。 */
+  dueLeft: number | null
   calendarShort: string
   calendarState: GanttCalendarRowState['state'] | null
 }
@@ -265,6 +291,79 @@ function calendarShortOf(state: GanttCalendarRowState | undefined): string {
     return '资源/日历缺失·热力不可比'
   }
   return '日历加载失败·热力不可比'
+}
+
+/** 订单行头日历摘要：按该订单涉及的资源统计 C14 绑定情况（订单行本身没有单一日历）。 */
+function orderCalendarText(row: GanttRowModel): { text: string; cls: string } {
+  const codes = row.resourceCodes ?? []
+  if (codes.length === 0) {
+    return { text: '无资源', cls: 'is-none' }
+  }
+  const bound = codes.filter(
+    (code) => calendarBindingByCode.value.get(code)?.state === 'BOUND'
+  ).length
+  if (bound === codes.length) {
+    return { text: `资源 ${codes.length} · 日历已绑`, cls: 'is-bound' }
+  }
+  return {
+    text: `资源 ${codes.length} · 已绑 ${bound}·热力不可比`,
+    cls: bound === 0 ? 'is-missing' : 'is-unbound'
+  }
+}
+
+/**
+ * 锁优先级（已冻结语义）：FROZEN > lockType > frozen:boolean。
+ * 订单级 freeze_status=FROZEN 与任务级 FROZEN 是交集关系：任一为 FROZEN 即整体不可放宽。
+ */
+function lockKindOf(
+  row: GanttRowModel,
+  bar: GanttBarModel
+): 'FROZEN' | 'TIME_WINDOW' | 'RESOURCE' | 'NONE' {
+  if (
+    row.freezeStatus === 'FROZEN' ||
+    bar.status === 'FROZEN' ||
+    bar.frozen ||
+    bar.lockType === 'FROZEN'
+  ) {
+    return 'FROZEN'
+  }
+  if (bar.lockType === 'TIME_WINDOW' || bar.lockType === 'RESOURCE') {
+    return bar.lockType
+  }
+  return 'NONE'
+}
+
+function lockLabel(kind: 'FROZEN' | 'TIME_WINDOW' | 'RESOURCE' | 'NONE'): string {
+  if (kind === 'FROZEN') {
+    return '冻'
+  }
+  if (kind === 'TIME_WINDOW') {
+    return '窗'
+  }
+  if (kind === 'RESOURCE') {
+    return '资'
+  }
+  return ''
+}
+
+function lateText(row: GanttRowModel): string {
+  if (!row.late) {
+    return ''
+  }
+  return row.lateMinutes == null ? '延期' : `延期 ${row.lateMinutes} 分`
+}
+
+function priorityLabel(priority?: string): string {
+  if (priority === 'URGENT') {
+    return '紧急'
+  }
+  if (priority === 'HIGH') {
+    return '高'
+  }
+  if (priority === 'LOW') {
+    return '低'
+  }
+  return '普通'
 }
 
 const renderRows = computed<RenderRow[]>(() => {
@@ -351,11 +450,28 @@ const renderRows = computed<RenderRow[]>(() => {
       heat,
       idle,
       calendar,
+      dueLeft: dueLineLeft(row, from, to),
       calendarShort: calendarShortOf(calendarRowByKey.value.get(row.key)),
       calendarState: calendarRowByKey.value.get(row.key)?.state ?? null
     }
   })
 })
+
+/** 订单交期线：优先用 C29 dueDateLine，缺失时按 dueDate 当日 UTC 23:59:59 推导（不新增字段）。 */
+function dueLineLeft(row: GanttRowModel, from: number, to: number): number | null {
+  if (props.dataset.mode !== 'order') {
+    return null
+  }
+  const raw = row.dueDateLine ?? (row.dueDate ? `${row.dueDate}T23:59:59Z` : null)
+  if (!raw) {
+    return null
+  }
+  const time = Date.parse(raw)
+  if (!Number.isFinite(time) || time <= from || time >= to) {
+    return null
+  }
+  return (time - from) * pxPerMs.value
+}
 
 const barMap = computed(() => {
   const map = new Map<number, GanttBarModel>()
@@ -500,6 +616,23 @@ function onLeave(): void {
   hovered.value = null
 }
 
+/** 点击任务条：订单视图交给页面打开调整面板（M2-FE-03）；只读视图可忽略 select 事件。 */
+function onClick(event: MouseEvent): void {
+  const bar = resolveBar(event.target)
+  if (bar) {
+    emit('select', bar.taskId)
+  }
+}
+
+function isSelected(taskId: number): boolean {
+  return props.selectedTaskId === taskId
+}
+
+/** 键盘选中：Enter / Space 与鼠标点击等价（可访问性，M2-FE-03 调整面板入口）。 */
+function selectBar(bar: GanttBarModel): void {
+  emit('select', bar.taskId)
+}
+
 onMounted(() => {
   if (scrollRef.value) {
     scrollTop.value = scrollRef.value.scrollTop
@@ -510,7 +643,9 @@ onMounted(() => {
 <template>
   <div class="gantt-timeline" :style="{ height: `${props.height}px` }">
     <div class="gantt-heads" ref="headsRef" :style="{ width: `${props.labelWidth}px` }">
-      <div class="gantt-heads__corner">资源泳道</div>
+      <div class="gantt-heads__corner">
+        {{ props.dataset.mode === 'order' ? '订单泳道' : '资源泳道' }}
+      </div>
       <div class="gantt-heads__canvas" :style="{ height: `${totalHeight}px` }">
         <div
           v-for="item in renderRows"
@@ -518,20 +653,46 @@ onMounted(() => {
           class="gantt-heads__row"
           :style="{ top: `${item.top}px`, height: `${props.rowHeight}px` }"
         >
-          <span class="gantt-heads__name" :title="item.row.label">{{ item.row.label }}</span>
-          <span class="gantt-heads__meta"
-            >{{ item.row.key }} · {{ item.row.subLabel ?? '—' }} ·
-            {{ item.row.bars.length }} 条<span
-              v-if="conflictCountByRow.get(item.row.key)"
-              class="gantt-heads__conflict"
-              > · 冲突 {{ conflictCountByRow.get(item.row.key) }}</span
+          <template v-if="props.dataset.mode === 'order'">
+            <span class="gantt-heads__name" :title="item.row.label">
+              {{ item.row.label }}
+              <em v-if="item.row.late" class="gantt-heads__late">{{ lateText(item.row) }}</em>
+            </span>
+            <span class="gantt-heads__meta" :title="`${item.row.subLabel ?? ''}`">
+              {{ item.row.subLabel ?? '—' }} · 优先级 {{ priorityLabel(item.row.priority) }}
+              <span v-if="item.row.freezeStatus === 'FROZEN'" class="gantt-heads__freeze">
+                · 订单冻结</span
+              >
+              · {{ item.row.bars.length }} 任务<span
+                v-if="conflictCountByRow.get(item.row.key)"
+                class="gantt-heads__conflict"
+              >
+                · 冲突 {{ conflictCountByRow.get(item.row.key) }}</span
+              >
+              ·
+              <span class="gantt-heads__calendar" :class="orderCalendarText(item.row).cls">{{
+                orderCalendarText(item.row).text
+              }}</span>
+            </span>
+          </template>
+          <template v-else>
+            <span class="gantt-heads__name" :title="item.row.label">{{ item.row.label }}</span>
+            <span class="gantt-heads__meta"
+              >{{ item.row.key }} · {{ item.row.subLabel ?? '—' }} ·
+              {{ item.row.bars.length }} 条<span
+                v-if="conflictCountByRow.get(item.row.key)"
+                class="gantt-heads__conflict"
+              >
+                · 冲突 {{ conflictCountByRow.get(item.row.key) }}</span
+              >
+              ·
+              <span
+                class="gantt-heads__calendar"
+                :class="item.calendarState ? `is-${item.calendarState.toLowerCase()}` : 'is-none'"
+                >{{ item.calendarShort }}</span
+              ></span
             >
-            · <span
-              class="gantt-heads__calendar"
-              :class="item.calendarState ? `is-${item.calendarState.toLowerCase()}` : 'is-none'"
-              >{{ item.calendarShort }}</span
-            ></span
-          >
+          </template>
         </div>
       </div>
     </div>
@@ -556,6 +717,7 @@ onMounted(() => {
           @mouseover="onOver"
           @mousemove="onMove"
           @mouseleave="onLeave"
+          @click="onClick"
         >
           <div class="gantt-grid" :style="gridStyle" />
           <div
@@ -564,6 +726,12 @@ onMounted(() => {
             class="gantt-row"
             :style="{ top: `${item.top}px`, height: `${props.rowHeight}px` }"
           >
+            <div
+              v-if="item.dueLeft !== null"
+              class="gantt-due-line"
+              :style="{ left: `${item.dueLeft}px` }"
+              :title="`订单交期线 ${item.row.dueDateLine ?? item.row.dueDate ?? ''}`"
+            />
             <div
               v-for="window in item.calendar"
               :key="window.key"
@@ -601,22 +769,38 @@ onMounted(() => {
               :class="[
                 statusClass(entry.bar.status),
                 {
-                  'is-frozen': frozenSet.has(entry.bar.taskId),
-                  'is-conflict': conflictsOf(entry.bar.taskId).length > 0
+                  'is-frozen': lockKindOf(item.row, entry.bar) === 'FROZEN',
+                  'is-window-locked': entry.bar.lockType === 'TIME_WINDOW',
+                  'is-resource-locked': entry.bar.lockType === 'RESOURCE',
+                  'is-conflict': conflictsOf(entry.bar.taskId).length > 0,
+                  'is-late': entry.bar.late === true,
+                  'is-off-calendar': calendarCheckByTask.has(entry.bar.taskId),
+                  'is-selected': isSelected(entry.bar.taskId)
                 }
               ]"
               :style="{ left: `${entry.left}px`, width: `${entry.width}px` }"
               :data-task-id="entry.bar.taskId"
+              tabindex="0"
+              role="button"
+              :aria-label="`${entry.bar.orderNo} 工序 ${entry.bar.operationIndex} ${entry.bar.label}，状态 ${entry.bar.status}${isSelected(entry.bar.taskId) ? '，已选中' : ''}`"
+              :aria-pressed="isSelected(entry.bar.taskId)"
+              @keydown.enter.prevent="selectBar(entry.bar)"
+              @keydown.space.prevent="selectBar(entry.bar)"
               :title="
-                frozenSet.has(entry.bar.taskId)
-                  ? '已冻结：只读，不可拖拽（拖拽属 M2-FE-03）'
-                  : undefined
+                lockKindOf(item.row, entry.bar) === 'FROZEN'
+                  ? '已冻结：只读，不可拖拽'
+                  : entry.bar.late
+                    ? '该任务结束时间超过订单交期线'
+                    : undefined
               "
             >
-              <span v-if="frozenSet.has(entry.bar.taskId)" class="gantt-bar__lock">冻</span>
-              <span class="gantt-bar__label">{{
-                entry.bar.operationName ?? entry.bar.orderNo
+              <span v-if="lockLabel(lockKindOf(item.row, entry.bar))" class="gantt-bar__lock">{{
+                lockLabel(lockKindOf(item.row, entry.bar))
               }}</span>
+              <span v-if="calendarCheckByTask.has(entry.bar.taskId)" class="gantt-bar__off-calendar"
+                >非工时</span
+              >
+              <span class="gantt-bar__label">{{ entry.bar.label }}</span>
             </div>
           </div>
 
@@ -684,6 +868,14 @@ onMounted(() => {
       </div>
       <div>
         状态：{{ getEnumLabel('taskStatus', hovered.bar.status) }} · 版本 {{ hovered.bar.version }}
+      </div>
+      <div v-if="hovered.bar.lockType && hovered.bar.lockType !== 'NONE'">
+        锁类型：{{ hovered.bar.lockType }}（优先级 FROZEN &gt; lockType &gt; frozen）
+      </div>
+      <div v-if="hovered.bar.late">交期：已超期</div>
+      <div v-if="calendarCheckByTask.has(hovered.bar.taskId)" class="gantt-tooltip__conflict">
+        日历校验：该任务有
+        {{ calendarCheckByTask.get(hovered.bar.taskId) }} 分钟落在其资源非工作时段
       </div>
       <div v-if="hovered.bar.secondaryResourceCodes?.length">
         辅资源：{{ hovered.bar.secondaryResourceCodes.join('、') }}
@@ -787,6 +979,29 @@ onMounted(() => {
 
 .gantt-heads__calendar.is-none {
   color: #c0c4cc;
+}
+
+.gantt-heads__late {
+  color: #f56c6c;
+  font-style: normal;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.gantt-heads__freeze {
+  color: #909399;
+  font-weight: 600;
+}
+
+/* 订单交期线：C29 dueDateLine，虚线竖线，仅在订单视图出现。 */
+.gantt-due-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed #e6a23c;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .gantt-scroll {
@@ -991,6 +1206,50 @@ onMounted(() => {
   outline: 2px solid #f56c6c;
   outline-offset: -1px;
   z-index: 2;
+}
+
+/* 延期任务（C29 late）：左侧红条，与订单行头延期分钟同源。 */
+.gantt-bar.is-late {
+  box-shadow: inset 3px 0 0 #f56c6c;
+}
+
+/* 工时窗锁 / 资源锁：锁标识在条内，视觉与订单冻结区分。 */
+.gantt-bar.is-window-locked,
+.gantt-bar.is-resource-locked {
+  border: 1px solid #e6a23c;
+}
+
+/* 任务占用落在资源日历非工作时段（订单视图 C14 校验）。 */
+.gantt-bar.is-off-calendar {
+  border: 1px dashed #e6a23c;
+}
+
+.gantt-bar__off-calendar {
+  flex: 0 0 auto;
+  font-size: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 2px;
+  padding: 0 2px;
+  line-height: 12px;
+}
+
+/* 选中任务（M2-FE-03 调整面板目标）。 */
+.gantt-bar.is-selected {
+  outline: 2px solid #303133;
+  outline-offset: 1px;
+  z-index: 3;
+}
+
+/* 键盘聚焦必须可见：覆盖 bracket 冲突/选中态，保证 Tab 后能看出当前任务条。 */
+.gantt-bar:focus-visible {
+  outline: 2px solid #79bbff;
+  outline-offset: 2px;
+  z-index: 4;
+  box-shadow: 0 0 0 4px rgba(64, 158, 255, 0.28);
+}
+
+.gantt-body {
+  cursor: pointer;
 }
 
 .gantt-setup {

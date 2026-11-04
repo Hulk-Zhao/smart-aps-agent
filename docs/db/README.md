@@ -5,7 +5,7 @@
 ## 1. 现状
 
 - `V1__init.sql` 为基线：28 张表 + 默认租户/角色/权限/管理员/BASELINE 场景/7x24 日历种子数据。
-- 当前已执行到 **V6**（`aps_local` 于 2026-11-04 验证：`Successfully validated 6 migrations`，schema v6，`Schema "public" is up to date. No migration necessary`）。
+- 当前已执行到 **V7**（`aps_local` 于 2026-11-04 验证：`Successfully validated 7 migrations`，schema v7；V7 由 M2-SE-05 引入 `constraint_justification.weight/deduction`）。
 - `aps-admin` 在打包时把 `db/migration` 原样放入 classpath（`resources` 配置），迁移文件不得移动目录。
 
 ## 2. 号段分配
@@ -14,7 +14,7 @@
 |---|---|---|
 | V2–V3 | 主数据流 | 物料、BOM、资源、日历、客户、供应商 |
 | V4–V5 | 工艺订单流 | 工序模板、工艺路线、订单 |
-| V6–V7 | 求解流 | 求解任务、排产任务、场景、甘特 |
+| V6–V7 | 求解流 | V6 求解任务幂等；V7 约束归因补记权重/扣分（M2-SE-05） |
 | V8–V9 | 测试部署流 | 测试夹具、索引/约束修正 |
 
 ## 3. 规则

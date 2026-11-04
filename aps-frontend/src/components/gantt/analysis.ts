@@ -24,9 +24,7 @@ import {
 } from './calendar'
 
 export type GanttConflictType =
-  | 'RESOURCE_OVERLAP'
-  | 'SECONDARY_RESOURCE_OVERLAP'
-  | 'DEPENDENCY_VIOLATION'
+  'RESOURCE_OVERLAP' | 'SECONDARY_RESOURCE_OVERLAP' | 'DEPENDENCY_VIOLATION'
 
 export interface GanttConflict {
   type: GanttConflictType
@@ -81,8 +79,21 @@ export interface GanttLayerFlags {
   freeze: boolean
 }
 
+export interface GanttCalendarCheck {
+  taskId: number
+  orderNo: string
+  resourceCode: string
+  /** 任务占用落在其资源日历非工作时段（或非排班日）的分钟数。 */
+  offCalendarMinutes: number
+  totalMinutes: number
+  message: string
+}
+
 export interface GanttAnalysisSummary {
   taskCount: number
+  /** 行数：资源视图为资源行数，订单视图为订单行数。 */
+  rowCount: number
+  /** 去重后的资源数（订单视图也按资源统计，便于对比热力可比范围）。 */
   resourceCount: number
   conflictCount: number
   conflictTaskCount: number
@@ -109,6 +120,8 @@ export interface GanttAnalysis {
   calendarRows: GanttCalendarRowState[]
   calendarSummary: GanttCalendarSummary
   calendarTimezone: string
+  /** 订单视图：任务相对其资源日历的工作时段校验（资源视图为空）。 */
+  calendarChecks: GanttCalendarCheck[]
   /** 日历接入缺口（端点/字段级），页面需显式展示「数据未接入」。 */
   calendarIssues: string[]
   calendarResourceListLoaded: boolean
@@ -175,6 +188,7 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
   const dependencyLinks: GanttDependencyLink[] = []
   const idleGaps: GanttIdleGap[] = []
   const heatCells: GanttHeatCell[] = []
+  const calendarChecks: GanttCalendarCheck[] = []
   const frozenTaskIds: number[] = []
   const conflictTaskIds = new Set<number>()
   let taskCount = 0
@@ -184,113 +198,291 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
   const validRange =
     Number.isFinite(rangeStart) && Number.isFinite(rangeEnd) && rangeEnd > rangeStart
 
+  const isOrder = dataset.mode === 'order'
+
   // 日历事实：只接受适配器补齐的 C14 绑定；没有绑定就是未接入，绝不按 24h/Mock 日历兜底。
+  // 资源视图按资源行取日历；订单视图一行多资源，日历仍按「去重资源编码」取，
+  // 这样订单页的停机窗口/日历表与资源视图共用同一份 C14 事实，不出现「订单另算一遍」。
+  const resourceCodesInData = [
+    ...new Set(
+      dataset.rows.flatMap((row) =>
+        row.bars
+          .map((bar) => bar.resourceCode)
+          .filter((code): code is string => typeof code === 'string' && code.length > 0)
+      )
+    )
+  ]
+  const calendarKeys = isOrder ? resourceCodesInData : dataset.rows.map((row) => row.key)
   const calendar: GanttCalendarComputation = computeCalendarLayers(
     validRange ? (dataset.calendarBindings ?? []) : [],
-    dataset.rows.map((row) => row.key),
+    calendarKeys,
     validRange ? rangeStart : 0,
     validRange ? rangeEnd : 0
   )
   const daysByRow = new Map<string, GanttCalendarDay[]>()
+  const daysByRowDay = new Map<string, Map<string, GanttCalendarDay>>()
   calendar.days.forEach((day) => {
     const list = daysByRow.get(day.rowKey) ?? []
     list.push(day)
     daysByRow.set(day.rowKey, list)
+    const byDay = daysByRowDay.get(day.rowKey) ?? new Map<string, GanttCalendarDay>()
+    byDay.set(day.dayStart, day)
+    daysByRowDay.set(day.rowKey, byDay)
   })
 
+  const taskEntries: Array<{ rowKey: string; bar: GanttBarModel }> = []
   dataset.rows.forEach((row) => {
-    const bars = row.bars
-    taskCount += bars.length
-    bars.forEach((bar) => {
+    taskCount += row.bars.length
+    row.bars.forEach((bar) => {
+      taskEntries.push({ rowKey: row.key, bar })
       if (bar.frozen) {
         frozenTaskIds.push(bar.taskId)
       }
     })
+  })
 
-    // 1) 同资源冲突：按占用起点排序后线性扫描，保留最大结束时间的占用者作为比较基准。
-    const sorted = [...bars].sort((left, right) => {
-      const leftInterval = occupiedInterval(left)
-      const rightInterval = occupiedInterval(right)
-      return leftInterval.start - rightInterval.start || left.taskId - right.taskId
+  // 1) 同资源冲突：资源视图按资源行分组；订单视图一行多资源，必须按任务真实 resourceCode 分组，
+  //    否则会把订单行内不同资源的任务误判为「同资源重叠」。
+  const overlapGroups = new Map<string, Array<{ rowKey: string; bar: GanttBarModel }>>()
+  if (isOrder) {
+    taskEntries.forEach((entry) => {
+      const code = entry.bar.resourceCode
+      if (!code) {
+        return
+      }
+      const list = overlapGroups.get(code) ?? []
+      list.push(entry)
+      overlapGroups.set(code, list)
     })
+  } else {
+    dataset.rows.forEach((row) => {
+      overlapGroups.set(
+        row.key,
+        row.bars.map((bar) => ({ rowKey: row.key, bar }))
+      )
+    })
+  }
+
+  overlapGroups.forEach((entries, code) => {
+    if (entries.length < 2) {
+      return
+    }
+    const sorted = [...entries].sort(
+      (left, right) =>
+        occupiedInterval(left.bar).start - occupiedInterval(right.bar).start ||
+        left.bar.taskId - right.bar.taskId
+    )
     let anchor: GanttBarModel | null = null
     let anchorEnd = Number.NEGATIVE_INFINITY
-    sorted.forEach((bar) => {
-      const interval = occupiedInterval(bar)
+    sorted.forEach((entry) => {
+      const interval = occupiedInterval(entry.bar)
       if (anchor && overlaps(occupiedInterval(anchor), interval)) {
         const minutes = overlapMinutes(occupiedInterval(anchor), interval)
         conflicts.push({
           type: 'RESOURCE_OVERLAP',
-          taskIds: [anchor.taskId, bar.taskId],
-          resourceCode: row.key,
+          taskIds: [anchor.taskId, entry.bar.taskId],
+          resourceCode: code,
           overlapMinutes: minutes,
-          message: `${taskLabel(anchor)} 与 ${taskLabel(bar)} 在资源 ${row.key} 上重叠 ${minutes} 分钟`
+          message: `${taskLabel(anchor)} 与 ${taskLabel(entry.bar)} 在资源 ${code} 上重叠 ${minutes} 分钟`
         })
         conflictTaskIds.add(anchor.taskId)
-        conflictTaskIds.add(bar.taskId)
+        conflictTaskIds.add(entry.bar.taskId)
       }
       if (interval.end > anchorEnd) {
-        anchor = bar
+        anchor = entry.bar
         anchorEnd = interval.end
       }
     })
-
-    // 2) 可插空档（独立图层，前端推导）：仅统计同一资源相邻任务之间 >= 30 分钟的间隔。
-    //    这是「可以再插一个任务」的候选窗口，不是停机事实；停机层只渲染 C14 日历窗口。
-    for (let index = 1; index < sorted.length; index += 1) {
-      const previous = occupiedInterval(sorted[index - 1])
-      const current = occupiedInterval(sorted[index])
-      if (current.start <= previous.end) {
-        continue
-      }
-      const minutes = minutesOf(current.start - previous.end)
-      if (minutes < MIN_IDLE_MINUTES) {
-        continue
-      }
-      idleGaps.push({
-        rowKey: row.key,
-        startTime: iso(previous.end),
-        endTime: iso(current.start),
-        minutes
-      })
-    }
-
-    // 3) 负载热力：分母为 C14 日历的当日工作分钟，分子为占用与工作片段的交集。
-    //    未绑 / 缺失 / 失败的行没有 days，不生成任何热力格（页面显示「—」），不回落到 24h。
-    const calendarDays = daysByRow.get(row.key) ?? []
-    calendarDays.forEach((day) => {
-      if (!day.effective || day.workingMinutes <= 0) {
-        return
-      }
-      const dayStart = Date.parse(day.dayStart)
-      const dayEnd = Date.parse(day.dayEnd)
-      let occupiedWorking = 0
-      let occupiedRaw = 0
-      bars.forEach((bar) => {
-        const interval = occupiedInterval(bar)
-        occupiedRaw += Math.max(
-          0,
-          Math.min(interval.end, dayEnd) - Math.max(interval.start, dayStart)
-        )
-        occupiedWorking += workingOverlapMinutes(day.workingSegments, interval.start, interval.end)
-      })
-      if (occupiedRaw <= 0) {
-        return
-      }
-      heatCells.push({
-        rowKey: row.key,
-        dayStart: day.dayStart,
-        dayEnd: day.dayEnd,
-        occupiedMinutes: occupiedWorking,
-        rawOccupiedMinutes: minutesOf(occupiedRaw),
-        workingMinutes: day.workingMinutes,
-        loadRatio: occupiedWorking / day.workingMinutes
-      })
-    })
   })
 
+  // 2) 可插空档（独立图层，前端推导）：仅资源视图按资源行统计相邻任务 >= 30 分钟的间隔。
+  //    订单视图一行是订单、混多个资源，按订单行统计会得出错误的「可插入窗口」，故不生成；
+  //    订单页跳转资源视图查看资源口径的可插空档。
+  if (!isOrder) {
+    overlapGroups.forEach((entries, code) => {
+      const sorted = [...entries].sort(
+        (left, right) =>
+          occupiedInterval(left.bar).start - occupiedInterval(right.bar).start ||
+          left.bar.taskId - right.bar.taskId
+      )
+      for (let index = 1; index < sorted.length; index += 1) {
+        const previous = occupiedInterval(sorted[index - 1].bar)
+        const current = occupiedInterval(sorted[index].bar)
+        if (current.start <= previous.end) {
+          continue
+        }
+        const minutes = minutesOf(current.start - previous.end)
+        if (minutes < MIN_IDLE_MINUTES) {
+          continue
+        }
+        idleGaps.push({
+          rowKey: code,
+          startTime: iso(previous.end),
+          endTime: iso(current.start),
+          minutes
+        })
+      }
+    })
+  }
+
+  // 3) 负载热力：分母是 C14 日历的当日工作分钟，分子是占用与工作片段的交集。
+  //    未绑 / 缺失 / 失败的行没有 days，不生成任何热力格（页面显示「—」），不回落到 24h。
+  if (isOrder) {
+    // 订单视图按「订单行 × 日」聚合：分母 = 当日该订单涉及资源的日历工作分钟合计
+    //（同一资源同一日只计一次），分子 = 各任务与其资源工作片段的交集。
+    dataset.rows.forEach((row) => {
+      const involved = new Set(
+        row.bars
+          .map((bar) => bar.resourceCode)
+          .filter((code): code is string => typeof code === 'string' && code.length > 0)
+      )
+      if (involved.size === 0) {
+        return
+      }
+      const dayAcc = new Map<
+        string,
+        {
+          day: GanttCalendarDay
+          workingMinutes: number
+          occupiedWorking: number
+          occupiedRaw: number
+        }
+      >()
+      involved.forEach((code) => {
+        const byDay = daysByRowDay.get(code)
+        if (!byDay) {
+          return
+        }
+        byDay.forEach((day) => {
+          if (!day.effective || day.workingMinutes <= 0) {
+            return
+          }
+          const acc = dayAcc.get(day.dayStart) ?? {
+            day,
+            workingMinutes: 0,
+            occupiedWorking: 0,
+            occupiedRaw: 0
+          }
+          acc.workingMinutes += day.workingMinutes
+          dayAcc.set(day.dayStart, acc)
+        })
+      })
+      row.bars.forEach((bar) => {
+        const code = bar.resourceCode
+        if (!code) {
+          return
+        }
+        const byDay = daysByRowDay.get(code)
+        if (!byDay) {
+          return
+        }
+        const interval = occupiedInterval(bar)
+        byDay.forEach((day, dayStart) => {
+          const acc = dayAcc.get(dayStart)
+          if (!acc) {
+            return
+          }
+          acc.occupiedWorking += workingOverlapMinutes(
+            day.workingSegments,
+            interval.start,
+            interval.end
+          )
+          acc.occupiedRaw += Math.max(
+            0,
+            Math.min(interval.end, Date.parse(day.dayEnd)) -
+              Math.max(interval.start, Date.parse(day.dayStart))
+          )
+        })
+      })
+      dayAcc.forEach((acc, dayStart) => {
+        if (acc.occupiedRaw <= 0 || acc.workingMinutes <= 0) {
+          return
+        }
+        heatCells.push({
+          rowKey: row.key,
+          dayStart,
+          dayEnd: acc.day.dayEnd,
+          occupiedMinutes: acc.occupiedWorking,
+          rawOccupiedMinutes: minutesOf(acc.occupiedRaw),
+          workingMinutes: acc.workingMinutes,
+          loadRatio: acc.occupiedWorking / acc.workingMinutes
+        })
+      })
+    })
+  } else {
+    dataset.rows.forEach((row) => {
+      const calendarDays = daysByRow.get(row.key) ?? []
+      calendarDays.forEach((day) => {
+        if (!day.effective || day.workingMinutes <= 0) {
+          return
+        }
+        const dayStart = Date.parse(day.dayStart)
+        const dayEnd = Date.parse(day.dayEnd)
+        let occupiedWorking = 0
+        let occupiedRaw = 0
+        row.bars.forEach((bar) => {
+          const interval = occupiedInterval(bar)
+          occupiedRaw += Math.max(
+            0,
+            Math.min(interval.end, dayEnd) - Math.max(interval.start, dayStart)
+          )
+          occupiedWorking += workingOverlapMinutes(
+            day.workingSegments,
+            interval.start,
+            interval.end
+          )
+        })
+        if (occupiedRaw <= 0) {
+          return
+        }
+        heatCells.push({
+          rowKey: row.key,
+          dayStart: day.dayStart,
+          dayEnd: day.dayEnd,
+          occupiedMinutes: occupiedWorking,
+          rawOccupiedMinutes: minutesOf(occupiedRaw),
+          workingMinutes: day.workingMinutes,
+          loadRatio: occupiedWorking / day.workingMinutes
+        })
+      })
+    })
+  }
+
+  // 3.1) 订单视图：任务相对其资源日历的工作时段校验（落在非工作时段/非排班日的分钟）。
+  if (isOrder) {
+    taskEntries.forEach(({ bar }) => {
+      const code = bar.resourceCode
+      if (!code) {
+        return
+      }
+      const days = daysByRow.get(code)
+      if (!days || days.length === 0) {
+        return
+      }
+      const interval = occupiedInterval(bar)
+      const totalMinutes = Math.max(0, minutesOf(interval.end - interval.start))
+      let workingMinutes = 0
+      days.forEach((day) => {
+        workingMinutes += workingOverlapMinutes(day.workingSegments, interval.start, interval.end)
+      })
+      const offCalendarMinutes = Math.max(0, totalMinutes - workingMinutes)
+      if (offCalendarMinutes <= 0) {
+        return
+      }
+      calendarChecks.push({
+        taskId: bar.taskId,
+        orderNo: bar.orderNo,
+        resourceCode: code,
+        offCalendarMinutes,
+        totalMinutes,
+        message: `${taskLabel(bar)} 占用 ${totalMinutes} 分钟，其中 ${offCalendarMinutes} 分钟落在资源 ${code} 非工作时段`
+      })
+    })
+  }
+
   // 4) 辅资源冲突：同一 secondaryResourceCode 上被多个任务同时占用。
-  const secondaryCodesOf = builtinSecondaryCodes(dataset)
+  //    订单视图的行 key 是订单号，不能当成资源编码参与「行本身被当辅资源」判定。
+  const secondaryCodesOf = builtinSecondaryCodes(dataset, !isOrder)
   secondaryCodesOf.forEach((entries, code) => {
     for (let left = 0; left < entries.length; left += 1) {
       for (let right = left + 1; right < entries.length; right += 1) {
@@ -357,7 +549,7 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
         conflicts.push({
           type: 'DEPENDENCY_VIOLATION',
           taskIds: [from.bar.taskId, to.bar.taskId],
-          resourceCode: to.rowKey,
+          resourceCode: to.bar.resourceCode ?? null,
           overlapMinutes: violation,
           message: dependencyLinks[dependencyLinks.length - 1].message
         })
@@ -368,9 +560,7 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
   })
 
   const peakLoadRatio =
-    heatCells.length > 0
-      ? heatCells.reduce((max, cell) => Math.max(max, cell.loadRatio), 0)
-      : null
+    heatCells.length > 0 ? heatCells.reduce((max, cell) => Math.max(max, cell.loadRatio), 0) : null
   const idleMinutes = idleGaps.reduce((total, gap) => total + gap.minutes, 0)
 
   return {
@@ -387,9 +577,12 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
     calendarTimezone: calendar.summary.timezone,
     calendarIssues: dataset.calendarIssues ?? [],
     calendarResourceListLoaded: dataset.calendarResourceListLoaded ?? true,
+    calendarChecks,
     summary: {
       taskCount,
-      resourceCount: dataset.rows.length,
+      rowCount: dataset.rows.length,
+      // 资源视图每行一个资源；订单视图需按任务真实资源编码去重，热力可比范围与资源视图一致。
+      resourceCount: isOrder ? resourceCodesInData.length : dataset.rows.length,
       conflictCount: conflicts.length,
       conflictTaskCount: conflictTaskIds.size,
       frozenTaskCount: frozenTaskIds.length,
@@ -406,7 +599,8 @@ export function analyzeGanttDataset(dataset: GanttDataset): GanttAnalysis {
  * 同一任务在同一编码下只保留一条，避免自比较。
  */
 function builtinSecondaryCodes(
-  dataset: GanttDataset
+  dataset: GanttDataset,
+  includeRowKeysAsResource: boolean
 ): Map<string, Array<{ rowKey: string; bar: GanttBarModel }>> {
   const codes = new Set<string>()
   dataset.rows.forEach((row) => {
@@ -428,7 +622,7 @@ function builtinSecondaryCodes(
   dataset.rows.forEach((row) => {
     row.bars.forEach((bar) => {
       ;(bar.secondaryResourceCodes ?? []).forEach((code) => push(code, row.key, bar))
-      if (codes.has(row.key)) {
+      if (includeRowKeysAsResource && codes.has(row.key)) {
         push(row.key, row.key, bar)
       }
     })

@@ -10,6 +10,7 @@ dependency-reduced-pom.xml
 # 前端
 node_modules/
 dist/
+dist.new/
 dist-ssr/
 .vite/
 *.local
@@ -42,3 +43,9 @@ tmp/
 
 # 本地临时产物
 .screenshots/
+
+# 运行期取证产物（classpath dump 等）
+/aps-admin/cp.txt
+
+# 离线部署包（scripts/stack-bundle.ps1 生成，体积含镜像 tar）
+dist-offline/

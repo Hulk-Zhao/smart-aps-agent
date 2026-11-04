@@ -42,6 +42,10 @@
 - Testcontainers 选 **1.21.4**（1.x 最新线）；2.x 为破坏性大版本，M1 不跟随。
 - Spring Boot 3.3.13 已管理 actuator / validation 版本，根 pom 的 `dependencyManagement` 仅做显式锁定，不改插件配置。
 
+### 0.5 制品级验收规则（2026-11-04 冻结）
+
+**涉及行为变化的验收，必须在“当前源码构建的制品”上执行**。用旧制品测出的结论必须标注构建时间与源码时间差异，不得表述为“现状缺陷”；旧制品与当前源码存在行为差异时，该结论只能记为“旧制品观测”，不得进入缺陷清单。真缺陷须在当前制品上复现后才成立。
+
 ---
 
 ## 1. 冻结结论速览
@@ -281,7 +285,7 @@ import java.util.Map;
 public record SolveConfig(
         String engine,                         // timefold/ortools/rule_based（外部小写，见 C9）
         int timeoutSeconds,                    // 默认 60
-        int moveThreadCount,                   // 0 = CPU-1，最小 1
+        int moveThreadCount,                   // 缺省或 0 = 未指定（不调用 withMoveThreadCount，走引擎默认）
         String acceptor,                       // 默认 LATE_ACCEPTANCE
         long randomSeed,
         long maximumStepCount,                 // <=0 表示不限
@@ -291,7 +295,11 @@ public record SolveConfig(
         Map<String, Object> parameters         // 请求 parameters 原样透传
 ) {
 }
+```
 
+> `moveThreadCount` 语义（2026-11-04 实测冻结，**替代原「0 = CPU-1，最小 1」**）：**缺省或 0 = 未指定**——实现**不调用** `withMoveThreadCount`，走引擎默认（Timefold 2.8.0 社区版即单线程 `NONE`）；**仅非 0 值才尝试应用**；运行时不支持时如实标注 `ignored`，**不拒绝请求**（拒绝会打断既有调用方）。
+
+```java
 /** 求解度量，对应 solve_task.metrics JSONB。 */
 public record SolveMetrics(
         long durationMs,
@@ -339,7 +347,7 @@ public interface SolverAdapter {
 |---|---|---|
 | `SolveRequest.taskNo` | `ScheduleProblem.solveTaskId` | `taskNo` 仅作客户端关联号，**不是主键**；服务端按 `solve_task.id` 关联，响应回显 `taskNo` |
 | `SolveRequest.engine` | `SolveConfig.engine` | 小写 code 归一化；空值 `timefold`；DB 存大写 |
-| `SolveRequest.orderNos` | `ScheduleProblem.orders` | 按 `tenant_id + order_no` 查询；空表示该场景全部 `CONFIRMED` 订单 |
+| `SolveRequest.orderNos` | `ScheduleProblem.orders` | 按 `tenant_id + order_no` 查询（订单无沙箱维度）；空表示租户下全部 `CONFIRMED` 订单；显式点名覆盖 `onlyConfirmed`，但 `CANCELLED` 必须拒绝 `400/40000`，见 24.2 |
 | `SolveRequest.parameters` | `SolveConfig.parameters` | 原样透传；已知键 `timeoutSeconds/moveThreadCount/acceptor/randomSeed` 提升为强类型字段 |
 | `SolveResult.status=SUCCESS` | `ScheduleSolution.status=SOLVED` | **已废弃**：C20 起 DB 与 API 统一六值枚举，`POST /solve-tasks` 不再返回 `SolveResult` |
 | `SolveResult.status=FAILED` | `ScheduleSolution.status=FAILED` | 回包写 `FAILED` |
@@ -523,6 +531,7 @@ GET /api/v1/gantt/resource?sandboxId={uuid}&from={iso8601}&to={iso8601}&resource
 补充：
 
 - 所有业务表写入必须带 `tenant_id`；跨租户查询直接 `404`，不泄露存在性。
+- **订单是租户级资源，不是沙箱级资源（2026-11-04 冻结）**：`orders` 表（`V1__init.sql#L561-L598`）**没有 `sandbox_id` 列**，只按 `tenant_id` + `deleted=false` 过滤。因此「请求的订单不属于该沙箱」这一维度**不存在**，任何按沙箱校验订单归属的代码都是假校验，不得写入任何流。**沙箱只在任务（`task.sandbox_id`）与计划版本（`plan_version.sandbox_id`）层生效**；`POST /solve-tasks` 的 `sandboxId` 只决定任务写入哪个场景，不约束订单可见范围。
 - `sandbox` 的 `BASELINE` 每租户唯一（`uq_sandbox_baseline`）；`WHAT_IF` 从 BASELINE 复制。
 - `solve_task.status` 只允许 `PENDING/RUNNING/SOLVED/FAILED/CANCELLED/TIMEOUT`，见 `docs/api/enums.md`。
 
@@ -549,6 +558,7 @@ GET /api/v1/gantt/resource?sandboxId={uuid}&from={iso8601}&to={iso8601}&resource
 3. 已实现端点（`OrderController` 的 `{orderNo}`）保持不动；占位端点向它对齐。
 4. 本文件、`controller/contract/**`、`docs/api/openapi/*.yaml` 三处必须一致；本轮已修正的文件见第 12 节。
 5. 资源对外用 `code` 寻址，但响应体必须带 `id`（UUID），供 `calendar.resourceId` 等引用绑定；`id` 不作为路径参数（见 C14）。
+6. **订单路径参数 `{orderNo}` 无沙箱维度**：订单按租户唯一（`uq_orders_tenant_order_no`），不存在「某订单属于某沙箱」的寻址；沙箱参数只出现在任务/计划版本相关端点（见 C5 §7）。
 
 ---
 
@@ -1069,12 +1079,12 @@ public record SetupMatrixEntry(
 - **前置校验（必须实现）**：浮动工序的候选资源集合内，各资源对该工序算出的 `runSeconds` 必须一致；不一致时装配阶段返回 `42200`（`message` 指明工序与冲突资源），**不得静默取第一个资源代算**。
   - 候选集合：`RESOURCE` 锁生效时为 `lockedResourceIds`，否则为场景内全部启用资源。
   - 等价条件（满足其一即可）：资源间 `capacity_mode`、`capacity_value`、`efficiency`、`batch_capacity` 相同；`SECONDS_PER_UNIT` 场景下只要求 `efficiency` 相同。
-- **现状缺口（W1 实测，W4 必修）**：`TimefoldModelBuilder.resolveResource` 对无主资源工序直接取 `resourceById` 迭代顺序第一个作为标称资源（既不按 `lockedResourceIds` 收敛，也不做时长一致性校验）；在 `UNIT_PER_HOUR`/`BATCH_SECONDS` 或 `efficiency` 不一致时，会用错资源算 `runSeconds`。契约口径以本节为准。
+- **实现口径（已按本节落地）**：浮动工序按 `lockedResourceIds` 收敛后取 `resource.code` 最小者为标称资源；候选资源时长的等价性在装配阶段前置校验，不一致返回 `42200`。
 - 若后续确需“混合产能资源下浮动”，应改为“按实际分配资源重算时长”（`runSeconds` 需成为随资源变化的派生量），属模型改造，另行立条款，不在本条范围。
 
-#### 20.3.1.5 API 表达与现状缺口（前端 / BD-07 按此实现）
+#### 20.3.1.5 API 表达（三态已实现；前端 / BD-07 按此实现）
 
-- **现状缺口**：`RoutingNodeCommand.primaryResourceId` 是 `UUID`，Jackson 反序列化后无法区分“缺键”与“`null`”；`RoutingOverrides.build` 又只写非空值。因此当前 `PUT /routings/{id}/graph` **无法表达**、`GET` **无法回显**“显式浮动”（W4 的 `FLOAT` 实验数据来自直写 JSONB）。
+- **实现口径**：请求用 `primaryResourceMode` 区分三态；`FLOAT` 保存时写 `"primaryResourceId": null`（键存在、值为 `null`），`GET` 响应回显 `primaryResourceMode`，因此可表达、可回显“显式浮动”。
 - **冻结的 API 表达**：节点请求新增 `primaryResourceMode`，取值 `INHERIT | FLOAT | FIXED`：
   - 字段缺省 = `INHERIT`（等价 overrides 无键）；
   - `FLOAT` → `primaryResourceId` 必须缺省或为 `null`（给非空 UUID → `42200`），保存时写 `"primaryResourceId": null`；
@@ -1264,8 +1274,21 @@ GroupedOpenApi.builder()
 | `GET /strategies/{id}` | 详情（含 `rules`） | 40400 |
 | `PUT /strategies/{id}` | 全量更新（`rules` 必填、`version` 必填） | 40901 版本冲突、42200 |
 | `POST /strategies/{id}/clone` | 克隆，生成新 `strategyVersion` | 40400 |
-| `GET /strategies/{id}/export` | 导出 `{strategy, rules, checksum}`（JSON） | 40400 |
-| `POST /strategies/import` | `{payload, dryRun}` → `{valid, errors[], strategyId}` | 42200 |
+| `GET /strategies/{id}/export` | 导出 `{strategy, rules, checksum}`（JSON）；`checksum` 必出现 | 40400 |
+| `POST /strategies/import` | `{payload, dryRun}` → `{valid, errors[], strategyId, existing}`；`dryRun=true` 不落库 | 42200、40901 |
+
+**导入导出形状裁定（2026-11-04 冻结；事实核对于同日源码）**：
+
+- **导出 wrapper 保留**：`data = {strategy, rules, checksum}`。`checksum` 是**记录摘要（文件完整性）**：`SHA-256(canonical({strategy, rules}))`，其中 `strategy` 节点**包含** `id` 与乐观锁 `version`（hex 64 位），**必须出现**；缺 `checksum` 的载荷不得视为合格导出。**同一份内容从不同记录导出会得到不同 `checksum`，这是预期行为**（`id`/`version` 参与计算），它只用于回灌前判断文件是否被改动，**不得**当作内容同一性判据。
+- **导入分两步，顺序不可颠倒**：
+  1. **文件完整性**：用载荷中的原始 `strategy` 节点与 `rules` 重算上述记录摘要，与载荷 `checksum` 比较。`checksum` 缺失 / 格式非法 / 与重算值不一致 → `422/42200`，message 必须能区分这三类（不一致须体现「内容被改动」）。
+  2. **内容同一性**：剔除 `strategy.id` 与 `strategy.version` 后再规范化取 SHA-256，与「同 `name` + 同 `strategyVersion`」的既有记录按**同一剔除口径**算出的摘要比对。相同 → `200` 幂等，返回既有 `strategyId` 且 `existing=true`，**不新建、不升版本、不写 rules**；不同 → `409/40901`，message 逐字点名 `name` 与 `version`，**禁止自动升版本**。
+- **响应字段**：`{valid, errors[], strategyId, existing}`。`existing` 为 boolean、缺省 `false`，为 `true` 仅表示「本次没有新建、没有升版本、没有写 rules」；它与「200 + 相同 `strategyId`」**不等价**——`strategyId` 相同无法区分「本次新建后返回」与「从未写入直接返回」。
+- **试运行**：`dryRun=true` 走与执行**同一套判定**（上述两步校验），只校验不落库；命中既有返回 `existing=true` 且 `strategyId=null`。`dryRun` 缺省 `false`。
+- **实现事实**：`StrategyExportPayload`（`aps-service/.../service/strategy/StrategyExportPayload.java#L20-L29`）是 9 字段扁平载荷，**不含任何完整性校验字段**；`StrategyService#export`（#L282-L299）原样返回该扁平对象；`POST /strategies/import`（`StrategyController` #L145-L147）只接收该扁平载荷、**无 `dryRun` 参数**，`StrategyService#importStrategy`（#L307-L327）直接 `create` 落库。
+- **处置**：两项均为**实现待补，M2 收口前必须补齐（不是 M3）**，责任人 W2——导出补 `checksum` 并按 wrapper 返回；导入补 `dryRun` 分支与校验报告。补齐前两个端点 `x-implementation-status` 保持 `partial`，不得翻 `implemented`。
+- **`checksum` 的技术前置（规范化序列化）**：`checksum` 只有在**规范化 JSON 规则写死**时才有意义——必须固定①字段顺序（按 JSON 键字典序）②`null` 处理（缺省与 `null` 是否等价、是否省略键）③时间格式（`date` = `yyyy-MM-dd`，`date-time` = UTC ISO-8601 带毫秒）④空白与转义（无缩进、无多余空格、UTF-8）。规则未写死时同一份数据两次导出会得到不同 `checksum`，等于没有校验和。实现必须在导出实现处集中定义该规范化函数并对外写明；本节即为其契约引用点（补 `checksum` 时一并补规范化规则，不得只加字段）。
+- **形状不向实现妥协**：wrapper 与 `dryRun` 是冻结形状，实现向契约收敛；不得为对称而改前端或后端代码的调用方式。
 
 **DSL 端点（按 `code` 维度，唯一写者 W2；均返回 `Result<...>`）**：
 
@@ -1308,6 +1331,39 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 **兼容/回滚点**：`aps.dsl.legacy-singular=false` 关闭单数别名；`constraint_dsl` 停用后解析器退回「仅内置 8 条默认规则」，策略表 `strategy_rule` 不受影响。
 
+#### 24.1.1 约束归因（Justification）：字段与端点（M2-SE-05，已实现）
+
+**字段（`ConstraintJustification`；`constraint_justification` 表，V7 迁移新增 `weight`/`deduction`）**：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `constraintCode` | string | 规则键：软约束必须取自 `RuleCode`（24.1 上表 8 条编码），硬约束取自 `ConstraintCodes` 的 8 条硬约束编码；**禁止用中文标题当键**，中文只允许出现在 `description` |
+| `type` | string | `HARD` / `SOFT`（M1 遗留硬约束归因保留） |
+| `taskIds` | int64[] | 聚合后的受影响任务主键；求解期新解尚无数据库主键时，由结果写回阶段回填 |
+| `description` | string | 面向人的中文说明（唯一允许中文出现的字段） |
+| `weight` | integer \| null | 该规则求解时生效权重（`SoftConstraintWeights.active()` 快照）；**硬约束为 `null`** |
+| `deduction` | decimal | 正数表示被扣掉的软分；**硬约束为 `0`**（非空，缺省归一为 `BigDecimal.ZERO`） |
+
+- **聚合语义**：`deduction` 是**该规则聚合后的扣分**（按 `constraintCode` 聚合为一行，一次求解最多 8 行），等于 `weight × 违反量` 的汇总；**不是逐条违反事实的明细**。前端不得按“一行 = 一条冲突”渲染；`taskIds` 同理是聚合后的受影响任务集合。
+- `deduction` 与求解结果的软分必须同口径：归因重放总额（`sum(deduction)`）应等于 `bestScore` 软分的相反数（`expectedSoft`）。实现会在 `SoftConstraintWeights.disable()` 之前比对，**不一致时不阻断求解，但必须输出结构化 `ERROR` 日志并带稳定标记 `JUSTIFICATION_SCORE_MISMATCH`**，字段至少包含 `solveTaskId`、`sumDeduction`、`expectedSoft`、`delta`（`delta = sumDeduction - expectedSoft`）。**该标记一旦出现即视为缺陷**：说明归因重放与约束口径已分叉，必须修复，不得当作日志噪音忽略、降级或采样。
+- **不阻断是刻意选择**：归因只影响可解释性、不改已产出的排产结果；求解已完成、耗时已发生，此处抛出会把“解释口径误差”升级为求解失败。代价必须说清：**分叉期间归因行仍会返回，前端展示的扣分可能与实际软分不一致**；因此这条一致性只能靠上述 `ERROR` 标记被日志告警看见（默认级别下的 `WARN` 不可靠，不作为哨兵），不能靠运行时强制。
+
+**端点**：
+
+| 方法/路径 | 说明 | 错误 |
+|---|---|---|
+| `GET /solve-tasks/{id}/justifications` | 已实现；返回 `Result<ConstraintJustification[]>` | `40400`（任务不存在） |
+
+- **不分页**：规模上限 8 行/次，`page/size` 参数一律忽略。
+- **排序固定且已实现**：`deduction DESC, constraintCode ASC`（稳定序）。服务端仓储直接按 `ORDER BY deduction DESC, constraint_id ASC` 返回，服务层不做二次排序；前端不得自行排序兜底，服务端返回顺序即展示顺序。
+- **空结果必须是 `200` + `data: []`**，不是 `404`：任务存在但未启用软约束、权重全为 0、或任务未到 `SOLVED` 都可能为空。
+- 任务不存在 → `404`/`40400`，与 `GET /solve-tasks/{id}` 口径一致。
+- 归因按 `solve_task_id` 隔离，只对当次求解生成；重跑/增量重排重新采集，不复用旧行。
+
+**实现约束（留给后来人的警示）**：当前归因**不是** `SolutionManager.analyze()`（Timefold 2.8.0 社区版无 `ConstraintMatchTotal` / 该分析能力），而是**复用约束流同一套谓词（`SoftConstraintPredicates`）+ `SoftConstraintWeights.active()` 做同口径重放**（`SoftConstraintJustifications.from`），在求解结束、权重尚未 `disable()` 时采集。
+- 因此**修改任一约束谓词、权重默认值或聚合口径时，必须同步修改归因重放**；否则归因与求解目标会悄悄分叉，而且不会报错。
+- 这也是 `weight` 必须记录“求解时生效权重”而不是“策略表当前权重”的原因：策略后续修改不得改变历史归因的可解释性。
+
 ### 24.2 C20 异步求解生命周期、取消与 STOMP 进度（唯一写者 W3 `dev-SE3`）
 
 **状态机**（对外枚举，`SolveTaskStatus`）：
@@ -1327,6 +1383,57 @@ constraint:                       # 兼容别名：单对象，等价 constraint
   `deleted=false` 的 task 快照（`orderNo/resourceCode/startTime/endTime`），其余状态为空数组。
   快照为场景维度（同一 sandbox 可能含其他会话订单的既有任务），不是“本次请求订单”子集。
 - 同一 `sandboxId` 同时只允许 1 条 `RUNNING`；超出的提交保持 `PENDING` 排队。
+
+**订单范围与状态过滤（2026-11-04 冻结；`POST /solve-tasks` 受理）**：
+
+1. **订单不受沙箱约束**：`orders` 无 `sandbox_id` 列（见 C5 §7），订单只按 `tenant_id + deleted=false` 读取；`sandboxId` 只决定任务写入哪个场景，**不得**用于校验订单归属，也不存在「订单不在该沙箱」的错误分支。
+2. 未显式传 `orderNos` 时，`onlyConfirmed=true` 生效：只取 `status='CONFIRMED'` 的订单。
+3. **显式 `orderNos` 覆盖 `onlyConfirmed`**：显式点名代表调用方要排这些单，此时不加状态过滤；`DRAFT/SCHEDULED/RELEASED/IN_PROGRESS/COMPLETED` 照排，不拒绝。
+4. **`CANCELLED` 是唯一例外，必须拒绝**：显式 `orderNos` 中出现 `status='CANCELLED'` 的订单时，返回 `400/40000`，message **逐字点名**该订单号（与「请求的订单号不存在」同族错误码）。理由：`CANCELLED` 是「这活不干了」的终态否决，排进去不会报错，只会让产能与交期算歪；显式点名覆盖的是「要排哪些单」，不是「这单已取消」。
+5. **订单号不存在的错误码（2026-11-04 冻结）**：`orderNos` 出现在**请求体数组**中（批量语义），不是路径寻址对象；批量里有一个订单号不存在时，**拒绝整个请求**，返回 **`400/40000`**（不是 `40400`），message **逐字点名**不存在的订单号。**与 `40400` 的分界**：路径寻址（如 `GET /orders/{orderNo}`）格式合法但资源不存在 → `404/40400`；请求体内容（数组元素、字段值）校验失败 → `400/40000`。
+6. **实现现状（缺口登记）**：`ScheduleRepository#findOrders`（`aps-infrastructure/.../ScheduleRepository.java#L54-L86`）显式 `orderNos` 时 `onlyConfirmed=false`，无 `CANCELLED` 拒绝；`ScheduleProblemAssembler#requireAllRequestedOrdersFound`（#L343-L359）只处理「查不到」且错误码为 `400/40000`（与第 5 条一致）。因此第 4 条（`CANCELLED` 拒绝）为 **M2 必须补（W4：装配器与受理入口校验；`m2-plan.md#L227` 将 `ScheduleProblemAssembler/ScheduleRepository` 归 W4，`orderNos` 存在性与 `pinnedOrderNos` 重叠校验亦由 W4 落地）**，补齐前 `POST /solve-tasks` 的该项子行为标 `partial`，不得计为已实现。
+
+**终态判定：任务覆盖率与「`SOLVED` 即已落库」（2026-11-04 冻结；W2 约束 + W3 生命周期）**：
+
+1. **期望任务数口径（唯一）**：`expectedTaskCount = Σ ScheduleProblem.orders[*].operations.size()`，即本次求解题面中每个订单按生效 ACTIVE 工艺路线逐条展开的工序总数（`operationIndex = routing_node.seq_no`）。装配阶段因缺 ACTIVE 路线、资源不可用等原因**未进入题面**的订单必须显式记录（`metrics.excludedOrders[]`，含 `orderNo` 与原因），且不计入 `expectedTaskCount`；同一 `sandboxId` 内不属于本次请求的既有任务不计入。**禁止**各流自行用“场景订单数 × 工序数”或“库内 `task` 行数”另算一套口径。
+2. **未排位任务必须产生硬负分**：求解结果中任何一个期望任务没有获得资源与开始时间（未排位），每个这样的任务至少计 `1hard`；不得出现“部分排入、硬分为 0”的解。`bestScore` 硬分只有在**全部期望任务已排位且无其他硬违约**时才允许为 0。
+3. **落库前完整性校验（强制）**：进入 `PERSISTING` 前必须比对 `expectedTaskCount` 与已排位数 `assignedTaskCount`；二者不等（含 `assignedTaskCount < expectedTaskCount`）**不得**返回 `SOLVED`。终态必须是 `FAILED`，`errorCode=FAILED`，`message` 必须同时给出期望数与已排位数。
+4. **`SOLVED` 的充要条件（三条同时成立）**：
+   - ① 硬分为 0（无硬违约）；
+   - ② 覆盖完整：`assignedTaskCount = expectedTaskCount`；
+   - ③ 结果**已成功落库**：事务提交成功，任务已写入，`metrics.persistedTaskCount = expectedTaskCount`，且库内 `task` 行数与返回一致。
+5. **禁止的状态组合**：`SOLVED` + `persistedTaskCount=0`（或任何 `persistedTaskCount < expectedTaskCount`）**不得存在**；落库失败、事务回滚、写入行数不符 → 终态 `FAILED`（带原因），`phase` 不得为 `DONE`，`resultTaskId` 必须为 `null`。`SOLVED` 时 `phase` 只能是 `DONE`（与本节 `phase` 表一致）。
+6. **`status` 与降级标记是两个正交维度（2026-11-04 冻结，替代原“任何降级结果不得包装成 `SOLVED`”）**：
+   - `status` 只回答「**这个解能不能用**」：覆盖完整 + 硬分 0 + 已成功落库 → `SOLVED`（第 4 条）；
+   - `degraded` / `engineFallback` / `engineFallbackReason` / `engineFallbackDetail` 只回答「**是不是走了替代路径**」；
+   - 因此：**降级后若产出完整可行解并落库，`status` 可以为 `SOLVED`，但必须同时带 `degraded=true` 与 `engineFallback*` 标记**；
+   - **不得把失败或不完整的结果称为 `SOLVED`；也不得在降级时不留任何标记**。理由：写死成「降级一律不能 `SOLVED`」会让一个合法的完整解被状态机否定，而调用方真正需要同时知道两件事——「这计划能用」与「但它不是原定引擎算的」，缺一不可；
+   - `engineFallbackReason/Detail` 与 `status` **不互相推断**：不得从 `status=SOLVED` 推断「没降级」，也不得从 `degraded=true` 推断「失败」；
+   - `TIMEOUT`、`FAILED` 仍不得为 `SOLVED`；`degraded=true` 不能替代第 4 条三项条件；`fallbackMode=PARTIAL`（M3 预留）若未来产出部分排位结果，其终态同样不得为 `SOLVED`。
+7. **验收口径**：判定“求解成功”必须同时给出 `status=SOLVED`、`bestScore` 硬分 0、`persistedTaskCount = expectedTaskCount` 与库内 `task` 实际行数；仅凭 `status=SOLVED` 或 `0hard/0soft` 不得判定成功（压测已复现 `SOLVED/0hard/0soft/persistedTaskCount=0` 的假成功）。
+
+**`metrics` 键清单（2026-11-04 实测补登；`metrics` 仍为开放对象，键集合不冻结）**：
+
+| 键 | 语义 |
+|---|---|
+| `expectedTaskCount` | `Σ orders[*].operations.size()`，装配剔除的订单不计入 |
+| `assignedTaskCount` | 求解结果中已分配任务数 |
+| `persistedTaskCount` | 实际落库行数；`TIMEOUT` / `FAILED` 恒为 `0` |
+| `unassignedTaskCount` | 未排位任务数（每条 1 hard 惩罚） |
+| `discardedBestSolution` | `true` 表示最优部分解被丢弃、未落库 |
+| `moveThreadCountRequested` / `moveThreadCountResolved` | 请求值与解析值（缺省或 0 时 `Requested=0`） |
+| `moveThreadCountEffective` | `DEFAULT \| NONE \| <引擎可识别值>`，`DEFAULT` 表示未显式设置 |
+| `moveThreadCountApplied` | 是否真的写入了 `SolverConfig` |
+| `moveThreadCountIgnored` | 请求值未被运行时支持（如社区版请求 7 → `Effective=NONE`、`Ignored=true`） |
+| `multiThreadedAvailable` | 当前发行版是否具备多线程能力 |
+
+**已知限制：单进程求解并发度恒为 1（M2，W4 取证；不是 bug）**：
+
+- `SoftConstraintWeights` 是**进程级静态 `AtomicReference`**；互斥由 `TimefoldSolverAdapter` 的 `private static final ReentrantLock SOLVER_LOCK` 保证，临界区覆盖 `activate → create/buildSolver/solve → disable`；权重在 `SolverFactory.create(...)` 时被约束流读取一次并固化。因此**同一进程内同一时刻只能有一个求解会话，并发度恒为 1**。
+- 后到请求**排队等锁**；等待上限 `min(5, max(1, config.timeoutSeconds()))` 秒。等不到锁 → 任务 `FAILED`，`message="求解器正被其他求解任务占用，等待 N 秒仍未释放，请稍后重试"`——这是**可见的拒绝**，不是静默降级，也不会让后来的请求带着别人的权重去求解。
+- 等锁期间任务已是 `RUNNING`（不会被回落成 `PENDING`）；超时则直接 `FAILED`，不产生结果行。
+- 多 JVM 部署时锁与权重注册表**按进程隔离**，不存在跨进程串味；总并发度 = 实例数，单实例仍为 1。
+- **验收含义（必须遵守）**：压测与联调用例**不得**把“并发发起求解”当作并行吞吐来度量——此时测到的是排队时间与拒绝率，不是引擎性能。要测吞吐必须多进程/多实例，或串行计时单次求解。
 
 **端点**：
 
@@ -1369,7 +1476,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 **STOMP 进度**：
 
 - 端点：`/ws/solve-tasks/{id}`（STOMP over WebSocket，`{id}` 为 `solve_task` BIGSERIAL）。
-- 订阅：`/topic/solve-tasks/{id}`；连接成功后服务端立即推送一条当前快照。
+- 订阅：`/topic/solve-tasks/{id}`；连接成功后服务端**尝试**立即推送一条当前快照——best-effort，不保证送达（见下）。
 - 消息体（`SolveProgress`）：
 
 ```json
@@ -1397,7 +1504,10 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 - 推送节流：同状态变化立即推送，`progress/bestScore` 最多 1 次/秒；终态必推一次且含 `resultTaskId`。
 - `degraded` **不在 STOMP 消息中**（实现无该字段），降级信息由 `GET /solve-tasks/{id}` 的 `degraded`/`metrics` 提供。
-- **与轮询关系**：`GET /solve-tasks/{id}` 是唯一事实源；STOMP 只推送、不替代查询，不重放历史消息。前端断线后回退 2 秒轮询，重连以快照为准。
+- **「订阅即推」是 best-effort，不是投递保证（2026-11-04 冻结）**：`StompSubProtocolHandler` 先把 `SUBSCRIBE` 异步投到 `clientInboundChannel`，随后才同步 `publishEvent(SessionSubscribeEvent)`；监听器收到事件即 `convertAndSend`，此时订阅可能尚未注册到 broker，快照会被静默丢弃。实测出现过断言超时 10.44s、而同 traceId 的服务端日志已有「推送求解进度快照」。这是**确定性时序竞态**，不是偶发网络问题；不得把首帧当作既有保证写进任何实现或测试假设。
+- **客户端必须对账（强制）**：连接建立后**无条件**补一次 `GET /solve-tasks/{id}`，与推送帧按 `taskId/status/phase` 合并，不得把「首帧快照」当作唯一数据来源；**不得以「消除多余请求」为由删除该兜底**。
+- **终态任务的额外风险（兜底存在的根本原因）**：已终态（`SOLVED/FAILED/CANCELLED/TIMEOUT`）的任务不会再有后续帧，首帧一丢，页面就永久空白且没有任何自愈机会；非终态任务至少还有后续状态帧可补。因此兜底不是优化项，是正确性项。
+- **与轮询关系**：`GET /solve-tasks/{id}` 是唯一事实源；STOMP 只推送、不替代查询，不重放历史消息。前端断线后回退 2 秒轮询；**重连后先 `GET` 对账，再消费推送帧**。
 - 回滚点 `aps.solve.progress-push=stomp|poll`：设为 `poll` 时不注册 WS 端点，前端仅轮询；`50010` 只用于 WS 通道故障，不影响查询。
 
 ### 24.3 C21 增量重排与锁定语义（唯一写者 W4 `dev-SE4`）
@@ -1423,7 +1533,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 冻结规则：
 
 1. 增量求解**写入新 `solve_task` 行**，并在 C24 计划域生成新 `plan_version`（`DRAFT`）；**禁止覆盖已 `PUBLISHED` 版本的 `task` 行**。
-2. 已发布且已执行（`IN_PROGRESS/COMPLETED`）的任务不得被增量结果修改，冲突返回 `40903`。
+2. 已发布且已执行（`IN_PROGRESS/COMPLETED`）的任务不得被增量结果修改，冲突返回 `40903`（与 C22 任务调整、C24 计划回滚同一语义“已执行进度不可倒带”，不得拆码）。**判定粒度为场景级**：`sandbox_id` 内存在任意 `IN_PROGRESS/COMPLETED` 任务即拒绝，不区分其是否属于本次增量范围；`40903` 只用于“回滚/覆盖与在制进度冲突”，发布幂等与版本演进发布一律 `200`。
 3. `TaskAssignment` 新增：`lockType`（`NONE/TIME_WINDOW/RESOURCE/FROZEN`）、`lockedFrom/lockedTo`（`lockType=TIME_WINDOW`/`FROZEN` 时的闭区间，等价本文早期称法 `pinnedWindow{from,to}`，落地字段名为 `lockedFrom/lockedTo`）、`lockedResourceIds[]`（`lockType=RESOURCE` 时必填）。
 4. 优先级：`FROZEN` > `lockType` > M1 的 `frozen:boolean`（仅为兼容别名，等价 `lockType=FROZEN`）。
 5. 求解器必须保证 `TIME_WINDOW` 任务落在 `[from,to]` 内；`RESOURCE` 任务的**主资源必须属于 `lockedResourceIds`**（单元素集合=固定，多元素=白名单内可换，不是“主资源必须原样不变”）。若该任务主资源已被固定（`overrides.primaryResourceId` 非空），`RESOURCE` 锁不改变结果——这是 C15 20.3.1.2 说明的叠加结果，不是锁失效。
@@ -1440,7 +1550,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
    - **任务级 `task.status='FROZEN'`（及 `task.lock_type<>'NONE'`）**：只钉住**该任务本身**（固定开始/结束/主资源）；**同订单的其他任务仍可重排**，必须作为固定赋值（基准解快照）进入增量题面，结果不得改动其时间与资源。
    - **订单级 `orders.freeze_status`（C23 四态）**：约束该订单的**全部任务**，属订单语义；订单冻结时该订单全部任务按 `freezeLock` 固定/不可重排。
    - **关系**：订单级是外层约束，任务级是内层约束，**取交集、互不替代**；订单解冻不自动解除任务级 `FROZEN`，任务解冻也不改变订单冻结。订单未冻结时，订单内未被任务级锁定的任务正常参与增量重排。
-6. **禁止“整单排除”实现**：不得把 `task.lock_type<>'NONE' OR task.status='FROZEN' OR orders.freeze_status<>'UNFROZEN'` 统一映射为“排除整个 `order_id`”（即 `findLockedOrderIds` 现有写法，W4 需改造）。正确判定为按任务区分：任务级命中 → 只固定该任务；仅订单级命中 → 固定该订单全部任务。`affectedTaskIds` 仍表示“可重排任务”，被固定任务不进入可变集合，但**必须保留在基准解快照中**。
+6. **禁止“整单排除”实现**：不得把 `task.lock_type<>'NONE' OR task.status='FROZEN' OR orders.freeze_status<>'UNFROZEN'` 统一映射为“排除整个 `order_id`”。正确判定为按任务区分：任务级命中 → 只固定该任务；仅订单级命中 → 固定该订单全部任务。`affectedTaskIds` 仍表示“可重排任务”，被固定任务不进入可变集合，但**必须保留在基准解快照中**。
 7. **`TIME_WINDOW` 为闭区间（权威口径）**：任务时间必须满足 `start >= lockFrom && end <= lockTo`，两端恰好命中均合法（W2 实测 `hardScore=0`）。
    - `V5__task_lock.sql` 中 `locked_to` 的列注释“结束（不含）”为**历史遗留、已过时**，以本条为准；**不得修改 V5 本体**（已应用，改注释即触发 Flyway 校验和不一致）。
    - **零长度窗（`from == to`）** 被 `CHECK (locked_to > locked_from)` 拒绝，属**预期行为**：调用方应在请求阶段返回 **400 + `40000`**，不得变成 500/内部错误；若需修注释，只能新增迁移 `COMMENT ON COLUMN task.locked_to IS ...`。
@@ -1485,7 +1595,8 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 - 响应 `TaskAdjustResult{adjustmentId, applied, dryRun, task, conflicts[]}`；`conflicts[]` 每项 `{type, message, relatedTaskIds}`。
 - `FROZEN` 任务拒绝 `MOVE`（`42201`）；`FREEZE` 必须带 `reason`。
-- 错误码：`40901` 版本冲突、`42201` 不可行（日历/依赖/资源冲突，以及**任务锁与订单 `freezeLock` 冲突**——判定与取交集规则见 C21/24.3，请求阶段 fail fast，message 同时列出订单约束与任务约束）、`40300` 无调整权限（M2 为占位，默认放行，M3 接 RBAC）。
+- 错误码：`40901` 版本冲突、`42201` 不可行（日历/依赖/资源冲突，以及**任务锁与订单 `freezeLock` 冲突**——判定与取交集规则见 C21/24.3，请求阶段 fail fast，message 同时列出订单约束与任务约束）、`40300` 无调整权限（M2 为占位，默认放行，M3 接 RBAC）、`40903` 已执行进度不可倒带（**目标任务是 `IN_PROGRESS/COMPLETED` 时拒绝，任务级判定：只判目标任务，不扩大到场景**）。
+- `40903` 是**同一语义的多入口**，不是多个错误码：任务调整（本节，任务级）、增量覆盖（C21，场景级）、计划回滚（C24，场景级）返回同一个 `40903`，调用方可走同一条“提示用户不可回退”路径；禁止拆码。
 - 调整记录写 `task_adjustment`（V1 已建表）；撤销/重做栈每任务最多 50 步。
 
 ### 24.5 C23 订单优先级、四态冻结与释放/开工（唯一写者 W5 `dev-BD5`）
@@ -1514,6 +1625,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 | 方法/路径 | Body | 说明 |
 |---|---|---|
+| `GET /plans?sandboxId=&page=&size=` | — | 场景内计划版本列表（分页，已实现，W5） |
 | `POST /plans/{id}/publish` | `{reason, approver}` | `id` = `plan_version.id`（UUID） |
 | `POST /plans/{id}/rollback` | `{targetVersionNo, reason}` | 生成**新版本**，不物理回退 |
 | `GET /plans/{id}` | — | 版本详情与任务数 |
@@ -1521,13 +1633,35 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 冻结：
 
 1. `plan_version` 字段：`id/tenant/sandbox_id/plan_no/version_no/status/snapshot JSONB/published_at/published_by/approver/rollback_of/reason/task_count/version/审计字段`；`plan_no` 形如 `PLAN-YYYYMMDD-NNN`，租户内唯一；`version_no` 从 1 递增。
-   - **`approver` 为契约字段（V3 建列）**：可选 `varchar(64)`；`POST /plans/{id}/publish` 未传时记为发布操作人（`published_by`），操作人也不可得时置空 `NULL`；回滚生成的新版本沿用请求操作人，不继承原版本 `approver`。
+   - **`approver` 为契约字段（V3 建列）**：可选 `varchar(64)`；`POST /plans/{id}/publish` **未传或空白（`trim` 后为空）→ 存 `NULL`，不回退到 `published_by`**——审批人必须是真人，禁止用机器标识冒充审批人。回滚生成的新版本沿用请求操作人，不继承原版本 `approver`。
+   - **响应与列表的 `approver` 如实为 `null`**：前端**不得**用 `published_by` 顶替显示审批人；需要展示“操作人”时另用 `published_by` 字段，不得混用。
 2. `status` 枚举 `DRAFT/REVIEW/PUBLISHED/ARCHIVED`（V3 CHECK）。
-3. 发布：`snapshot` 固化当次全部任务（不可变），并回填 `task.plan_version_id`；重复发布同一 `plan_version` 幂等返回 200。
-4. 回滚：新建 `plan_version`（`status=PUBLISHED`、`rollback_of=原版本`），把任务指向新版本；**已执行任务（`IN_PROGRESS/COMPLETED`）存在时拒绝，返回 `40903`**（新增，见 C27）。
+3. 发布：`snapshot` 固化当次全部任务（不可变），并回填 `task.plan_version_id`；**重复发布同一 `plan_version` 幂等返回 200**（`affectedTaskCount=0`，不报错、不返回 `40903`）。场景内已有 `PUBLISHED` 版本时，再发布另一个 `DRAFT/REVIEW` 版本**允许**，返回 `200` 与该版本自身的 `planId`：版本演进是正常操作，`40903` 不用于发布路径。
+4. 回滚：新建 `plan_version`（`status=PUBLISHED`、`rollback_of=原版本`），把任务指向新版本；**场景内（`sandbox_id`）存在已执行任务（`IN_PROGRESS/COMPLETED`）时拒绝，返回 `40903`**（与 C21 增量、C22 任务调整同一语义“已执行进度不可倒带”，不得拆码；判定粒度为场景级，不是目标版本内计数；见 C27）。回滚**不校验**“当前版本是否已发布”，只要求 `targetVersionNo` 指向该场景内一个 `PUBLISHED` 历史版本（不存在则 `40400`）。
 5. MES 下发仅占位（`50100`），M2 不做外部系统推送。
 6. `planId` 一律使用 `plan_version.id`，**不再用 sandboxId 充当计划 id**。
 7. **占位退役（非契约内容，实施备注）**：`aps-web/.../controller/contract/GanttContractController` 的 `/plans/{id}/publish`、`/plans/{id}/rollback` 两个 501 占位已授权 W5 在 BD-03 落地时删除，避免与真实 Controller 产生 Ambiguous mapping。删除后本文件的端点定义仍以此处为准，OpenAPI 的 `x-implementation-status` 由 W5 同步更新。
+8. **计划版本列表 `GET /plans`（C24 新增，2026-11-04 冻结；实现归 W5）**：端点状态=**已实现**（W5，2026-11-04 真实 HTTP 验收）。已验证行为：空沙箱 `200 + items:[] + totalPages:0`；越界页（`page=9&size=2`）如实回边界（`total=5/totalPages=3`，不报错）；缺 `sandboxId` → `400/40000`；排序实测 `v5→v4→v3→v2→v1`（`published_at` 递减）。本节只记录已验证事实，不含性能/压测结论。
+   - 请求：`sandboxId`（必填，UUID）、`page`（默认 1，`≥1`）、`size`（默认 20，上限 200，超限按 200 处理，不报错）。**不提供 `sort`**：排序固定 `published_at DESC, id DESC`（同一时间戳用主键倒序兜底，保证翻页稳定）。按 PostgreSQL 默认语义 `DESC` 即 `NULLS FIRST`，因此 `published_at` 为 `NULL` 的 `DRAFT/REVIEW` 版本排在最前，其后才是按发布时间倒序的已发布版本。
+   - 参数校验：缺 `sandboxId` 或非 UUID → `40000`；`sandboxId` 对应场景不存在 → `40400`。租户由上下文注入，**不接受请求参数**。
+   - 过滤：`tenant_id = 当前租户`、`sandbox_id = sandboxId`、`deleted = false`。
+   - 响应 `data` 使用统一分页结构（`conventions.md` §4，分页口径同 C27 §24.9）：`{items[], page, size, total, totalPages}`；空结果返回 `200` + `items: []`。
+   - `items[]` 字段（**只有以下字段，不含任务明细、不含 `snapshot`**）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `planId` | string（UUID） | `plan_version.id`，对外 `planId` |
+| `planNo` | string | `PLAN-YYYYMMDD-NNN` |
+| `version` | integer | 业务版本号（`version_no`，同场景从 1 递增）；**不是乐观锁列 `plan_version.version`** |
+| `status` | string | `DRAFT/REVIEW/PUBLISHED/ARCHIVED` |
+| `publishedAt` | string（date-time）\| null | 未发布版本为 `null` |
+| `publishedBy` | string（UUID）\| null | 发布操作人 |
+| `approver` | string \| null | 审批人；未填时同发布规则（见第 1 条） |
+| `taskCount` | integer | 快照任务数 |
+| `rollbackOf` | string（UUID）\| null | 回滚来源版本主键；非回滚版本为 `null` |
+
+   - 任务明细只能走 `GET /plans/{id}`；列表端点**不得**内联 `tasks[]` 或 `snapshot`，避免列表拖慢。
+   - 只读端点，不要求 `Idempotency-Key`。
 
 ### 24.7 C25 库存落表与 MRP 齐套（唯一写者 W6 `dev-MRP`）
 
@@ -1591,9 +1725,12 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 - 错误行结构：`{row, field, code, message}`；整体返回 `Result<ImportResult{total, success, failed, errors[]}>`。
 - 上限：文件 ≤5MB、数据行 ≤5000；超限 `42200`。
-- 拟定 9 类实体（PRD BR-INT-004-01 中 M2 可落地者）：`materials`、`boms`、`resources`、`calendars`、`customers`、`suppliers`、`orders`、`routings`、`operationTemplates`。
+- **M2 冻结名单（2026-11-04 冻结，以实现交付与 Excel 端到端证据为准），共 9 类**：
+  `materials`、`boms`、`resources`、`calendars`、`operationTemplates`、`routings`、`orders`、`strategies`、`suppliers`。
+  - 依据：9 类均有模板生成、preview、execute 落库、export 的实测证据（`docs/testing/m2-bd-05-import-export.md#L18-L38/#L141`、`docs/plan/m2-todo.md#L11/#L13`）；枚举以 `ImportEntity`（`aps-service/.../importexport/ImportEntity.java#L11-L120`）为准。
+  - **来源说明（一句话）**：`customers` 未交付、**不在 M2**；`suppliers` 已交付并有端到端证据，故纳入——「没有 `customers`」是交付范围，不是漏项。
+  - `customers` 未实现，**不在 M2 冻结面**；客户/供应商的扩展（含新增 `customers`）在 **M3 单开卡片**，M2 不再挂待定。
   - `换型矩阵`不在 M2（C12 降级），故不进清单；策略导入导出走 C19。
-  - **该清单在 M2-BD-05 开工前由用户最终点名确认**（用户七项拍板未覆盖此项），点名后本表即冻结。
 - 导入复用各域现有 Service 校验，不绕过业务规则；`dryRun` 与执行共用同一校验器。
 
 ### 24.9 C27 REST 认证分级、限流、幂等与错误码（唯一写者 W1 `dev-CONTRACT`）
@@ -1625,12 +1762,14 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 | code | HTTP | 默认 message | 场景 |
 |---|---|---|---|
-| `40903` | 409 | 已发布的计划/任务不可回滚或覆盖 | 计划回滚遇已执行任务（C24）、增量覆盖已发布任务（C21） |
+| `40903` | 409 | 已发布的计划/任务不可回滚或覆盖 | **仅**用于“已执行进度不可倒带”，同一语义、多入口、不得拆码：增量覆盖（C21，场景级）、任务调整（C22，任务级）、计划回滚（C24，场景级）。发布幂等、版本演进发布不得返回本码 |
 | `42201` | 422 | 调整不可行 | 甘特调整触发日历/依赖/资源冲突（C22）；**任务锁与订单 `freezeLock` 空交集冲突**（判定与取交集规则见 C21/24.3）；message 必须同时列出冲突的订单约束与任务约束 |
 
 > `42201` 已在 `aps-common` 落地：`ErrorCode.ADJUSTMENT_INFEASIBLE`（`aps-common/src/main/java/com/hengce/aps/common/exception/ErrorCode.java`），HTTP 映射见 `RestExceptionHandler`（`UNPROCESSABLE_ENTITY`）；枚举名沿用，不改名以兼容 W4 已写入的引用。
 
 其余沿用：`40100/40300/40400/40900/40901/42200/42900/50000/50010/50100`。
+
+- **`400/40000` 与 `404/40400` 的分界（2026-11-04 冻结，T2/T3 裁定）**：非法 UUID、非法时间/枚举/类型、请求体必填缺失或值不合法 → **`400/40000`**；格式合法但**路径**指向的资源不存在 → **`404/40400`**；请求体批量数组（如 `orderNos[]`）中任一元素不存在 → **`400/40000`** 整批拒绝并逐字点名（见 §24.2 第 5 条）。**非法 UUID 一律 `40000`，不得用 `40400`**——参数格式错误不是资源不存在。
 
 **分页**：`page ≥1`、`size` 默认 20 上限 200，超限按 200；`sort=field,asc|desc`，未知字段 `40000`。
 
@@ -1643,8 +1782,21 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 ### 24.10 C28 引擎路由与降级标记（唯一写者 W3 `dev-SE3`）
 
-- 引擎选择：请求 `engine` 优先，缺省 `timefold`；`ortools` 在 M2 仍是占位（`OrtoolsSolverAdapter` 返回 FAILED），不得对外宣称可用。
-- **不新建规则引擎**。降级只覆盖：Timefold 抛异常、超时（终止后无可行解）、求解器不可用。
+- **引擎选择（唯一策略级键位）**：解析顺序 `request.engine` → 策略 `optimizationRules.engine`（缺失回退 `initialRules.engine`）→ 默认 `timefold`；策略读取失败按“未声明”处理。`engineSource ∈ {REQUEST, STRATEGY, DEFAULT}`，`engineSpecified = (engineSource != DEFAULT)`，`DEFAULT` 不得伪装成显式指定。未知引擎名返回 `400/40000`。**`optimizationRules.engine`（回退 `initialRules.engine`）是唯一策略级键位**：禁止在策略 JSON 另开 `engineName`/`solver` 等键；策略级配置落在开放 JSON，不改表、不占迁移号段。
+- **`ortools` 未启用时不得宣称可用**：M2 的 `ortools` 是占位实现。请求 `ortools` 但未启用必须**降级到 Timefold**，并在响应/metrics 显式标记 `degraded=true`、`engineFallback=true`、`engineFallbackReason=SOLVER_UNAVAILABLE`、`engineFallbackDetail=ORTOOLS_NOT_ENABLED`；禁止把降级结果报成 `ortools` 成功，也不得因此让整个请求失败。降级后若产出完整可行解并成功落库，`status` 可为 `SOLVED`，但必须保留 `degraded=true` 与全部 `engineFallback*` 标记（与 `status` 正交，见 §24.2 第 6 条）；展示层仍应按降级态（黄色）呈现，不得显示为绿色成功。
+- **`engineFallbackDetail` 枚举冻结（成因，给运维）**：
+
+| 值 | 含义 |
+|---|---|
+| `ORTOOLS_NOT_ENABLED` | 请求 ortools 但未启用（配置） |
+| `LOCK_CONTENTION` | 等待求解锁超时（容量） |
+| `SOLVER_NOT_ASSEMBLED` | 引擎未装配（不可用） |
+| `SOLVER_TIMEOUT` | 求解超时 |
+| `ENGINE_EXCEPTION` | 引擎执行异常 |
+
+`engineFallbackReason`（`TIMEOUT/ENGINE_ERROR/SOLVER_UNAVAILABLE`）是给策略看的语义；`engineFallbackDetail` 是给运维看的成因，两者不得混用；detail 仅在发生降级时出现。
+
+- **不新建规则引擎**。降级只覆盖：请求 `ortools` 但未启用、求解锁等待超时、Timefold 抛异常、超时（终止后无可行解）、求解器不可用。
 - `fallbackMode` 枚举**冻结为 `HARD_ONLY | PARTIAL`**；**M2 只产出 `HARD_ONLY`**，`PARTIAL` 预留给 M3（避免二次改契约）。
 - 降级标记落 `solve_task.metrics`（JSONB）固定键：
 
@@ -1652,15 +1804,19 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 |---|---|---|
 | `engineFallback` | boolean | `true` |
 | `engineFallbackReason` | string | `TIMEOUT/ENGINE_ERROR/SOLVER_UNAVAILABLE` |
+| `engineFallbackDetail` | string | 见上表枚举；仅降级时出现 |
 | `fallbackMode` | string | `HARD_ONLY`（M2 唯一取值） |
 | `fallbackAt` | string | UTC ISO-8601 |
 | `terminationReason` | string | 与 `SolveMetrics` 一致 |
+
+路由决策 key（无论是否降级都写）：`requestedEngine`、`engineSource`、`engineSpecified`、`selectedEngine`、`effectiveEngine`；调用方按 `engineSource` 解释“按谁的意愿选了哪个引擎”。
 
 - 接口透传：`GET /solve-tasks/{id}` 的 `metrics` 原样返回，并置 `degraded=true`；列表可返回摘要 `degraded`。
 - DSL 校验失败**不降级**，返回 `42200`（PRD BR-SE-005-04）。
 - 无任何可行解且引擎不可用：`status=FAILED`，`errorCode=50010`，仍写降级标记。
 - 前端展示：进度/结果页显示黄色「降级」徽标 + tooltip 原因；**不得显示为绿色成功**；已发布计划保留 `degraded` 只读字段。
 - 回滚点 `aps.solve.fallback-enabled=false`：异常/超时直接 `FAILED`，不产生降级标记；历史 `metrics` 键保留。
+- **性能验收线不在本契约**：以 `docs/plan/m2-plan.md#L52`（原文“M2 只取其中 **500 订单 <60s**、Docker ≤15min 两项”）与 `#L205` 为准；本契约不复制 SLA 数值。“落库覆盖完整、无降级”属观测补充（见 §24.2 终态判定），不替代计划验收线。
 
 ### 24.11 C29 订单甘特读接口（唯一写者 W4 `dev-SE4`）
 
@@ -1681,13 +1837,18 @@ constraint:                       # 兼容别名：单对象，等价 constraint
   "to": "2026-11-06T00:00:00Z",
   "orders": [
     {
+      "orderId": "6f0c2e1a-0000-4000-8000-000000000101",
       "orderNo": "SO-001",
       "materialCode": "M-001",
+      "productFamily": "PF-01",
       "dueDate": "2026-11-06",
+      "dueDateLine": "2026-11-06T23:59:59Z",
       "priority": "URGENT",
       "freezeStatus": "UNFROZEN",
+      "orderStatus": "CONFIRMED",
       "late": true,
       "lateMinutes": 120,
+      "lateTaskCount": 1,
       "tasks": [
         { "id": 1001, "operationIndex": 10, "operationName": "SMT", "resourceCode": "R-001",
           "startTime": "...", "endTime": "...", "status": "PLANNED", "version": 1,
@@ -1698,6 +1859,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 }
 ```
 
+- 订单行字段全集（与实现响应一致）：`orderId`、`orderNo`、`materialCode`、`productFamily`、`dueDate`、`dueDateLine`、`priority`、`freezeStatus`、`orderStatus`、`late`、`lateMinutes`、`lateTaskCount`、`tasks`。`orderId` 是订单主键（任务跳转/钻取锚点）；`productFamily`、`dueDateLine` 可空；`orderStatus` 取 `orders.status`；`lateTaskCount` 为晚交任务数。
 - `late = 任务 endTime > 订单 dueDate 当日结束（UTC 23:59:59）`；订单级 `lateMinutes` 为整数分钟，**仅 `late=true` 时给出**，`late=false` 时省略或 `null`，不得填 0 冒充。
 - 任务复用 `GanttTask`（C4）；新增 `lockType`、`late` 两个可选字段，旧客户端忽略。
   - `lockType` 推导：M2 只由 `task.status` 推导 `FROZEN | NONE`（`FROZEN` 任务 → `FROZEN`，其余 → `NONE`）；V5 生效后改为回读 `task.lock_type`，可取值扩展为 `TIME_WINDOW/RESOURCE`，字段名与语义不变，不新增字段。
@@ -1707,7 +1869,29 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 | 项 | 状态 | 归属 |
 |---|---|---|
-| C26 的 9 类 Excel 实体最终名单 | 拟定，待用户点名 | W9 / 用户 |
 | 真实换型矩阵表 `setup_matrix_entry` | 明确不进 M2（静态矩阵 + `setupMatrixFallback=true`） | 用户已拍板 |
 | `SPLIT/MERGE` 调整语义 | 枚举已冻结，M2 返回 `50100` | W4 / M3 |
 | `PARTIAL` 降级模式 | 枚举已冻结，M2 不产出 | W3 / M3 |
+
+### 24.13 不在 M2 冻结面的端点（点名，不补写正文）
+
+下列端点存在于 `docs/api/openapi/*.yaml`，但**不属于 M2 冻结面**；为避免“看到 yaml 就以为契约已覆盖”，在此逐条点名。yaml 对应 path 以 `x-milestone` 标注：`OPS` = 运维端点，`M1` = 平台管理基线，`M3` = 后续里程碑。
+
+| 端点 | 里程碑 | 归类理由 |
+|---|---|---|
+| `GET /health` | `OPS` | 存活探针，不访问数据库；运维端点，不纳入业务契约 |
+| `GET/POST /users` | `M1` | 平台账号管理基线（RBAC），非 M2 排产行为 |
+| `GET /audit-logs` | `M1` | 平台审计基线，非 M2 排产行为 |
+| `GET/PUT /configs` | `M1` | 平台配置基线，非 M2 排产行为 |
+| `POST /auth/login` | `M3` | 登录页与 JWT 签发留 M3（现状 `50100`），M2 不做认证实现 |
+| `POST /agent/events` | `M3` | Agent 事件/决策属 M3（见 §2.1：`agent_event`/`agent_decision` 不占 M2 号段） |
+| `POST /agent/nl-to-dsl` | `M3` | 自然语言转 DSL 属 M3 Agent 能力 |
+| `GET /agent/explain/{taskId}` | `M3` | 归因解释属 M3 Agent 能力；M2 只提供 C19 结构化 justification |
+| `POST /agent/whatif` | `M3` | 对话式 what-if 属 M3；M2 只做计划版本与甘特 |
+| `GET/POST /sandboxes` | `M3` | 场景/WHAT_IF 管理；M2 只消费固定 `sandboxId`（C5），不提供 CRUD |
+| `POST /sandboxes/{id}/apply` | `M3` | WHAT_IF→BASELINE 发布；M2 的发布路径是 `POST /plans/{id}/publish`（C24） |
+| `GET /sandboxes/{id}/compare` | `M3` | 场景差异对比属 M3；契约仅在 C6 路径参数表以 `{id}` 举例，无端点正文 |
+| `POST /orders/atp` | `M3` | ATP 交期预估在 M2 计划里明确后移（`m2-plan.md` 范围表 ATP → M3-QA） |
+| `GET /mrp/suggestions` | `M3` | 采购建议优化属 M3/v0.5（`m2-plan.md` 范围表）；M2 只做齐套状态（C25） |
+
+边界：本节只点名，不冻结请求/响应形状；实现这些端点前须走 §0.1 契约变更流程。

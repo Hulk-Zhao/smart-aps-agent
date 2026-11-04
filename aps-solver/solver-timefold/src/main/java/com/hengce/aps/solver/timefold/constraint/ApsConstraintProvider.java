@@ -31,6 +31,7 @@ public class ApsConstraintProvider implements ConstraintProvider {
     @Override
     public Constraint[] defineConstraints(ConstraintFactory factory) {
         List<Constraint> constraints = new ArrayList<>(List.of(
+                unassignedTask(factory),
                 resourceNoOverlap(factory),
                 calendarAvailability(factory),
                 operationDependency(factory),
@@ -59,10 +60,40 @@ public class ApsConstraintProvider implements ConstraintProvider {
         }
     }
 
-    private Constraint resourceNoOverlap(ConstraintFactory factory) {
-        return factory.forEachUniquePair(TaskPlan.class)
-                .filter(ConstraintPredicates::resourceOverlap)
+    /**
+     * 未排位任务硬惩罚：每条未进入资源序列 / 缺开始时间的任务罚 1 hard。
+     *
+     * <p>{@code forEach} 只遍历“全部规划变量已初始化”的实体，初始解与构造启发式
+     * 超时返回的部分解中所有任务都会被静默跳过，得分因此恒为 {@code 0hard/0soft}。
+     * 必须用 {@code forEachIncludingUnassigned} 才能让“2101/3000”这类部分解不可行。</p>
+     *
+     * @param factory 约束工厂
+     * @return 约束
+     */
+    private Constraint unassignedTask(ConstraintFactory factory) {
+        return factory.forEachIncludingUnassigned(TaskPlan.class)
+                .filter(ConstraintPredicates::unassigned)
                 .penalize(HardSoftScore.ONE_HARD)
+                .asConstraint(ConstraintCodes.UNASSIGNED_TASK);
+    }
+
+    /**
+     * 资源不重叠：先按 {@code resourceId} 把“任务—资源占用切片”扁平化分组，再在组内配对。
+     *
+     * <p>语义与全表 {@code forEachUniquePair} 完全一致：主资源按 {@code [startTime, endTime)}
+     * （含换型）、辅助资源按 {@code [processingStart, endTime)}（仅加工窗口），同资源重叠
+     * 每对罚 1 hard；不同资源不会进入同一分组，因此不会互相配对。区别仅在配对规模：
+     * 由 n² 降为 Σkᵢ²（kᵢ 为单资源上的占用切片数），且增量评分只重算受影响资源组。</p>
+     *
+     * @param factory 约束工厂
+     * @return 约束
+     */
+    private Constraint resourceNoOverlap(ConstraintFactory factory) {
+        return factory.forEach(TaskPlan.class)
+                .flattenLast(TaskPlan::occupancySlots)
+                .groupBy(TaskPlan.OccupancySlot::resourceId, ConstraintCollectors.toList())
+                .penalize(HardSoftScore.ONE_HARD,
+                        (resourceId, slots) -> ConstraintPredicates.overlapPairCount(slots))
                 .asConstraint(ConstraintCodes.RESOURCE_NO_OVERLAP);
     }
 

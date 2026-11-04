@@ -117,13 +117,45 @@ public final class TimefoldModelBuilder {
     /**
      * 将 Timefold 最优解映射为中立结果。
      *
+     * <p><b>状态口径</b>：只有“所有任务均已排位且 hard 分为 0”才是 {@code SOLVED}；
+     * 存在未排位任务且已耗尽时限时返回 {@code TIMEOUT}（构造启发式未完成，最优解只是
+     * 部分解/初始解，必须丢弃、不得落库）；其余不可行情况返回 {@code INFEASIBLE}。</p>
+     *
      * @param best 最优解
      * @param elapsedMs 求解耗时（毫秒）
      * @param justifications 约束归因
+     * @param terminationReason 终止原因（TIME_LIMIT / TERMINATED）
+     * @param timeLimitReached 是否因到达时限而终止
      * @return 中立结果
      */
     public static ScheduleSolution toSolution(
-            SchedulePlan best, long elapsedMs, List<ConstraintJustification> justifications) {
+            SchedulePlan best,
+            long elapsedMs,
+            List<ConstraintJustification> justifications,
+            String terminationReason,
+            boolean timeLimitReached) {
+        return toSolution(best, elapsedMs, justifications, terminationReason, timeLimitReached,
+                Map.of());
+    }
+
+    /**
+     * 同上，并合并引擎级指标（例如移动线程的“请求值/生效值/是否被忽略”）。
+     *
+     * @param best 最优解
+     * @param elapsedMs 求解耗时（毫秒）
+     * @param justifications 约束归因
+     * @param terminationReason 终止原因（TIME_LIMIT / TERMINATED）
+     * @param timeLimitReached 是否因到达时限而终止
+     * @param solverExtra 引擎级指标片段
+     * @return 中立结果
+     */
+    public static ScheduleSolution toSolution(
+            SchedulePlan best,
+            long elapsedMs,
+            List<ConstraintJustification> justifications,
+            String terminationReason,
+            boolean timeLimitReached,
+            Map<String, Object> solverExtra) {
         List<TaskAssignment> assignments = new ArrayList<>();
         for (ResourcePlan resource : best.getResources()) {
             List<TaskPlan> orderedTasks = new ArrayList<>(resource.getTasks());
@@ -137,13 +169,30 @@ public final class TimefoldModelBuilder {
             }
         }
         HardSoftScore score = best.getScore() == null ? HardSoftScore.ZERO : best.getScore();
-        String status = score.isFeasible() ? "SOLVED" : "INFEASIBLE";
+        int unassignedTaskCount = (int) best.getTasks().stream()
+                .filter(task -> task.getResourceId() == null || task.getStartTime() == null)
+                .count();
+        boolean usable = unassignedTaskCount == 0 && score.isFeasible();
+        String status;
+        if (usable) {
+            // 时限到达但结果可用（覆盖完整 + hard=0）时仍判 SOLVED，不因“超时”抹掉合法结果。
+            status = "SOLVED";
+        } else if (timeLimitReached) {
+            // 时限到达且结果不可用：一律 TIMEOUT，不得用 ENGINE_ERROR 兜时间上限。
+            status = "TIMEOUT";
+        } else {
+            status = "INFEASIBLE";
+        }
         Map<String, Object> extra = new LinkedHashMap<>();
         extra.put("engine", "timefold");
         extra.put("taskCount", best.getTasks().size());
+        extra.put("assignedTaskCount", assignments.size());
+        extra.put("unassignedTaskCount", unassignedTaskCount);
+        extra.put("discardedBestSolution", status.equals("TIMEOUT"));
         extra.put("calendarFallback", best.isCalendarFallback());
         extra.put("dependencyFallback", best.isDependencyFallback());
         extra.put("setupMatrixFallback", best.isSetupMatrixFallback());
+        extra.putAll(solverExtra);
         return new ScheduleSolution(
                 status,
                 new ScoreFact(
@@ -156,11 +205,11 @@ public final class TimefoldModelBuilder {
                         elapsedMs,
                         0L,
                         0,
-                        "TIME_LIMIT",
+                        terminationReason,
                         List.of(),
                         assignments.size(),
                         extra),
-                message(score, best));
+                message(score, best, status, unassignedTaskCount));
     }
 
     private static Map<UUID, List<TimeWindow>> buildAvailabilityWindows(
@@ -424,8 +473,15 @@ public final class TimefoldModelBuilder {
                 task.getLockedResourceIds());
     }
 
-    private static String message(HardSoftScore score, SchedulePlan plan) {
+    private static String message(
+            HardSoftScore score, SchedulePlan plan, String status, int unassignedTaskCount) {
         StringBuilder message = new StringBuilder("Timefold 求解完成: ").append(score);
+        if ("TIMEOUT".equals(status)) {
+            message.append("；到达时限仍存在 ").append(unassignedTaskCount)
+                    .append(" 个未排位任务，不发可行解、丢弃最优部分解、不落库");
+        } else if (unassignedTaskCount > 0) {
+            message.append("；存在 ").append(unassignedTaskCount).append(" 个未排位任务");
+        }
         List<String> fallbacks = new ArrayList<>();
         if (plan.isCalendarFallback()) {
             fallbacks.add("资源可用时段缺失，按 7×24 计算");

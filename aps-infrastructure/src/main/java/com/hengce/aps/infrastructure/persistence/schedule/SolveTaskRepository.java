@@ -63,6 +63,20 @@ public class SolveTaskRepository {
     }
 
     /**
+     * 判断场景是否存在（用于提交前校验，避免外键失败被当成 500）。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @return 存在且未删除时为 true
+     */
+    public boolean sandboxExists(UUID tenantId, UUID sandboxId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM sandbox WHERE tenant_id = ? AND id = ? AND deleted = false",
+                Long.class, tenantId, sandboxId);
+        return count != null && count > 0;
+    }
+
+    /**
      * 创建求解任务。
      *
      * @param tenantId 租户标识

@@ -70,14 +70,14 @@ flowchart LR
 
 | 类别 | 内容 |
 | --- | --- |
-| 物料 | `DEMO-FG-100`（成品）、`DEMO-SA-200`（半成品）、`DEMO-RM-301/302`（原料）、`DEMO-FG-NOBOM`（无 BOM 负例） |
-| BOM | 2 层：FG → SA / RAW1；SA → RAW2 / RAW1，两条均 ACTIVE |
-| 资源 | 6 个：2×`UNIT_PER_HOUR`、2×`SECONDS_PER_UNIT`、1×`BATCH_SECONDS`、1 个 HUMAN 辅助 |
-| 日历 | `CAL-DEMO-7X24`，FACTORY，00:00–24:00 全周 |
-| 工序模版 | 3 个：`OP-DEMO-CNC`、`OP-DEMO-ASM`、`OP-DEMO-QA` |
+| 物料 | `MAT-FG-001`（成品）、`MAT-SF-001`（半成品）、`MAT-RM-003/004`（原料）、`MAT-FG-002`（无 BOM 负例） |
+| BOM | 2 层：FG → SF / RM-003；SF → RM-004 / RM-003，两条均 ACTIVE |
+| 资源 | 6 个：2×`UNIT_PER_HOUR`（SMT）、2×`SECONDS_PER_UNIT`（总装 + 质检辅）、1×`BATCH_SECONDS`（老化）、1 个 HUMAN 辅助 |
+| 日历 | `CAL-FAC-7X24`，FACTORY，00:00–24:00 全周 |
+| 工序模版 | 4 个：`OP-SMT-01`、`OP-AGE-01`、`OP-ASSY-01`、`OP-QC-01` |
 | 工艺路线 | 1 条 ACTIVE，6 节点（10/20/30/40/50/60），5 条 FS 边，其中 20→30 带 30 分钟 lag；节点 40 带 HUMAN 辅助资源、节点 50 带 QA 辅助资源 overrides |
 | 订单 | 8 张有效 DRAFT（qty 6–14）+ 1 张无 BOM 负例 |
-| 策略 | `DEMO-M1-STRATEGY`，用于隔离本次演示的 `solve_task` 行 |
+| 策略 | `交期优先·正向排产策略`，用于隔离本次演示的 `solve_task` 行 |
 
 ---
 
@@ -105,27 +105,27 @@ PASS  health.body  code=0 status=UP
 每张订单 `PUT /api/v1/orders/{orderNo}/confirm` 均返回 200：
 
 ```text
-PASS  confirm.DEMO-ORD-001  http=200 code=0
-PASS  confirm.DEMO-ORD-001.status  status=CONFIRMED version=2
-...（DEMO-ORD-002 ~ 008 同）
+PASS  confirm.SO-20261104-0001  http=200 code=0
+PASS  confirm.SO-20261104-0001.status  status=CONFIRMED version=2
+...（SO-20261104-0002 ~ 0008 同）
 ```
 
 真库证据：
 
 ```text
 order_no|status|version
-DEMO-ORD-001|CONFIRMED|2
-DEMO-ORD-002|CONFIRMED|2
+SO-20261104-0001|CONFIRMED|2
+SO-20261104-0002|CONFIRMED|2
 ...
-DEMO-ORD-008|CONFIRMED|2
-DEMO-ORD-NOBOM|DRAFT|1
+SO-20261104-0008|CONFIRMED|2
+SO-20261104-0009|DRAFT|1
 ```
 
 ### 3.3 失败路径：缺 ACTIVE BOM（PASS）
 
 ```text
 PASS  confirm.noBom.http  http=422
-PASS  confirm.noBom.code  code=42200 message=产品 DEMO-FG-NOBOM 缺少唯一 ACTIVE 的 BOM，无法确认订单
+PASS  confirm.noBom.code  code=42200 message=产品 MAT-FG-002 缺少唯一 ACTIVE 的 BOM，无法确认订单
 ```
 
 ### 3.4 求解（PASS，POST + GET 轮询）
@@ -157,7 +157,7 @@ solve.run1 taskId=32 status=SOLVED GET tasks: 57 (sandbox rows: 57)
 
 ```text
 GET_TASKID=31 GET_STATUS=SOLVED GET_TASKS=57
-GET_SAMPLE={"orderNo":"DEMO-ORD-001","resourceCode":"DEMO-RES-CNC-01",
+GET_SAMPLE={"orderNo":"SO-20261104-0001","resourceCode":"RES-SMT-01",
             "startTime":"2026-11-04T09:00:30Z","endTime":"2026-11-04T10:20:30Z"}
 ```
 
@@ -202,36 +202,36 @@ PASS  task.sequenceContiguous  violations=0 (1..n per resource, resources=4)
 PASS  task.orderOpChain  violations=0 (each order has ops 10..60)
 PASS  task.secondaryHuman  op40 with HUMAN=8/8
 PASS  task.secondaryQa  op50 with QA=8/8
-task rows=48, primary resources=4 (DEMO-RES-ASM-01,DEMO-RES-BATCH-01,DEMO-RES-CNC-01,DEMO-RES-CNC-02), orders=8
+task rows=48, primary resources=4 (RES-ASSY-01,RES-AGE-01,RES-SMT-01,RES-SMT-02), orders=8
 ```
 
 `sequence_in_resource` 组内连续性（真库）：
 
 ```text
 code|tasks|seq_min|seq_max|seq_distinct
-DEMO-RES-ASM-01|24|1|24|24
-DEMO-RES-BATCH-01|8|1|8|8
-DEMO-RES-CNC-01|8|1|8|8
-DEMO-RES-CNC-02|8|1|8|8
+RES-ASSY-01|24|1|24|24
+RES-AGE-01|8|1|8|8
+RES-SMT-01|8|1|8|8
+RES-SMT-02|8|1|8|8
 ```
 
-单张订单的逐工序证据（`DEMO-ORD-001`，时间为 UTC）：
+单张订单的逐工序证据（`SO-20261104-0001`，时间为 UTC）：
 
 ```text
 operation_index|resource|start|end|setup_start|setup_end|sequence|status
-10|DEMO-RES-CNC-01|2026-11-04 09:00:30|2026-11-04 10:20:30|09:00:00|09:00:30|4|PLANNED
-20|DEMO-RES-CNC-02|2026-11-04 20:00:30|2026-11-04 22:00:30|20:00:00|20:00:30|2|PLANNED
-30|DEMO-RES-BATCH-01|2026-11-06 15:00:30|2026-11-06 15:10:30|15:00:00|15:00:30|5|PLANNED
-40|DEMO-RES-ASM-01|2026-11-07 06:00:10|2026-11-07 06:04:10|06:00:00|06:00:10|6|PLANNED
-50|DEMO-RES-ASM-01|2026-11-07 16:00:10|2026-11-07 16:02:50|16:00:00|16:00:10|8|PLANNED
-60|DEMO-RES-ASM-01|2026-11-07 22:00:10|2026-11-07 22:04:10|22:00:00|22:00:10|9|PLANNED
+10|RES-SMT-01|2026-11-04 09:00:30|2026-11-04 10:20:30|09:00:00|09:00:30|4|PLANNED
+20|RES-SMT-02|2026-11-04 20:00:30|2026-11-04 22:00:30|20:00:00|20:00:30|2|PLANNED
+30|RES-AGE-01|2026-11-06 15:00:30|2026-11-06 15:10:30|15:00:00|15:00:30|5|PLANNED
+40|RES-ASSY-01|2026-11-07 06:00:10|2026-11-07 06:04:10|06:00:00|06:00:10|6|PLANNED
+50|RES-ASSY-01|2026-11-07 16:00:10|2026-11-07 16:02:50|16:00:00|16:00:10|8|PLANNED
+60|RES-ASSY-01|2026-11-07 22:00:10|2026-11-07 22:04:10|22:00:00|22:00:10|9|PLANNED
 ```
 
 辅助资源落库：
 
 ```text
-DEMO-ORD-001|40|["d0000000-0000-0000-0000-000000000306"]   # HUMAN
-DEMO-ORD-001|50|["d0000000-0000-0000-0000-000000000305"]   # QA
+SO-20261104-0001|40|["d0000000-0000-0000-0000-000000000306"]   # HUMAN
+SO-20261104-0001|50|["d0000000-0000-0000-0000-000000000305"]   # QA
 ```
 
 ### 3.7 甘特读模型与 task 表一致（PASS）
@@ -241,7 +241,7 @@ DEMO-ORD-001|50|["d0000000-0000-0000-0000-000000000305"]   # QA
 ```text
 GET /api/v1/gantt/resource?sandboxId=00000000-0000-0000-0000-000000000401
     &from=2026-11-03T18:00:30Z&to=2026-11-10T19:06:10Z
-    &resourceCodes=DEMO-RES-ASM-01,DEMO-RES-BATCH-01,DEMO-RES-CNC-01,DEMO-RES-CNC-02
+    &resourceCodes=RES-ASSY-01,RES-AGE-01,RES-SMT-01,RES-SMT-02
 ```
 
 ```text
@@ -253,12 +253,12 @@ PASS  gantt.idsExistInTask  missing=0
 PASS  gantt.idsUnique  duplicates=0
 ```
 
-抽样任务（`DEMO-ORD-001 / op40`，task id=1077）逐字段比对：
+抽样任务（`SO-20261104-0001 / op40`，task id=1077）逐字段比对：
 
 ```text
-PASS  gantt.sample.orderNo       gantt=DEMO-ORD-001 db=DEMO-ORD-001
+PASS  gantt.sample.orderNo       gantt=SO-20261104-0001 db=SO-20261104-0001
 PASS  gantt.sample.opIndex       gantt=40 db=40
-PASS  gantt.sample.resource      gantt=DEMO-RES-ASM-01 db=DEMO-RES-ASM-01
+PASS  gantt.sample.resource      gantt=RES-ASSY-01 db=RES-ASSY-01
 PASS  gantt.sample.start         epoch=1794031210
 PASS  gantt.sample.end           epoch=1794031450
 PASS  gantt.sample.setupStart    epoch=1794031200
@@ -266,7 +266,7 @@ PASS  gantt.sample.setupEnd      epoch=1794031210
 PASS  gantt.sample.qty           gantt=8.0000 db=8.0000
 PASS  gantt.sample.status        gantt=PLANNED db=PLANNED
 PASS  gantt.sample.sequence      gantt=6 db=6
-PASS  gantt.sample.secondary     secondaryCodes=DEMO-RES-HUMAN-01
+PASS  gantt.sample.secondary     secondaryCodes=RES-OP-01
 ```
 
 说明：`from/to` 覆盖 task 表最小开始时间与最大结束时间各外扩 1 小时；附加 `resourceCodes` 过滤是为了把同租户、同 sandbox 下其他会话的既有任务排除在比对之外，不影响契约。
@@ -351,7 +351,7 @@ mvn -B -o -pl aps-admin -am -DskipTests package
 | 主资源数 | 4 | 4 | PASS |
 | 任务 id 集合 | 48 个 | 48 个，无缺失、无重复 | PASS |
 | 抽样任务字段 | id=1077 的 11 个字段 | 同 id 逐字段相等 | PASS |
-| 辅助资源 | op40: HUMAN、op50: QA | 抽样任务 `secondaryResourceCodes=DEMO-RES-HUMAN-01` | PASS |
+| 辅助资源 | op40: HUMAN、op50: QA | 抽样任务 `secondaryResourceCodes=RES-OP-01` | PASS |
 
 ---
 
@@ -360,8 +360,8 @@ mvn -B -o -pl aps-admin -am -DskipTests package
 1. **BOM 不展开层级**：求解以订单成品直接对应 ACTIVE 路线，种子中的多级 BOM 只用于确认校验，不参与工序展开或用量卷积（SE-04 已知限制）。
 2. **异步执行、轮询取终态**：`POST /solve-tasks` 由生命周期服务受理后后台执行（默认 `PENDING`），本次 48 任务约 11–12 秒；脚本轮询 `GET /solve-tasks/{id}` 到 `SOLVED` 后取 `tasks[]`。
 3. **`task` 无 `solve_task_id`**：同一 sandbox 下不同求解的 task 只能按订单清理；本演示通过显式 `orderNos` + 独立策略隔离，避免覆盖其他会话数据。
-4. **`sequence_in_resource` 是资源维度的全局序号**：不是订单内序号，例如 `DEMO-ORD-001` 的工序 10 为 4，这是 8 张订单共享 CNC-01 的正常结果。
-5. **共享真库存在其他会话数据**：演示断言均按 `DEMO-ORD-%` 订单与 `DEMO-RES-%` 资源过滤；未清理、未修改其他会话的订单、任务与资源。
+4. **`sequence_in_resource` 是资源维度的全局序号**：不是订单内序号，例如 `SO-20261104-0001` 的工序 10 为 4，这是 8 张订单共享 RES-SMT-01 的正常结果。
+5. **共享真库存在其他会话数据**：演示断言均按显式订单清单 `SO-20261104-0001..0009` 与显式资源清单 `RES-SMT-01`、`RES-SMT-02`、`RES-ASSY-01`、`RES-AGE-01`、`RES-QC-01`、`RES-OP-01` 过滤，不使用任何 `LIKE` 前缀；未清理、未修改其他会话的订单、任务与资源。
 6. **演示数据保留**：为便于复现，脚本结束后保留种子数据与最近两次求解结果；清理使用 `.\scripts\seed-m1-demo.ps1 -Clean`。
 
 ---

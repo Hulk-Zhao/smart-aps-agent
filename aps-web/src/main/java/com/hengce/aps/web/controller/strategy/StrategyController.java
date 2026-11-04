@@ -3,7 +3,9 @@ package com.hengce.aps.web.controller.strategy;
 import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.api.Result;
-import com.hengce.aps.service.strategy.StrategyExportPayload;
+import com.hengce.aps.service.strategy.StrategyExportBundle;
+import com.hengce.aps.service.strategy.StrategyImportRequest;
+import com.hengce.aps.service.strategy.StrategyImportResult;
 import com.hengce.aps.service.strategy.StrategyService;
 import com.hengce.aps.service.strategy.StrategyView;
 import io.swagger.v3.oas.annotations.Operation;
@@ -127,23 +129,25 @@ public class StrategyController {
      * 导出策略。
      *
      * @param id 策略主键
-     * @return JSON 载荷
+     * @return {@code data = {strategy, rules, checksum}}；checksum 必出现
      */
-    @Operation(summary = "导出策略")
+    @Operation(summary = "导出策略",
+            description = "返回 {strategy, rules, checksum}；checksum 为规范化 {strategy, rules} 的 SHA-256。")
     @GetMapping("/{id}/export")
-    public Result<StrategyExportPayload> export(@PathVariable UUID id) {
+    public Result<StrategyExportBundle> export(@PathVariable UUID id) {
         return Result.success(strategyService.export(id));
     }
 
     /**
      * 导入策略。
      *
-     * @param payload 导入载荷
-     * @return 创建后的策略
+     * @param request 导入请求 {@code {payload, dryRun}}
+     * @return {@code {valid, errors[], strategyId}}；dryRun=true 不落库
      */
-    @Operation(summary = "导入策略", description = "按导出载荷创建新策略，规则校验口径与创建一致。")
+    @Operation(summary = "导入策略",
+            description = "请求 {payload, dryRun}；dryRun=true 只校验不落库。checksum 缺失/非法/不匹配按 42200 拒绝。")
     @PostMapping(value = "/import", consumes = MediaType.APPLICATION_JSON_VALUE)
-    public Result<StrategyView> importStrategy(@RequestBody StrategyExportPayload payload) {
-        return Result.success(strategyService.importStrategy(payload));
+    public Result<StrategyImportResult> importStrategy(@RequestBody StrategyImportRequest request) {
+        return Result.success(strategyService.importStrategy(request));
     }
 }

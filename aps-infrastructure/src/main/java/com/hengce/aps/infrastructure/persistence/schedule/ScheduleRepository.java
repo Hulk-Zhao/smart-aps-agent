@@ -366,23 +366,28 @@ public class ScheduleRepository {
      *
      * @param tenantId 租户标识
      * @param solveTaskId 求解任务主键
-     * @param constraintCode 约束编码
+     * @param constraintCode 约束编码（软约束为 RuleCode）
      * @param constraintType HARD / SOFT
      * @param taskIds 落库后回填的任务主键
      * @param description 面向人的说明
+     * @param weight 软约束权重；硬约束为空
+     * @param deduction 软约束扣分；硬约束为 0
      */
     public void insertJustification(UUID tenantId, long solveTaskId, String constraintCode,
-                                    String constraintType, List<Long> taskIds, String description) {
+                                    String constraintType, List<Long> taskIds, String description,
+                                    Integer weight, BigDecimal deduction) {
         String facts = toJson(taskIds.stream()
                 .map(id -> Map.of("type", "TASK", "id", id))
                 .toList());
         String sql = """
                 INSERT INTO constraint_justification (tenant_id, solve_task_id, constraint_id, constraint_name,
-                                                     score_impact, implicated_facts, explanation_zh)
-                VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)
+                                                     score_impact, implicated_facts, explanation_zh,
+                                                     weight, deduction)
+                VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?)
                 """;
         jdbcTemplate.update(sql, tenantId, solveTaskId, constraintCode, constraintCode,
-                constraintType, facts, description);
+                constraintType, facts, description, weight,
+                deduction == null ? BigDecimal.ZERO : deduction);
     }
 
     /**

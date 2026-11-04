@@ -116,6 +116,37 @@ public class PlanVersionRepository {
     }
 
     /**
+     * 统计场景内未删除的计划版本数，用于列表分页。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @return 版本总数
+     */
+    public long countBySandbox(UUID tenantId, UUID sandboxId) {
+        Long count = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1) FROM plan_version
+                 WHERE tenant_id = ? AND sandbox_id = ? AND deleted = false
+                """, Long.class, tenantId, sandboxId);
+        return count == null ? 0L : count;
+    }
+
+    /**
+     * 分页查询场景内计划版本，按发布时间倒序、主键倒序稳定排序。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @param offset 偏移量
+     * @param limit 每页条数
+     * @return 版本行
+     */
+    public List<PlanVersionRow> pageBySandbox(UUID tenantId, UUID sandboxId, int offset, int limit) {
+        return jdbcTemplate.query(
+                SELECT_COLUMNS + " WHERE tenant_id = ? AND sandbox_id = ? AND deleted = false"
+                        + " ORDER BY published_at DESC, id DESC LIMIT ? OFFSET ?",
+                ROW_MAPPER, tenantId, sandboxId, limit, offset);
+    }
+
+    /**
      * 读取场景内全部任务，用于发布时固化快照。
      *
      * @param tenantId 租户标识

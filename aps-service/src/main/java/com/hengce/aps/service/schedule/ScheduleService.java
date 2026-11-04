@@ -63,6 +63,24 @@ public class ScheduleService {
     private static final String FALLBACK_MODE = "HARD_ONLY";
 
     /**
+     * 求解锁争用失败消息前缀；与 {@code TimefoldSolverAdapter} 的等待锁失败文案保持一致，
+     * 仅用于把“容量问题”与“引擎异常”区分开，不改变既有失败语义。
+     */
+    private static final String LOCK_CONTENTION_MESSAGE_PREFIX = "求解器正被其他求解任务占用";
+
+    /**
+     * 引擎级“移动线程”指标键；由适配器写入 {@code SolveMetrics.extra}，这里原样透传，
+     * 避免调用方只看到请求值而误以为多线程已生效。
+     */
+    private static final List<String> MOVE_THREAD_METRIC_KEYS = List.of(
+            "moveThreadCountRequested",
+            "moveThreadCountResolved",
+            "moveThreadCountEffective",
+            "moveThreadCountApplied",
+            "moveThreadCountIgnored",
+            "multiThreadedAvailable");
+
+    /**
      * 软约束权重在 {@code SolveConfig.parameters} 中的键；适配器据此激活权重。
      *
      * <p>激活/关闭由引擎适配器在 {@code SolverFactory.create} 前后完成，本类只负责注入权重，
@@ -111,6 +129,11 @@ public class ScheduleService {
     private final boolean fallbackEnabled;
 
     /**
+     * 引擎路由唯一解析入口。
+     */
+    private final EngineRouter engineRouter;
+
+    /**
      * 构造排产服务。
      *
      * @param solverAdapters 已装配的求解适配器
@@ -119,11 +142,13 @@ public class ScheduleService {
      * @param solveTaskRepository 求解任务持久层
      * @param strategyService 策略服务，读取软规则权重
      * @param fallbackEnabled 引擎降级开关
+     * @param ortoolsEnabled OR-Tools 实现开关（M2 占位实现默认关闭）
      */
     public ScheduleService(List<SolverAdapter> solverAdapters, ScheduleProblemAssembler assembler,
                            ScheduleResultWriter resultWriter, SolveTaskRepository solveTaskRepository,
                            StrategyService strategyService,
-                           @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled) {
+                           @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled,
+                           @Value("${aps.solve.engine.ortools-enabled:false}") boolean ortoolsEnabled) {
         Map<SolverEngine, SolverAdapter> registry = new EnumMap<>(SolverEngine.class);
         for (SolverAdapter adapter : solverAdapters) {
             registry.put(adapter.engine(), adapter);
@@ -134,20 +159,17 @@ public class ScheduleService {
         this.solveTaskRepository = solveTaskRepository;
         this.strategyService = strategyService;
         this.fallbackEnabled = fallbackEnabled;
+        this.engineRouter = new EngineRouter(strategyService, fallbackEnabled, ortoolsEnabled);
     }
 
     /**
-     * 解析引擎编码。
+     * 解析引擎路由（M2-SE-06 唯一入口）：请求级优先于策略级，缺省 Timefold。
      *
-     * @param engineCode 引擎编码
-     * @return 引擎类型
+     * @param request 求解请求
+     * @return 路由决策
      */
-    public SolverEngine resolveEngine(String engineCode) {
-        try {
-            return SolverEngine.fromCode(engineCode);
-        } catch (IllegalArgumentException exception) {
-            throw new BizException(ErrorCode.BAD_REQUEST, exception.getMessage());
-        }
+    public EngineRoute route(SolveRequest request) {
+        return engineRouter.resolve(request);
     }
 
     /**
@@ -208,15 +230,15 @@ public class ScheduleService {
     /**
      * 读取当前生效策略的 8 条软规则权重。
      *
-     * <p>无策略、策略不存在或规则不满足“8 条且合计 100”时不注入权重，交由适配器使用默认权重，
-     * 不在此处构造默认权重。激活/关闭由适配器负责，本类不触碰权重注册表。</p>
+     * <p>无策略、策略不存在或规则不满足“8 条且合计 100”时不注入权重；适配器在无权重时
+     * 显式关闭软约束、仅保留硬约束，本类不构造默认权重。激活/关闭由适配器负责，本类不触碰权重注册表。</p>
      *
      * @param strategyId 策略主键，可空
      * @return 权重映射；空表示不注入
      */
     private Map<String, Integer> resolveSoftWeights(UUID strategyId) {
         if (strategyId == null) {
-            LOGGER.debug("求解请求未指定策略，不注入软约束权重，使用引擎默认权重");
+            LOGGER.debug("求解请求未指定策略，本次求解仅硬约束");
             return Map.of();
         }
         StrategyView strategy;
@@ -249,26 +271,35 @@ public class ScheduleService {
     }
 
     /**
+     * 受理前的订单存在性校验：请求点名但库里查不到的订单号直接 400，不静默漏排。
+     *
+     * <p>与 {@link ScheduleProblemAssembler#validatePinnedOrderNos} 是两条独立校验，互不替代。</p>
+     *
+     * @param request 求解请求
+     */
+    public void requireExistingOrderNos(SolveRequest request) {
+        assembler.requireExistingOrderNos(request);
+    }
+
+    /**
      * 兼容旧调用的同步提交。
      *
      * @param request 求解请求
      * @return 求解结果
      */
     public SolveResult submit(SolveRequest request) {
-        SolverEngine engine = resolveEngine(request.engine());
+        EngineRoute route = route(request);
+        requireExistingOrderNos(request);
         ScheduleProblemAssembler.validatePinnedOrderNos(request.orderNos(), request.parameters());
-        SolverAdapter adapter = adapters.get(engine);
-        if (adapter == null) {
-            throw new BizException(ErrorCode.SOLVER_NOT_AVAILABLE, "求解引擎未装配: " + engine.getCode());
-        }
-        SolveConfig config = SolveEnvelopeMapper.toConfig(request, engine);
+        SolverAdapter adapter = adapters.get(route.effectiveEngine());
+        SolveConfig config = SolveEnvelopeMapper.toConfig(request, route.effectiveEngine());
         UUID tenantId = TenantContext.getTenantId();
         UUID sandboxId = request.sandboxId() == null
                 ? ScheduleProblem.DEFAULT_SANDBOX_ID : request.sandboxId();
         long solveTaskId = solveTaskRepository.create(tenantId, sandboxId, request.strategyId(),
-                engine.getCode().toUpperCase(Locale.ROOT), toJson(config), null, "RUNNING");
-        ExecutionOutcome outcome = execute(request, solveTaskId, config, adapter,
-                () -> false, (phase, progress, bestScore) -> { });
+                route.effectiveEngine().getCode().toUpperCase(Locale.ROOT), toJson(config), null, "RUNNING");
+        ExecutionOutcome outcome = mergeRouting(execute(request, solveTaskId, config, adapter,
+                () -> false, (phase, progress, bestScore) -> { }), route);
         solveTaskRepository.finish(tenantId, solveTaskId, outcome.status().name(),
                 outcome.scoreHard(), outcome.scoreSoft(), toJson(outcome.metrics()), outcome.message());
         if (outcome.validationFailure()) {
@@ -328,10 +359,19 @@ public class ScheduleService {
             ScheduleSolution solution = adapter.solve(assembled.problem(), config);
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, solution, durationMs);
+            // 保留 null 值：metrics.bestScore 必须恒存在（C20），值可为 null；
+            // 详情装配侧用 null 友好的不可变拷贝，不再因显式 null 抛 NPE。
             metrics.put("bestScore", bestScore(solution));
             if (solution == null) {
                 return fallbackOrFailed(metrics, "ENGINE_ERROR", "求解器未返回结果", null, List.of());
             }
+            // C20 §24.2：期望任务数 = Σ ScheduleProblem.orders[*].operations.size()，
+            // 装配阶段被剔除的订单进入 excludedOrders 且不计入（当前装配对无路线订单直接拒绝，
+            // 不存在剔除分支，故为空数组）。
+            int expectedTaskCount = assembled.expectedTaskCount();
+            metrics.put("expectedTaskCount", expectedTaskCount);
+            metrics.put("assignedTaskCount", solution.assignments().size());
+            metrics.put("excludedOrders", List.of());
             if (!"SOLVED".equalsIgnoreCase(solution.status())) {
                 String reason = "TIMEOUT".equalsIgnoreCase(solution.status()) ? "TIMEOUT" : "ENGINE_ERROR";
                 String failure = solution.message() == null ? "求解未得到可行解" : solution.message();
@@ -339,6 +379,15 @@ public class ScheduleService {
             }
             if (stopSignal.shouldStop()) {
                 return stopped(config, solution, startNanos);
+            }
+
+            // 完整性前置校验：分数只能说明“没有硬惩罚”，不能保证“任务数全排满”。
+            int assignedTaskCount = solution.assignments().size();
+            if (assignedTaskCount != expectedTaskCount) {
+                return failed(metrics,
+                        "求解结果不完整：期望 " + expectedTaskCount + " 个任务，实际排位 "
+                                + assignedTaskCount + " 个；拒绝落库（既有任务保持原样）",
+                        solution);
             }
 
             progressSink.update("PERSISTING", 0.90, bestScore(solution));
@@ -388,9 +437,15 @@ public class ScheduleService {
         SolveTaskStatus status = "TIMEOUT".equals(reason) ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
         metrics.put("phase", status.name());
         metrics.put("progress", 1.0);
+        if (solution == null) {
+            // 没有结果对象时返回体 tasks 必为空数组，已排位数也是确定值 0（不是“没算”）；
+            // persistedTaskCount 已由 baseMetrics 恒写 0，这里只补这一个与“返回了什么”相关的键。
+            metrics.putIfAbsent("assignedTaskCount", 0);
+        }
         if (fallbackEnabled) {
             metrics.put("engineFallback", true);
             metrics.put("engineFallbackReason", reason);
+            metrics.put("engineFallbackDetail", fallbackDetail(reason, message));
             metrics.put("fallbackMode", FALLBACK_MODE);
             metrics.put("fallbackAt", OffsetDateTime.now(ZoneOffset.UTC).toString());
         }
@@ -398,6 +453,66 @@ public class ScheduleService {
                 solution == null ? null : score(solution, true),
                 solution == null ? null : score(solution, false),
                 metrics, message, false, tasks);
+    }
+
+    /**
+     * 明确的失败（不写降级标记）：用于“结果口径不完整/不可用”等非时间、非引擎异常场景。
+     *
+     * <p>C20 §24.2：{@code expectedTaskCount ≠ assignedTaskCount} 时终态必须是
+     * {@code FAILED}、{@code errorCode=FAILED}，message 同时给出两个数；不得记
+     * {@code ENGINE_ERROR}（否则监控里“引擎炸了”和“结果缺任务”无法区分）。</p>
+     *
+     * @param metrics 执行指标
+     * @param message 失败说明
+     * @param solution 求解结果，可空
+     * @return 执行结果
+     */
+    private ExecutionOutcome failed(Map<String, Object> metrics, String message,
+                                    ScheduleSolution solution) {
+        metrics.put("phase", "FAILED");
+        metrics.put("progress", 1.0);
+        return new ExecutionOutcome(SolveTaskStatus.FAILED,
+                solution == null ? null : score(solution, true),
+                solution == null ? null : score(solution, false),
+                metrics, message, false, List.of());
+    }
+
+    /**
+     * 区分降级的具体成因：配置问题（目标引擎不可用）与容量问题（求解锁争用）不得混为同一个原因。
+     *
+     * @param reason 降级原因
+     * @param message 引擎返回的说明
+     * @return 降级细分
+     */
+    private static String fallbackDetail(String reason, String message) {
+        if ("SOLVER_UNAVAILABLE".equals(reason)) {
+            return EngineRoute.DETAIL_SOLVER_NOT_ASSEMBLED;
+        }
+        if ("TIMEOUT".equals(reason)) {
+            return EngineRoute.DETAIL_SOLVER_TIMEOUT;
+        }
+        if (message != null && message.startsWith(LOCK_CONTENTION_MESSAGE_PREFIX)) {
+            return EngineRoute.DETAIL_LOCK_CONTENTION;
+        }
+        return EngineRoute.DETAIL_ENGINE_EXCEPTION;
+    }
+
+    /**
+     * 把路由决策合并进执行指标；校验失败只记录决策、不写降级标记（C28）。
+     *
+     * @param outcome 执行结果
+     * @param route 路由决策
+     * @return 合并后的执行结果
+     */
+    static ExecutionOutcome mergeRouting(ExecutionOutcome outcome, EngineRoute route) {
+        Map<String, Object> metrics = new LinkedHashMap<>(outcome.metrics());
+        if (outcome.validationFailure()) {
+            route.applyDecision(metrics);
+        } else {
+            route.applyFallback(metrics);
+        }
+        return new ExecutionOutcome(outcome.status(), outcome.scoreHard(), outcome.scoreSoft(),
+                metrics, outcome.message(), outcome.validationFailure(), outcome.tasks());
     }
 
     private static long timeoutBudgetMillis(SolveConfig config) {
@@ -445,9 +560,24 @@ public class ScheduleService {
         metrics.put("calendarFallback", Boolean.TRUE.equals(extra.get("calendarFallback")));
         metrics.put("dependencyFallback", Boolean.TRUE.equals(extra.get("dependencyFallback")));
         metrics.put("setupMatrixFallback", Boolean.TRUE.equals(extra.get("setupMatrixFallback")));
+        // 未落库时也必须显式给出 0，避免“字段缺失”被读成“未知”。
+        metrics.put("persistedTaskCount", 0);
+        for (String key : List.of("unassignedTaskCount", "discardedBestSolution")) {
+            if (extra.containsKey(key)) {
+                metrics.put(key, extra.get(key));
+            }
+        }
+        // 引擎级口径：移动线程“请求值 vs 生效值”必须对调用方可见，不能“看起来生效了其实没用”。
+        for (String key : MOVE_THREAD_METRIC_KEYS) {
+            if (extra.containsKey(key)) {
+                metrics.put(key, extra.get(key));
+            }
+        }
         if (solution != null && solution.metrics() != null) {
             metrics.put("stepCount", solution.metrics().stepCount());
-            metrics.put("terminationReason", solution.metrics().terminationReason());
+            if (solution.metrics().terminationReason() != null) {
+                metrics.put("terminationReason", solution.metrics().terminationReason());
+            }
             metrics.put("unimprovedStepCount", solution.metrics().unimprovedStepCount());
         }
         return metrics;

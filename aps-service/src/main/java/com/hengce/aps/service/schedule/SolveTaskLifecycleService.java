@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
@@ -180,10 +181,14 @@ public class SolveTaskLifecycleService {
             throw new BizException(ErrorCode.BAD_REQUEST, "请求体不能为空");
         }
         UUID tenantId = TenantContext.getTenantId();
-        SolverEngine engine = scheduleService.resolveEngine(request.engine());
+        EngineRoute route = scheduleService.route(request);
         ScheduleProblemAssembler.validatePinnedOrderNos(request.orderNos(), request.parameters());
-        SolveConfig config = scheduleService.toConfig(request, engine);
+        scheduleService.requireExistingOrderNos(request);
+        SolveConfig config = scheduleService.toConfig(request, route.effectiveEngine());
         UUID sandboxId = request.sandboxId() == null ? ScheduleProblem.DEFAULT_SANDBOX_ID : request.sandboxId();
+        if (request.sandboxId() != null && !solveTaskRepository.sandboxExists(tenantId, sandboxId)) {
+            throw new BizException(ErrorCode.NOT_FOUND, "场景不存在: " + sandboxId);
+        }
         String key = normalizeIdempotencyKey(idempotencyKey);
         if (key != null) {
             Optional<SolveTaskRecord> existing = solveTaskRepository.findByIdempotencyKey(tenantId, key);
@@ -195,17 +200,22 @@ public class SolveTaskLifecycleService {
         long taskId;
         try {
             taskId = solveTaskRepository.create(tenantId, sandboxId, request.strategyId(),
-                    engineCode(engine), toJson(config), key, "PENDING");
+                    engineCode(route.effectiveEngine()), toJson(config), key, "PENDING");
         } catch (DuplicateKeyException exception) {
             return solveTaskRepository.findByIdempotencyKey(tenantId, key)
                     .map(this::detail)
                     .orElseThrow(() -> new BizException(ErrorCode.IDEMPOTENCY_CONFLICT,
                             "幂等键冲突，请使用新的 Idempotency-Key"));
+        } catch (DataIntegrityViolationException exception) {
+            if (isSandboxForeignKeyViolation(exception)) {
+                throw new BizException(ErrorCode.NOT_FOUND, "场景不存在: " + sandboxId);
+            }
+            throw exception;
         }
 
         progressPublisher.publish(new SolveProgress(taskId, SolveTaskStatus.PENDING.name(), 0.0,
                 "QUEUED", null, 0L, null, null, "已受理，等待求解"));
-        RunningTask run = new RunningTask(taskId, tenantId, engine, config);
+        RunningTask run = new RunningTask(taskId, tenantId, route, config);
         running.put(taskId, run);
         if (!asyncEnabled) {
             runSynchronously(run, request);
@@ -265,8 +275,8 @@ public class SolveTaskLifecycleService {
             publishTerminal(taskId, SolveTaskStatus.CANCELLED, null, metrics, "用户取消求解任务");
         }
         if (run != null) {
-            scheduleService.terminateEarly(run.engine,
-                    new SolveHandle(run.handleId, run.engine, SolveTaskStatus.CANCELLED.name()));
+            scheduleService.terminateEarly(run.route.effectiveEngine(),
+                    new SolveHandle(run.handleId, run.route.effectiveEngine(), SolveTaskStatus.CANCELLED.name()));
             if (run.future != null) {
                 run.future.cancel(true);
             }
@@ -296,7 +306,7 @@ public class SolveTaskLifecycleService {
             }
             run.startedNanos = System.nanoTime();
             ScheduleService.ExecutionOutcome outcome = scheduleService.execute(request, run.taskId, run.config,
-                    scheduleService.adapter(run.engine), () -> false,
+                    scheduleService.adapter(run.route.effectiveEngine()), () -> false,
                     (phase, progress, bestScore) -> publish(run, progress, phase, bestScore, phaseMessage(phase)));
             finishOutcome(run, outcome);
             if (outcome.validationFailure()) {
@@ -327,7 +337,7 @@ public class SolveTaskLifecycleService {
             scheduleWatchdog(run);
             scheduleTicker(run);
             ScheduleService.ExecutionOutcome outcome = scheduleService.execute(request, run.taskId, run.config,
-                    scheduleService.adapter(run.engine), run::shouldStop,
+                    scheduleService.adapter(run.route.effectiveEngine()), run::shouldStop,
                     (phase, progress, bestScore) -> publish(run, progress, phase, bestScore, phaseMessage(phase)));
             finishOutcome(run, outcome);
         } catch (RuntimeException exception) {
@@ -371,18 +381,24 @@ public class SolveTaskLifecycleService {
         int timeoutSeconds = Math.max(1, run.config.timeoutSeconds());
         String message = "求解超时（超过 " + timeoutSeconds + " 秒）";
         Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("engine", engineCode(run.engine));
+        metrics.put("engine", engineCode(run.route.effectiveEngine()));
         metrics.put("phase", SolveTaskStatus.TIMEOUT.name());
         metrics.put("progress", 1.0);
         metrics.put("timeoutSeconds", timeoutSeconds);
+        // C20 §24.2：TIMEOUT / FAILED 的 persistedTaskCount 恒为 0。该路径没有结果对象、
+        // 也没有调用落库，必须显式写“确认过的 0”，不能靠字段缺失被读成“未知”。
+        metrics.put("persistedTaskCount", 0);
+        // 没有返回任何任务，已排位数同样是确定值 0（返回体 tasks 恒为空数组）。
+        metrics.put("assignedTaskCount", 0);
         applyFallback(metrics, "TIMEOUT");
+        run.route.applyFallback(metrics);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId,
                 SolveTaskStatus.TIMEOUT.name(), null, null, toJson(metrics), message);
         if (updated > 0) {
             publishTerminal(run.taskId, SolveTaskStatus.TIMEOUT, null, metrics, message);
         }
-        scheduleService.terminateEarly(run.engine,
-                new SolveHandle(run.handleId, run.engine, SolveTaskStatus.TIMEOUT.name()));
+        scheduleService.terminateEarly(run.route.effectiveEngine(),
+                new SolveHandle(run.handleId, run.route.effectiveEngine(), SolveTaskStatus.TIMEOUT.name()));
         if (run.future != null) {
             run.future.cancel(true);
         }
@@ -390,6 +406,11 @@ public class SolveTaskLifecycleService {
 
     private void finishOutcome(RunningTask run, ScheduleService.ExecutionOutcome outcome) {
         Map<String, Object> metrics = new LinkedHashMap<>(outcome.metrics());
+        if (outcome.validationFailure()) {
+            run.route.applyDecision(metrics);
+        } else {
+            run.route.applyFallback(metrics);
+        }
         metrics.putIfAbsent("phase",
                 outcome.status() == SolveTaskStatus.SOLVED ? "DONE" : outcome.status().name());
         metrics.putIfAbsent("progress", 1.0);
@@ -404,10 +425,14 @@ public class SolveTaskLifecycleService {
     private void finishFallback(RunningTask run, String reason, String message) {
         SolveTaskStatus status = "TIMEOUT".equals(reason) ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
         Map<String, Object> metrics = new LinkedHashMap<>();
-        metrics.put("engine", engineCode(run.engine));
+        metrics.put("engine", engineCode(run.route.effectiveEngine()));
         metrics.put("phase", status.name());
         metrics.put("progress", 1.0);
+        // 同上：异常兜底路径未产生结果、未落库，落库行数与已排位数都是确定值 0。
+        metrics.put("persistedTaskCount", 0);
+        metrics.put("assignedTaskCount", 0);
         applyFallback(metrics, reason);
+        run.route.applyFallback(metrics);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId, status.name(),
                 null, null, toJson(metrics), message);
         if (updated > 0) {
@@ -470,9 +495,17 @@ public class SolveTaskLifecycleService {
         SolveProgress live = progressPublisher.latest(record.id()).orElse(null);
         double progress = status.isTerminal() ? 1.0
                 : live != null ? live.progress() : asDouble(metrics.get("progress"), 0.0);
-        String phase = live != null && !status.isTerminal() ? live.phase()
-                : status == SolveTaskStatus.PENDING ? "QUEUED"
-                : asString(metrics.getOrDefault("phase", status.name()));
+        String phase;
+        if (live != null && !status.isTerminal()) {
+            phase = live.phase();
+        } else if (status == SolveTaskStatus.PENDING) {
+            phase = "QUEUED";
+        } else {
+            phase = asString(metrics.get("phase"));
+            if (phase == null) {
+                phase = status.isTerminal() ? terminalPhase(status) : "QUEUED";
+            }
+        }
         String bestScore = live != null && live.bestScore() != null ? live.bestScore()
                 : asString(metrics.get("bestScore"));
         long elapsed = 0L;
@@ -481,14 +514,29 @@ public class SolveTaskLifecycleService {
             elapsed = Math.max(0L, Duration.between(record.startedAt(), end).toMillis());
         }
         boolean degraded = Boolean.TRUE.equals(metrics.get("engineFallback"));
-        String errorCode = degraded ? asString(metrics.get("engineFallbackReason"))
-                : status.isTerminal() && status != SolveTaskStatus.SOLVED ? status.name() : null;
+        String errorCode = null;
+        if (status.isTerminal() && status != SolveTaskStatus.SOLVED) {
+            String reason = degraded ? asString(metrics.get("engineFallbackReason")) : null;
+            errorCode = reason == null ? status.name() : reason;
+        }
         return new SolveTaskDetail(record.id(), record.sandboxId(), record.strategyId(), record.engine(),
                 status.name(), progress, phase, bestScore, record.scoreHard(), record.scoreSoft(),
                 elapsed, status == SolveTaskStatus.SOLVED ? record.id() : null,
                 errorCode, record.errorMessage(), degraded, metrics,
                 record.startedAt(), record.finishedAt(), record.createdAt(), record.updatedAt(),
                 List.of());
+    }
+
+    /**
+     * 判断是否为场景外键违反（预检通过但并发删除场景时仍会撞 FK）。
+     *
+     * @param exception 数据完整性异常
+     * @return 约束名为 {@code fk_solve_task_sandbox} 时为 true
+     */
+    private static boolean isSandboxForeignKeyViolation(DataIntegrityViolationException exception) {
+        Throwable cause = exception.getMostSpecificCause();
+        String message = cause.getMessage();
+        return message != null && message.contains("fk_solve_task_sandbox");
     }
 
     private static String normalizeIdempotencyKey(String idempotencyKey) {
@@ -594,9 +642,9 @@ public class SolveTaskLifecycleService {
         private final UUID tenantId;
 
         /**
-         * 引擎类型。
+         * 引擎路由决策。
          */
-        private final SolverEngine engine;
+        private final EngineRoute route;
 
         /**
          * 求解配置。
@@ -653,10 +701,10 @@ public class SolveTaskLifecycleService {
          */
         private volatile long startedNanos;
 
-        private RunningTask(long taskId, UUID tenantId, SolverEngine engine, SolveConfig config) {
+        private RunningTask(long taskId, UUID tenantId, EngineRoute route, SolveConfig config) {
             this.taskId = taskId;
             this.tenantId = tenantId;
-            this.engine = engine;
+            this.route = route;
             this.config = config;
         }
 

@@ -66,10 +66,9 @@ public final class SolveEnvelopeMapper {
      */
     public static SolveConfig toConfig(SolveRequest request, SolverEngine engine) {
         Map<String, Object> parameters = request.parameters() == null ? Map.of() : request.parameters();
-        int moveThreadCount = intParameter(parameters, "moveThreadCount", 0);
-        if (moveThreadCount < 1) {
-            moveThreadCount = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
-        }
+        // 未传/0 一律保持 0 语义（= 不设置 moveThreadCount，走引擎默认），
+        // 不再在入口处替调用方“补”成 CPU-1；是否多线程由适配器按发行版能力决定。
+        int moveThreadCount = Math.max(0, intParameter(parameters, "moveThreadCount", 0));
         return new SolveConfig(
                 engine.getCode(),
                 intParameter(parameters, "timeoutSeconds", DEFAULT_TIMEOUT_SECONDS),

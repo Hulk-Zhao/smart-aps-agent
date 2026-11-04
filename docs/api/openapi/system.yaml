@@ -15,6 +15,7 @@ tags:
   - name: 配置
 paths:
   /health:
+    x-milestone: OPS
     get:
       operationId: health
       tags: [健康检查]
@@ -29,6 +30,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ResultOfHealth'
   /auth/login:
+    x-milestone: M3
     post:
       operationId: login
       tags: [认证]
@@ -59,6 +61,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /users:
+    x-milestone: M1
     get:
       operationId: listUsers
       tags: [用户]
@@ -115,6 +118,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /audit-logs:
+    x-milestone: M1
     get:
       operationId: listAuditLogs
       tags: [审计]
@@ -155,6 +159,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /configs:
+    x-milestone: M1
     get:
       operationId: getConfigs
       tags: [配置]

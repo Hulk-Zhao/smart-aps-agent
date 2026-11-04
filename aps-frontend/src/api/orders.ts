@@ -111,9 +111,7 @@ export async function createStrategy(
 
 /** 策略详情：C19 约定 rules 为结构化规则数组（strategy_rule 为准）。 */
 export async function getStrategy(strategyId: string): Promise<StrategyDetail> {
-  const response = await http.get<StrategyDetail>(
-    `/strategies/${encodeURIComponent(strategyId)}`
-  )
+  const response = await http.get<StrategyDetail>(`/strategies/${encodeURIComponent(strategyId)}`)
   return response.data
 }
 

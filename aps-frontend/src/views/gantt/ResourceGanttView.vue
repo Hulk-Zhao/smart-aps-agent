@@ -11,10 +11,7 @@ import {
 import { analyzeGanttDataset } from '@/components/gantt/analysis'
 import type { GanttAnalysis, GanttConflict, GanttLayerFlags } from '@/components/gantt/analysis'
 import { GANTT_CALENDAR_TIMEZONE_NOTE } from '@/components/gantt/calendar'
-import type {
-  GanttCalendarRowState,
-  GanttCalendarWindowKind
-} from '@/components/gantt/calendar'
+import type { GanttCalendarRowState, GanttCalendarWindowKind } from '@/components/gantt/calendar'
 import GanttTimeline from '@/components/gantt/GanttTimeline.vue'
 import type { GanttDataset, GanttZoom } from '@/components/gantt'
 import type { GanttDatasetKey } from '@/components/gantt/adapters'
@@ -306,29 +303,31 @@ onMounted(() => {
           <i class="legend__dot" :class="`tag-${item.tagType}`" />{{ item.label }}
         </span>
         <span class="legend__item"><i class="legend__setup" />换型窗口</span>
-        <span class="legend__item"><i class="legend__frozen">冻</i>冻结（灰色 + 锁标识，不可拖）</span>
+        <span class="legend__item"
+          ><i class="legend__frozen">冻</i>冻结（灰色 + 锁标识，不可拖）</span
+        >
         <span class="legend__item"><i class="legend__conflict" />冲突（红色描边 + 原因）</span>
         <span class="legend__item"><i class="legend__calendar" />日历停机（C14 班次/例外日）</span>
-        <span class="legend__item"><i class="legend__idle" />可插空档（相邻任务 ≥30 分钟，推导）</span>
+        <span class="legend__item"
+          ><i class="legend__idle" />可插空档（相邻任务 ≥30 分钟，推导）</span
+        >
         <span class="legend__item"><i class="legend__link" />工序依赖 FS</span>
       </div>
 
       <p class="scope-note">
-        M2-FE-01 只读：时间轴缩放、状态配色、冲突高亮、负载热力、工序依赖、冻结标识。停机层与热力分母来自
-        C14 资源工作日历（GET /resources 的 calendarId + GET /calendars/{id}）；C4 不返回日历字段。
+        M2-FE-01
+        只读：时间轴缩放、状态配色、冲突高亮、负载热力、工序依赖、冻结标识。停机层与热力分母来自 C14
+        资源工作日历（GET /resources 的 calendarId + GET /calendars/{id}）；C4 不返回日历字段。
         拖拽调整与撤销重做属 M2-FE-03（等待 W4 交付 /tasks/{id}/adjust），本页不提供任何写操作。
       </p>
     </el-card>
 
     <el-alert v-if="error" class="page-card" type="error" :closable="false" :title="error" />
 
-    <el-alert
-      v-if="analysis && hasCalendarGap"
-      class="page-card"
-      type="warning"
-      :closable="false"
-    >
-      <template #title>日历数据未接入 / 存在缺口（相关资源不计算停机与热力，不使用推定值兜底）</template>
+    <el-alert v-if="analysis && hasCalendarGap" class="page-card" type="warning" :closable="false">
+      <template #title
+        >日历数据未接入 / 存在缺口（相关资源不计算停机与热力，不使用推定值兜底）</template
+      >
       <ul class="issue-list">
         <li v-if="!analysis.calendarResourceListLoaded">
           GET /resources 整体不可用，所有资源日历均无法解析。
@@ -338,9 +337,7 @@ onMounted(() => {
     </el-alert>
 
     <el-card class="page-card" shadow="never">
-      <template #header>
-        只读指标（{{ profile.label }}）
-      </template>
+      <template #header> 只读指标（{{ profile.label }}） </template>
       <el-descriptions v-if="dataset && analysis" :column="4" border size="small">
         <el-descriptions-item label="任务 / 资源行">
           {{ analysis.summary.taskCount }} / {{ analysis.summary.resourceCount }}
@@ -351,7 +348,8 @@ onMounted(() => {
           </strong>
         </el-descriptions-item>
         <el-descriptions-item label="依赖违例 / 依赖边">
-          {{ analysis.summary.dependencyViolationCount }} / {{ analysis.summary.dependencyLinkCount }}
+          {{ analysis.summary.dependencyViolationCount }} /
+          {{ analysis.summary.dependencyLinkCount }}
         </el-descriptions-item>
         <el-descriptions-item label="冻结任务">
           {{ analysis.summary.frozenTaskCount }}
@@ -395,8 +393,9 @@ onMounted(() => {
       </el-descriptions>
       <el-empty v-else description="暂无甘特数据" />
       <p class="perf-note">
-        口径：数据加载 → 两帧 requestAnimationFrame 后统计，包含日历解析（C14 班次/例外日）、派生分析
-        （冲突 / 可插空档 / 热力 / 依赖）与虚拟行渲染；时间轴切换不重复计算分析，仅重排绘制。
+        口径：数据加载 → 两帧 requestAnimationFrame 后统计，包含日历解析（C14
+        班次/例外日）、派生分析 （冲突 / 可插空档 / 热力 /
+        依赖）与虚拟行渲染；时间轴切换不重复计算分析，仅重排绘制。
       </p>
     </el-card>
 
@@ -441,9 +440,9 @@ onMounted(() => {
       </el-table>
       <el-empty v-else description="尚无资源日历绑定数据" />
       <p class="perf-note">
-        数据流：C4 /gantt/resource 不返回 calendarId → GET /resources 取 calendarId →
-        GET /calendars/{id} 取班次 / 例外日 / 生效期。{{ GANTT_CALENDAR_TIMEZONE_NOTE }}。
-        未绑 / 缺失 / 失败的行不产生停机窗口与热力，页面显示「—」而非 24h 回落。
+        数据流：C4 /gantt/resource 不返回 calendarId → GET /resources 取 calendarId → GET
+        /calendars/{id} 取班次 / 例外日 / 生效期。{{ GANTT_CALENDAR_TIMEZONE_NOTE }}。 未绑 / 缺失 /
+        失败的行不产生停机窗口与热力，页面显示「—」而非 24h 回落。
       </p>
     </el-card>
 
@@ -457,7 +456,9 @@ onMounted(() => {
           <template #default="{ row }">
             <el-tag
               size="small"
-              :type="row.kind === 'HOLIDAY' ? 'danger' : row.kind === 'NON_WORKDAY' ? 'info' : 'primary'"
+              :type="
+                row.kind === 'HOLIDAY' ? 'danger' : row.kind === 'NON_WORKDAY' ? 'info' : 'primary'
+              "
               effect="plain"
             >
               {{ calendarWindowKindLabel(row.kind) }}
@@ -481,7 +482,12 @@ onMounted(() => {
     <el-card class="page-card" shadow="never">
       <template #header>
         冲突清单（共 {{ conflictRows.length }} 条，展示前 50 条）
-        <el-tag v-if="conflictTypes.has('RESOURCE_OVERLAP')" size="small" type="warning" effect="plain">
+        <el-tag
+          v-if="conflictTypes.has('RESOURCE_OVERLAP')"
+          size="small"
+          type="warning"
+          effect="plain"
+        >
           资源重叠
         </el-tag>
         <el-tag
@@ -510,9 +516,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column label="任务" width="140">
-          <template #default="{ row }">
-            #{{ row.taskIds[0] }} / #{{ row.taskIds[1] }}
-          </template>
+          <template #default="{ row }"> #{{ row.taskIds[0] }} / #{{ row.taskIds[1] }} </template>
         </el-table-column>
         <el-table-column prop="resourceCode" label="资源" width="130" />
         <el-table-column prop="overlapMinutes" label="重叠分钟" width="100" />
@@ -542,13 +546,14 @@ onMounted(() => {
       </div>
       <p class="perf-note">
         悬浮任务条可查看订单、加工窗口、换型窗口、辅资源、资源内序号与冲突原因；悬浮日历停机块可查看
-        窗口类型与日历依据，悬浮热力块可查看「占用 / 日历工作分钟」分母。冻结任务以灰色 + 虚线 + 「冻」标识，
-        明确不可拖拽（拖拽能力在 FE-03 落地前不存在）。
+        窗口类型与日历依据，悬浮热力块可查看「占用 / 日历工作分钟」分母。冻结任务以灰色 + 虚线 +
+        「冻」标识， 明确不可拖拽（拖拽能力在 FE-03 落地前不存在）。
       </p>
       <p class="perf-note">
-        口径：停机层只渲染 C14 日历事实（班次休息 / 非排班日 / 非工作例外日），不再用相邻任务间隔推定停机；
-        热力分母为该资源的当日日历工作分钟，未绑 / 缺失 / 失败的行显示「—」，不静默回落到 24h。
-        可插空档仍是相邻任务间隔 ≥30 分钟的前端推导，仅作可插入候选，不代表真实停机指令。
+        口径：停机层只渲染 C14 日历事实（班次休息 / 非排班日 /
+        非工作例外日），不再用相邻任务间隔推定停机； 热力分母为该资源的当日日历工作分钟，未绑 / 缺失
+        / 失败的行显示「—」，不静默回落到 24h。 可插空档仍是相邻任务间隔 ≥30
+        分钟的前端推导，仅作可插入候选，不代表真实停机指令。
       </p>
     </el-card>
   </div>

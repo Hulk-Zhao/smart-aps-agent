@@ -8,6 +8,8 @@
     2. 库为空时自动执行 db/migration/V1__init.sql 建表；
     3. 通过环境变量把连接参数传给测试（APS_TEST_DB_* + APS_TEST_DB_ENABLED=true）；
     4. 只构建 aps-service 及其依赖，不触碰 aps-admin，避免与启动验证抢 target。
+    5. 安全边界：真库测试只允许在受控库（aps_test* / aps_m2_*）上运行，禁止指向 dev/生产库；
+       SolveTaskRepositoryRealDbTest 在执行 Flyway clean 前用 SELECT current_database() 做库名白名单校验。
 
     证据输出：aps-service/target/qa-evidence/m1-qa-01-evidence.log
 

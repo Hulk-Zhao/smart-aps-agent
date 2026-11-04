@@ -63,5 +63,19 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 真库验收测试自管 schema：由 Flyway 按 db/migration 迁移到最新版本（V1→V7），
+             与生产同一条迁移链，避免测试库停留在手工建表时的旧结构 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

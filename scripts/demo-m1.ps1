@@ -181,10 +181,11 @@ function Wait-SolveTerminal {
 }
 
 $validOrders = @(
-    'DEMO-ORD-001', 'DEMO-ORD-002', 'DEMO-ORD-003', 'DEMO-ORD-004',
-    'DEMO-ORD-005', 'DEMO-ORD-006', 'DEMO-ORD-007', 'DEMO-ORD-008'
+    'SO-20261104-0001', 'SO-20261104-0002', 'SO-20261104-0003', 'SO-20261104-0004',
+    'SO-20261104-0005', 'SO-20261104-0006', 'SO-20261104-0007', 'SO-20261104-0008'
 )
-$negativeOrder = 'DEMO-ORD-NOBOM'
+$negativeOrder = 'SO-20261104-0009'
+$validOrderSql = ($validOrders | ForEach-Object { "'$_'" }) -join ','
 $expectedOps = @(10, 20, 30, 40, 50, 60)
 $expectedSetupByOp = @{ 10 = 30; 20 = 30; 30 = 30; 40 = 10; 50 = 10; 60 = 10 }
 $humanId = 'd0000000-0000-0000-0000-000000000306'
@@ -291,7 +292,7 @@ try {
     # --------------------------------------------------------------------
     Write-Step '4/8 solve 8 confirmed orders'
     $solveBody = @{
-        taskNo     = 'DEMO-M1-CLOSED-LOOP'
+        taskNo     = 'SOLVE-20261104-0001'
         sandboxId  = $SandboxId
         strategyId = $StrategyId
         orderNos   = $validOrders
@@ -340,7 +341,7 @@ ORDER BY id DESC LIMIT 1;
     $demoTaskCount = [int](Get-Scalar -Sql @"
 SELECT count(*) FROM task t JOIN orders o ON o.id = t.order_id
 WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = false
-  AND o.order_no LIKE 'DEMO-ORD-%';
+  AND o.order_no IN ($validOrderSql);
 "@)
     Assert-True -Condition ([int]$s[6] -eq $demoTaskCount) `
         -Label 'solveTask.persistedTaskCount' -Detail ("persisted={0} demoRows={1}" -f $s[6], $demoTaskCount)
@@ -361,7 +362,7 @@ FROM task t
 JOIN orders o ON o.id = t.order_id
 LEFT JOIN resource r ON r.id = t.resource_id
 WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = false
-  AND o.order_no LIKE 'DEMO-ORD-%'
+  AND o.order_no IN ($validOrderSql)
 ORDER BY o.order_no, t.operation_index;
 "@
     $rawTaskRows = @(Invoke-Psql -Sql $taskSql | Where-Object { $_ -ne '' })
@@ -417,7 +418,7 @@ ORDER BY o.order_no, t.operation_index;
     Assert-True -Condition ($unexpectedOps.Count -eq 0) -Label 'task.ops' `
         -Detail ("unexpectedOps={0}" -f $unexpectedOps.Count)
 
-    $orderQtyRows = @(Invoke-Psql -Sql "SELECT order_no, qty::text FROM orders WHERE tenant_id = '$TenantId' AND order_no LIKE 'DEMO-ORD-%' AND status = 'CONFIRMED';" |
+    $orderQtyRows = @(Invoke-Psql -Sql "SELECT order_no, qty::text FROM orders WHERE tenant_id = '$TenantId' AND order_no IN ($validOrderSql) AND status = 'CONFIRMED';" |
             Where-Object { $_ -ne '' })
     $orderQty = @{}
     foreach ($line in $orderQtyRows) {
@@ -500,9 +501,9 @@ ORDER BY o.order_no, t.operation_index;
     Assert-True -Condition ($duplicateInGantt.Count -eq 0) -Label 'gantt.idsUnique' `
         -Detail ("duplicates={0}" -f $duplicateInGantt.Count)
 
-    $sampleGantt = $ganttTasks | Where-Object { $_.operationIndex -eq 40 -and $_.orderNo -eq 'DEMO-ORD-001' } | Select-Object -First 1
+    $sampleGantt = $ganttTasks | Where-Object { $_.operationIndex -eq 40 -and $_.orderNo -eq 'SO-20261104-0001' } | Select-Object -First 1
     Assert-True -Condition ($null -ne $sampleGantt) -Label 'gantt.sampleFound' `
-        -Detail 'DEMO-ORD-001 / op40'
+        -Detail 'SO-20261104-0001 / op40'
     $sampleDb = $taskById[[string]$sampleGantt.id]
     Assert-True -Condition ($null -ne $sampleDb) -Label 'gantt.sampleInDb' `
         -Detail ("taskId={0}" -f $sampleGantt.id)
@@ -527,7 +528,7 @@ ORDER BY o.order_no, t.operation_index;
     Assert-True -Condition ($sampleGantt.sequenceInResource -eq $sampleDb.Seq) -Label 'gantt.sample.sequence' `
         -Detail ("gantt={0} db={1}" -f $sampleGantt.sequenceInResource, $sampleDb.Seq)
     $sampleSecondary = @($sampleGantt.secondaryResourceCodes)
-    Assert-True -Condition ($sampleSecondary.Contains('DEMO-RES-HUMAN-01')) -Label 'gantt.sample.secondary' `
+    Assert-True -Condition ($sampleSecondary.Contains('RES-OP-01')) -Label 'gantt.sample.secondary' `
         -Detail ("secondaryCodes={0}" -f ($sampleSecondary -join ','))
 
     # --------------------------------------------------------------------
@@ -572,7 +573,7 @@ ORDER BY id DESC LIMIT 1;
     $oldRows = Get-Scalar -Sql @"
 SELECT count(*) FROM task t JOIN orders o ON o.id = t.order_id
 WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = false
-  AND o.tenant_id = '$TenantId' AND o.order_no LIKE 'DEMO-ORD-%'
+  AND o.tenant_id = '$TenantId' AND o.order_no IN ($validOrderSql)
   AND t.id <= $maxId1;
 "@
     Assert-True -Condition ([int]$oldRows -eq 0) -Label 'rerun.oldRowsRemoved' `
@@ -581,7 +582,7 @@ WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = 
     $newMaxId = Get-Scalar -Sql @"
 SELECT COALESCE(max(t.id), 0) FROM task t JOIN orders o ON o.id = t.order_id
 WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = false
-  AND o.tenant_id = '$TenantId' AND o.order_no LIKE 'DEMO-ORD-%';
+  AND o.tenant_id = '$TenantId' AND o.order_no IN ($validOrderSql);
 "@
     Assert-True -Condition ([long]$newMaxId -gt [long]$maxId1) -Label 'rerun.newIds' `
         -Detail ("newMaxId={0} oldMaxId={1}" -f $newMaxId, $maxId1)
@@ -591,7 +592,7 @@ SELECT count(*) FROM (
   SELECT o.order_no, t.operation_index, count(*) AS c
   FROM task t JOIN orders o ON o.id = t.order_id
   WHERE t.tenant_id = '$TenantId' AND t.sandbox_id = '$SandboxId' AND t.deleted = false
-    AND o.tenant_id = '$TenantId' AND o.order_no LIKE 'DEMO-ORD-%'
+    AND o.tenant_id = '$TenantId' AND o.order_no IN ($validOrderSql)
   GROUP BY o.order_no, t.operation_index
   HAVING count(*) > 1
 ) dup;

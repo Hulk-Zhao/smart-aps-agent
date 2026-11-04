@@ -7,11 +7,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.hengce.aps.infrastructure.persistence.schedule.ConstraintJustificationRepository;
 import com.hengce.aps.infrastructure.persistence.schedule.SolveTaskRepository;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
@@ -23,6 +33,10 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
  * M2-SE-03 / M2-SE-05 真库验收：连接本机便携 PostgreSQL 的 aps_m2_se3 库。
  *
  * <p>库不可用时整类跳过（{@link Assumptions}），不影响共享工作区其他模块构建。
+ * 执行前由 Flyway 按 {@code db/migration} 把目标库迁到最新版本（当前 V7），
+ * 与生产使用同一条迁移链；历史上手工建表、没有 {@code flyway_schema_history} 的库
+ * 先 {@code clean} 再全量迁移（clean 前用 {@link RealDbTargetGuard} 校验数据库自报的
+ * 真实库名属于受控测试库，避免误删 dev/生产库），避免测试库停留在旧结构。
  * 覆盖 V6 幂等唯一索引、条件终态写入、JSONB metrics 合并、归因 {@code task_ids} 解析与补齐。</p>
  */
 class SolveTaskRepositoryRealDbTest {
@@ -35,6 +49,10 @@ class SolveTaskRepositoryRealDbTest {
 
     private static final String JDBC_URL = "jdbc:postgresql://127.0.0.1:55432/aps_m2_se3";
 
+    private static final String DB_USER = "aps";
+
+    private static final String DB_PASSWORD = "aps_dev_pwd";
+
     private JdbcTemplate jdbcTemplate;
 
     private SolveTaskRepository repository;
@@ -42,6 +60,91 @@ class SolveTaskRepositoryRealDbTest {
     private ConstraintJustificationRepository justificationRepository;
 
     private final List<Long> createdTaskIds = new ArrayList<>();
+
+    /**
+     * 测试库自管 schema：Flyway 把 aps_m2_se3 迁移到最新版本（V1→V7）。
+     *
+     * <p>遗留的手工建库（有业务表但无 flyway_schema_history）先 clean，再按迁移链全量重建，
+     * 之后每次运行 only validate + migrate 到最新，不再依赖人工建表或迁移。</p>
+     */
+    @BeforeAll
+    static void migrateSchemaToLatest() {
+        SchemaState state;
+        try {
+            state = inspectSchema();
+        } catch (Exception exception) {
+            Assumptions.assumeTrue(false, "aps_m2_se3 不可用，跳过真库验收: "
+                    + exception.getMessage());
+            return;
+        }
+        Flyway flyway = Flyway.configure()
+                .dataSource(JDBC_URL, DB_USER, DB_PASSWORD)
+                .locations(migrationLocation())
+                .cleanDisabled(false)
+                .load();
+        if (state.legacy()) {
+            // clean 会 drop 目标库全部对象，必须用数据库自报的真实库名做白名单校验；
+            // 不匹配直接抛出终止测试，绝不执行 clean。
+            RealDbTargetGuard.requireCleanAllowed(state.databaseName());
+            try {
+                flyway.clean();
+            } catch (Exception exception) {
+                throw new IllegalStateException("aps_m2_se3 clean 失败: "
+                        + exception.getMessage(), exception);
+            }
+        }
+        try {
+            flyway.migrate();
+        } catch (Exception exception) {
+            Assumptions.assumeTrue(false, "aps_m2_se3 迁移到最新版本失败，跳过真库验收: "
+                    + exception.getMessage());
+        }
+    }
+
+    private static String migrationLocation() {
+        Path fromModule = Paths.get("..", "db", "migration");
+        Path migrationDir = Files.exists(fromModule.resolve("V1__init.sql"))
+                ? fromModule : Paths.get("db", "migration");
+        return "filesystem:" + migrationDir.toAbsolutePath().normalize()
+                .toString().replace('\\', '/');
+    }
+
+    private static SchemaState inspectSchema() throws SQLException {
+        try (Connection connection = DriverManager.getConnection(JDBC_URL, DB_USER, DB_PASSWORD);
+             Statement statement = connection.createStatement()) {
+            String databaseName = queryScalar(statement, "SELECT current_database()");
+            long tables = queryCount(statement,
+                    "SELECT count(*) FROM information_schema.tables "
+                            + "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'");
+            long flywayHistory = queryCount(statement,
+                    "SELECT count(*) FROM information_schema.tables "
+                            + "WHERE table_schema = 'public' AND table_name = 'flyway_schema_history'");
+            return new SchemaState(tables > 0 && flywayHistory == 0, databaseName);
+        }
+    }
+
+    private static String queryScalar(Statement statement, String sql) throws SQLException {
+        try (ResultSet resultSet = statement.executeQuery(sql)) {
+            resultSet.next();
+            return resultSet.getString(1);
+        }
+    }
+
+    private static long queryCount(Statement statement, String sql) throws SQLException {
+        try (ResultSet resultSet = statement.executeQuery(sql)) {
+            resultSet.next();
+            return resultSet.getLong(1);
+        }
+    }
+
+    /**
+     * 目标库 schema 现状。
+     *
+     * @param legacy 有业务表但无 {@code flyway_schema_history}
+     * @param databaseName 数据库自报的真实库名
+     */
+    private record SchemaState(boolean legacy, String databaseName) {
+    }
 
     @BeforeEach
     void setUp() {

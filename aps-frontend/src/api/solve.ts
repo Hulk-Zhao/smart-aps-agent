@@ -42,11 +42,7 @@ export async function cancelSolveTask(
 }
 
 /** STOMP 通道状态；DISABLED 表示 Mock 模式无 WS 服务端，由页面轮询兜底。 */
-export type SolveProgressChannelState =
-  | 'CONNECTING'
-  | 'CONNECTED'
-  | 'DISCONNECTED'
-  | 'DISABLED'
+export type SolveProgressChannelState = 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'DISABLED'
 
 export interface SolveProgressHandlers {
   onMessage: (progress: SolveProgress) => void

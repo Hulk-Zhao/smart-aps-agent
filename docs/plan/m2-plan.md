@@ -51,6 +51,18 @@
 
 **验收口径**：M2 不整体套用 MVP 6.4（PRD 1601-1606）。M2 只取其中 **500 订单 <60s、Docker ≤15min** 两项。
 
+> **2026-11-04 用户裁定**：上述 `500 订单 <60s` 保留为**原始目标**（未达成，原文不改）；该项**移出 M2 门禁**，转后续性能专项。M2 按下方「演示口径」验收。实测 500 单在 60s 与 300s 均未完整收敛，瓶颈在构解约 168s，社区版无多线程。
+
+**M2 演示口径（2026-11-04 用户拍板：先按 demo 展示推进，多线程后续再议）**：
+
+| # | 场景 | 通过条件 |
+|---|---|---|
+| D1 | M1 演示集 8 单 / 48 任务，不带 `parameters` | 3/3 次 `SOLVED`；`0hard`；`expected/assigned/persisted = 48/48/48`；库内 48 行 |
+| D2 | 50 单 / `timeout=60s` | 完整收敛、`0hard`、落库 300 行（实测 elapsed ≈61.3s，含受理与装配开销） |
+| D3 | 50 单 / `timeout=5s` | 必须 `TIMEOUT`、`persisted=0`、`engineFallbackDetail=SOLVER_TIMEOUT`，不返回部分解 |
+
+> **范围说明**：`moveThreadCount` / Timefold 企业版多线程**不在当前 M2/M3 范围**。契约语义为「缺省或 `0` = 未指定、走引擎默认」；仅非 0 值尝试应用，并按能力探测在 `metrics` 标注（探测失败按默认处理，不报错）。
+
 **M1 门槛**：看板 `GET /api/tasks` 显示 M1-SE-04、M1-SE-05 为「进行中」，M1-SE-06、M1-QA-03 为「待开始」。D2 18:00 前必须关闭 M1-SE-04/05；D15 前关闭 M1-SE-06/M1-QA-03，否则 M2-QA-02 不得启动。
 
 ---
@@ -202,7 +214,7 @@
   - `db/migration/V2-V6` 的**应用**（不是编写）
 - **禁止进入**：除 importexport 外任何业务 Controller/Service、`db/migration/**`（只读校验）、`aps-frontend/**`、根 `pom.xml`（依赖向 W1 申请）。
 - **依赖前置**：C26 冻结；W1 POI 依赖 D1；V2-V6 D3 应用；W3 D5。
-- **验收方式**：9 类模板可下载/可导入/错误行可定位；500 订单 <60s；`docker compose up` ≤15min；QA-02 输出 P0/P1 缺陷清单。
+- **验收方式**：9 类模板可下载/可导入/错误行可定位；500 订单 <60s（**原始目标，2026-11-04 已移出 M2 门禁**，转性能专项；M2 改按 §1「演示口径」D1–D3 验收）；`docker compose up` ≤15min；QA-02 输出 P0/P1 缺陷清单。
 
 ---
 
@@ -487,7 +499,7 @@ D20         交付
 
 **回滚点 R28**：开关 `aps.solve.fallback-enabled=false` → 异常/超时直接 `FAILED`，不产生降级标记；已落库的 `metrics` 键保留，前端按 `engineFallback` 渲染。
 
-**待用户最终确认**：降级结果是否允许“部分订单未排”而不是整单失败（M2 建议允许部分，`fallbackMode=PARTIAL` 需 C28 扩展）。
+**已裁定（2026-11-04）**：不允许以“部分订单未排”收口为 `SOLVED`——见 `docs/api/contract-freeze.md` C20「终态判定：任务覆盖率与『`SOLVED` 即已落库』」：覆盖不完整必须落 `FAILED`，降级解不得包装成 `SOLVED`。M2 的降级模式只产出 `HARD_ONLY`，`PARTIAL` 仍留 M3。
 
 ---
 

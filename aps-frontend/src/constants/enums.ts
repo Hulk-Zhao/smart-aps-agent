@@ -100,6 +100,13 @@ export const enumDefinitions = {
     { value: 'ORTOOLS', label: 'OR-Tools', tagType: 'success' },
     { value: 'RULE_BASED', label: '规则引擎', tagType: 'info' }
   ],
+  /** 计划版本状态（C24 / V3 CHECK：DRAFT/REVIEW/PUBLISHED/ARCHIVED）。 */
+  planStatus: [
+    { value: 'DRAFT', label: '草稿', tagType: 'info' },
+    { value: 'REVIEW', label: '评审中', tagType: 'warning' },
+    { value: 'PUBLISHED', label: '已发布', tagType: 'success' },
+    { value: 'ARCHIVED', label: '已归档', tagType: 'info' }
+  ],
   solveTaskStatus: [
     { value: 'PENDING', label: '等待中', tagType: 'info' },
     { value: 'RUNNING', label: '求解中', tagType: 'primary' },

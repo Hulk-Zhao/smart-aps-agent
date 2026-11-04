@@ -3,6 +3,7 @@ package com.hengce.aps.service.schedule;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hengce.aps.common.constant.ApsConstants;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.common.tenant.TenantContext;
@@ -71,8 +72,6 @@ public class TaskAdjustService {
     private static final String ORDER_LOCKED_WINDOW = "LOCKED_TIME_WINDOW";
 
     private static final String ORDER_LOCKED_RESOURCE = "LOCKED_RESOURCE";
-
-    private static final int MAX_PAGE_SIZE = 100;
 
     private final TaskAdjustmentRepository adjustmentRepository;
 
@@ -224,7 +223,7 @@ public class TaskAdjustService {
     public AdjustmentPage history(long taskId, int page, int size) {
         UUID tenantId = TenantContext.getTenantId();
         int safePage = Math.max(1, page);
-        int safeSize = Math.min(MAX_PAGE_SIZE, Math.max(1, size));
+        int safeSize = Math.min(ApsConstants.MAX_PAGE_SIZE, Math.max(1, size));
         int total = adjustmentRepository.countHistory(tenantId, taskId);
         List<TaskAdjustmentView> items = adjustmentRepository
                 .findHistory(tenantId, taskId, safeSize, (safePage - 1) * safeSize).stream()

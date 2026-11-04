@@ -37,6 +37,7 @@ import type {
 import type { LoginRequest, User, UserCreateRequest, ConfigUpdateRequest } from '@/types/system'
 import type { SolveSubmitRequest, SolveTaskDetail } from '@/types/solve'
 import type { TaskAdjustRequest } from '@/types/gantt'
+import type { PlanAction, PlanDetail, PlanPublishRequest, PlanRollbackRequest } from '@/types/plans'
 
 import {
   auditLogs,
@@ -797,6 +798,54 @@ function advanceMockSolveTask(detail: SolveTaskDetail): SolveTaskDetail {
   return detail
 }
 
+/**
+ * 计划版本 Mock（C24）：只做后端已实现的三件事（详情/发布/回滚）。
+ * 重复发布同样幂等返回 200；Mock 不模拟 40903（该码需要场景内存在 IN_PROGRESS/COMPLETED 任务）。
+ */
+const mockPlanRecords = new Map<string, PlanDetail>()
+
+function createMockPlan(planId: string): PlanDetail {
+  const tasks = ganttTasks
+    .filter((task) => task.status === 'PLANNED')
+    .slice(0, 3)
+    .map((task) => ({
+      taskId: String(task.id),
+      orderNo: task.orderNo ?? null,
+      operationIndex: task.operationIndex ?? null,
+      status: task.status,
+      startTime: task.startTime ?? null,
+      endTime: task.endTime ?? null,
+      resourceId: task.resourceCode ?? null,
+      qty: task.qty ?? null
+    }))
+  return {
+    action: {
+      planId,
+      planNo: 'PLAN-20261104-001',
+      version: 1,
+      status: 'DRAFT',
+      publishedAt: null,
+      affectedTaskCount: 0,
+      sandboxId: DEFAULT_SANDBOX_ID,
+      taskCount: 0,
+      approver: null,
+      reason: 'Mock 计划版本',
+      rollbackOf: null
+    },
+    tasks
+  }
+}
+
+function mockPlanOf(planId: string): PlanDetail {
+  const existing = mockPlanRecords.get(planId)
+  if (existing) {
+    return existing
+  }
+  const created = createMockPlan(planId)
+  mockPlanRecords.set(planId, created)
+  return created
+}
+
 export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply {
   const method = (config.method ?? 'get').toUpperCase()
   const path = resolvePath(config)
@@ -936,8 +985,8 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       successCount: 12,
       failureCount: 2,
       errors: [
-        { row: 3, code: 'MAT-RAW-3003', message: '单位不能为空' },
-        { row: 9, code: 'MAT-RAW-3001', message: '物料编码重复' }
+        { row: 3, code: 'MAT-RM-009', message: '单位不能为空' },
+        { row: 9, code: 'MAT-RM-101', message: '物料编码重复' }
       ]
     })
   }
@@ -1612,8 +1661,8 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       utilizationDelta: 3.5,
       setupCountDelta: -2,
       changedTasks: [
-        { taskId: 2101, orderNo: 'SO-20261101-001', resourceCode: 'RES-SMT-01' },
-        { taskId: 2102, orderNo: 'SO-20261101-001', resourceCode: 'RES-ASSY-01' }
+        { taskId: 2101, orderNo: 'SO-20261101-0001', resourceCode: 'RES-SMT-01' },
+        { taskId: 2102, orderNo: 'SO-20261101-0001', resourceCode: 'RES-ASSY-01' }
       ]
     })
   }
@@ -1726,14 +1775,104 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
     return ok(config, task)
   }
 
+  if (method === 'GET' && path === '/plans') {
+    const sandboxId = String(config.params?.sandboxId ?? '')
+    if (!sandboxId) {
+      return fail(config, 40000, 'sandboxId不能为空', 400)
+    }
+    const page = Number(config.params?.page ?? 1)
+    const size = Number(config.params?.size ?? 20)
+    const all = [...mockPlanRecords.values()]
+      .filter((record) => record.action.sandboxId === sandboxId)
+      .map((record) => ({
+        planId: record.action.planId,
+        planNo: record.action.planNo ?? '',
+        version: record.action.version,
+        status: record.action.status,
+        publishedAt: record.action.publishedAt ?? null,
+        publishedBy: null,
+        approver: record.action.approver ?? null,
+        taskCount: record.action.taskCount ?? 0,
+        rollbackOf: record.action.rollbackOf ?? null
+      }))
+      .sort((left, right) => {
+        if (!left.publishedAt && !right.publishedAt) {
+          return right.planId.localeCompare(left.planId)
+        }
+        if (!left.publishedAt) {
+          return -1
+        }
+        if (!right.publishedAt) {
+          return 1
+        }
+        return right.publishedAt.localeCompare(left.publishedAt)
+      })
+    const total = all.length
+    const start = (page - 1) * size
+    return ok(config, {
+      items: all.slice(start, start + size),
+      page,
+      size,
+      total,
+      totalPages: size > 0 ? Math.ceil(total / size) : 0
+    })
+  }
+
+  const planDetailMatch = path.match(/^\/plans\/([^/]+)$/)
+  if (method === 'GET' && planDetailMatch) {
+    return ok(config, mockPlanOf(decodeURIComponent(planDetailMatch[1])))
+  }
+
   const planActionMatch = path.match(/^\/plans\/([^/]+)\/(publish|rollback)$/)
   if (method === 'POST' && planActionMatch) {
-    return ok(config, {
-      planId: decodeURIComponent(planActionMatch[1]),
-      version: planActionMatch[2] === 'publish' ? 2 : 1,
+    const planId = decodeURIComponent(planActionMatch[1])
+    const record = mockPlanOf(planId)
+    const action = record.action
+    if (planActionMatch[2] === 'publish') {
+      const body = readBody<PlanPublishRequest>(config)
+      const idempotent = action.status === 'PUBLISHED'
+      if (!idempotent) {
+        action.status = 'PUBLISHED'
+        action.publishedAt = now()
+        action.taskCount = record.tasks.length
+        action.affectedTaskCount = record.tasks.length
+        action.reason = body.reason?.trim() || action.reason
+        action.approver = body.approver?.trim() || null
+      } else {
+        action.affectedTaskCount = 0
+      }
+      return ok(config, { ...action, targetVersionNo: null })
+    }
+    const body = readBody<PlanRollbackRequest>(config)
+    if (!body.targetVersionNo || !Number.isInteger(body.targetVersionNo)) {
+      return fail(config, 40000, 'targetVersionNo 必填且为 ≥1 的整数', 400)
+    }
+    if (body.targetVersionNo >= action.version) {
+      return fail(config, 40000, '目标版本不存在或未发布', 400)
+    }
+    const target = [...mockPlanRecords.values()].find(
+      (item) =>
+        item.action.sandboxId === action.sandboxId && item.action.version === body.targetVersionNo
+    )
+    const created: PlanAction = {
+      planId: uuid(),
+      planNo: `PLAN-20261104-${String(action.version + 1).padStart(3, '0')}`,
+      version: action.version + 1,
+      targetVersionNo: body.targetVersionNo,
+      status: 'PUBLISHED',
       publishedAt: now(),
-      affectedTaskCount: ganttTasks.length
+      affectedTaskCount: record.tasks.length,
+      sandboxId: action.sandboxId,
+      taskCount: target?.action.taskCount ?? record.tasks.length,
+      approver: null,
+      reason: body.reason?.trim() || null,
+      rollbackOf: planId
+    }
+    mockPlanRecords.set(created.planId, {
+      action: created,
+      tasks: target ? [...target.tasks] : [...record.tasks]
     })
+    return ok(config, created)
   }
 
   return fail(config, 40400, `Mock 未匹配到接口：${method} ${path}`, 404)

@@ -108,11 +108,7 @@ export interface StrategyRule {
 
 /** 初排维度，对齐 BR-SS-001-01。 */
 export type InitialSortDimension =
-  | 'PRIORITY'
-  | 'DUE_DATE'
-  | 'CUSTOMER_LEVEL'
-  | 'INVENTORY_STATUS'
-  | 'RELEASE_TIME'
+  'PRIORITY' | 'DUE_DATE' | 'CUSTOMER_LEVEL' | 'INVENTORY_STATUS' | 'RELEASE_TIME'
 
 export type InitialSortDirection = 'ASC' | 'DESC'
 

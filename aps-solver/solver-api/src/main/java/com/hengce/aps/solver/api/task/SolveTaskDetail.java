@@ -3,6 +3,8 @@ package com.hengce.aps.solver.api.task;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.hengce.aps.solver.api.ScheduledTask;
 import java.time.OffsetDateTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -63,9 +65,13 @@ public record SolveTaskDetail(
 
     /**
      * 归一化指标、状态与任务快照空值。
+     *
+     * <p>{@code metrics} 直接来自 JSONB，允许含 {@code null} 值（例如引擎未产出最佳分时的
+     * {@code "bestScore": null}）。这里必须保留 null 语义：{@link Map#copyOf(Map)} 会因 null 值抛
+     * {@link NullPointerException}，导致查询降级/失败任务详情 500，因此改用可容纳 null 的不可变副本。</p>
      */
     public SolveTaskDetail {
-        metrics = metrics == null ? Map.of() : Map.copyOf(metrics);
+        metrics = metrics == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(metrics));
         status = status == null ? SolveTaskStatus.PENDING.name() : status;
         engine = engine == null ? "" : engine;
         phase = phase == null ? "QUEUED" : phase;

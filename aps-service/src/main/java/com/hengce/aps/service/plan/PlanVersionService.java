@@ -2,6 +2,8 @@ package com.hengce.aps.service.plan;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hengce.aps.common.api.PageQuery;
+import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.common.tenant.TenantContext;
@@ -136,6 +138,23 @@ public class PlanVersionService {
         return new PlanDetailView(toAction(row, null, 0), readSnapshotTasks(row.snapshotJson()));
     }
 
+    /**
+     * 分页查询场景内计划版本轨迹，不含任务明细。
+     *
+     * @param query 分页参数，可为空
+     * @param sandboxId 场景标识
+     * @return 分页版本摘要
+     */
+    public PageResult<PlanVersionSummaryView> list(PageQuery query, UUID sandboxId) {
+        PageQuery normalized = query == null ? new PageQuery() : query.normalize();
+        UUID tenantId = TenantContext.getTenantId();
+        long total = planVersionRepository.countBySandbox(tenantId, sandboxId);
+        List<PlanVersionRow> rows = planVersionRepository.pageBySandbox(
+                tenantId, sandboxId, normalized.offset(), normalized.getSize());
+        List<PlanVersionSummaryView> items = rows.stream().map(PlanVersionService::toSummary).toList();
+        return PageResult.of(items, normalized, total);
+    }
+
     private PlanVersionRow requireVersion(UUID tenantId, UUID planId) {
         return planVersionRepository.find(tenantId, planId)
                 .orElseThrow(() -> new BizException(ErrorCode.NOT_FOUND, "计划版本不存在: " + planId));
@@ -171,6 +190,11 @@ public class PlanVersionService {
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("计划快照解析失败", exception);
         }
+    }
+
+    private static PlanVersionSummaryView toSummary(PlanVersionRow row) {
+        return new PlanVersionSummaryView(row.id(), row.planNo(), row.versionNo(), row.status(),
+                row.publishedAt(), row.publishedBy(), row.approver(), row.taskCount(), row.rollbackOf());
     }
 
     private static PlanActionView toAction(PlanVersionRow row, Integer targetVersionNo,

@@ -7,7 +7,8 @@ import java.util.Map;
  *
  * @param engine 引擎编码：timefold / ortools / rule_based（外部小写，见 C9）
  * @param timeoutSeconds 求解超时（秒），默认 60
- * @param moveThreadCount 移动线程数，0 表示 CPU-1，最小 1
+ * @param moveThreadCount 移动线程数；0 = 未指定（不设置该配置项，走引擎默认，社区版即单线程），
+ *                        &gt;0 = 显式请求，是否生效由引擎适配器按发行版能力决定
  * @param acceptor 接受器类型，默认 LATE_ACCEPTANCE
  * @param randomSeed 随机种子
  * @param maximumStepCount 最大步数，{@code <=0} 表示不限

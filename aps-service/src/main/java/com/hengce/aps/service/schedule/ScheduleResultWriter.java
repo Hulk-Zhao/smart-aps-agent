@@ -78,9 +78,14 @@ public class ScheduleResultWriter {
             }
         }
 
-        List<Long> removedTaskIds = scheduleRepository.deleteTasks(
-                assembled.tenantId(), assembled.sandboxId(), assembled.orderIds());
-        scheduleRepository.deleteJustificationsByTaskIds(removedTaskIds);
+        // 硬要求：完整性校验必须在 deleteTasks 之前（同一事务内）。
+        // 否则“先删旧任务、再写 0 行、然后提交”会把已排好的结果静默清空。
+        int expectedTaskCount = assembled.expectedTaskCount();
+        if (assignments.size() != expectedTaskCount) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR,
+                    "求解结果不完整，拒绝落库（未删除既有任务）：期望 " + expectedTaskCount
+                            + " 个任务，实际排位 " + assignments.size() + " 个");
+        }
 
         Set<UUID> writeOrderIds = new HashSet<>(assembled.orderIds());
         List<PersistedAssignment> persisted = new ArrayList<>(assignments.size());
@@ -100,6 +105,15 @@ public class ScheduleResultWriter {
                 }
             }
         }
+        if (persisted.size() != expectedTaskCount) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR,
+                    "求解结果落库口径不一致，拒绝落库（未删除既有任务）：期望 " + expectedTaskCount
+                            + " 个任务，可写入 " + persisted.size() + " 个");
+        }
+
+        List<Long> removedTaskIds = scheduleRepository.deleteTasks(
+                assembled.tenantId(), assembled.sandboxId(), assembled.orderIds());
+        scheduleRepository.deleteJustificationsByTaskIds(removedTaskIds);
 
         Map<String, Long> taskIdByLabel = new LinkedHashMap<>();
         Map<UUID, List<Long>> taskIdsByResource = new LinkedHashMap<>();
@@ -174,7 +188,7 @@ public class ScheduleResultWriter {
                 }
                 scheduleRepository.insertJustification(assembled.tenantId(), solveTaskId,
                         justification.constraintCode(), justification.type(), taskIds,
-                        justification.description());
+                        justification.description(), justification.weight(), justification.deduction());
                 count++;
             }
             return count;
@@ -189,7 +203,7 @@ public class ScheduleResultWriter {
             scheduleRepository.insertJustification(assembled.tenantId(), solveTaskId,
                     CODE_RESOURCE_NO_OVERLAP, "HARD", entry.getValue(),
                     "资源 " + resourceCodes.get(entry.getKey()) + " 上 " + entry.getValue().size()
-                            + " 个任务串行占用，无时间重叠");
+                            + " 个任务串行占用，无时间重叠", null, BigDecimal.ZERO);
             count++;
         }
         for (Map.Entry<String, List<Long>> entry : taskIdsByOrder.entrySet()) {
@@ -199,7 +213,7 @@ public class ScheduleResultWriter {
             scheduleRepository.insertJustification(assembled.tenantId(), solveTaskId,
                     CODE_OPERATION_DEPENDENCY, "HARD", entry.getValue(),
                     "订单 " + entry.getKey() + " 的 " + entry.getValue().size()
-                            + " 道工序按前序依赖与 lag 排程");
+                            + " 道工序按前序依赖与 lag 排程", null, BigDecimal.ZERO);
             count++;
         }
         return count;

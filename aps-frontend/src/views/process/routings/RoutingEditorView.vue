@@ -136,8 +136,7 @@ function toEditorGraph(detail: RoutingGraphResponse, previous: RoutingNode[] = [
       // 模式以响应回显为准，禁止用 primaryResourceId 是否为空反推。
       primaryResourceMode: payload.primaryResourceMode ?? 'INHERIT',
       // 辅助资源：缺键=回退模板，出现数组（含 []）=显式声明。
-      secondaryResourceMode:
-        payload.secondaryResourceIds === undefined ? 'INHERIT' : 'EXPLICIT',
+      secondaryResourceMode: payload.secondaryResourceIds === undefined ? 'INHERIT' : 'EXPLICIT',
       secondaryResourceIds: [...(payload.secondaryResourceIds ?? [])],
       position: payload.position ?? prior?.position ?? { x: 80, y: 80 }
     }
@@ -692,7 +691,9 @@ watch(errorIssues, (current) => {
               <el-radio-group
                 :model-value="selectedNode.secondaryResourceMode ?? 'INHERIT'"
                 :disabled="readonly"
-                @change="onSecondaryResourceModeChange(selectedNode, $event as SecondaryResourceMode)"
+                @change="
+                  onSecondaryResourceModeChange(selectedNode, $event as SecondaryResourceMode)
+                "
               >
                 <el-radio-button label="INHERIT">继承模版</el-radio-button>
                 <el-radio-button label="EXPLICIT">显式指定</el-radio-button>

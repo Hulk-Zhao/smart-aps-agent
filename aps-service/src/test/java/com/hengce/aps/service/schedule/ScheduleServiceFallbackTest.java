@@ -59,7 +59,7 @@ class ScheduleServiceFallbackTest {
     @Test
     void engineExceptionShouldWriteEngineFallbackMarker() {
         ScheduleService service = new ScheduleService(List.of(new ThrowingAdapter()), assembler,
-                resultWriter, solveTaskRepository, strategyService, true);
+                resultWriter, solveTaskRepository, strategyService, true, false);
         when(assembler.assemble(any(), any())).thenReturn(assembled());
 
         ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
@@ -68,8 +68,15 @@ class ScheduleServiceFallbackTest {
         assertEquals(SolveTaskStatus.FAILED, outcome.status());
         assertTrue(Boolean.TRUE.equals(outcome.metrics().get("engineFallback")));
         assertEquals("ENGINE_ERROR", outcome.metrics().get("engineFallbackReason"));
+        assertEquals(EngineRoute.DETAIL_ENGINE_EXCEPTION, outcome.metrics().get("engineFallbackDetail"));
         assertEquals("HARD_ONLY", outcome.metrics().get("fallbackMode"));
         assertTrue(outcome.metrics().get("fallbackAt") != null);
+        assertEquals(0, outcome.metrics().get("persistedTaskCount"),
+                "FAILED 未落库时必须显式写 0，不能留 null 被读成“未知”");
+        assertEquals(0, outcome.metrics().get("assignedTaskCount"),
+                "无结果对象时返回体不含任务，已排位数是确定值 0");
+        // 对照：确实“没有”的键仍保持 null，不得一刀切补成 0。
+        assertNull(outcome.metrics().get("bestScore"));
     }
 
     @Test
@@ -86,7 +93,7 @@ class ScheduleServiceFallbackTest {
             }
         };
         ScheduleService service = new ScheduleService(List.of(timeoutAdapter), assembler,
-                resultWriter, solveTaskRepository, strategyService, true);
+                resultWriter, solveTaskRepository, strategyService, true, false);
         when(assembler.assemble(any(), any())).thenReturn(assembled());
 
         ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
@@ -94,12 +101,19 @@ class ScheduleServiceFallbackTest {
 
         assertEquals(SolveTaskStatus.TIMEOUT, outcome.status());
         assertEquals("TIMEOUT", outcome.metrics().get("engineFallbackReason"));
+        assertEquals(0, outcome.metrics().get("persistedTaskCount"),
+                "TIMEOUT 不落库，persistedTaskCount 必须恒为 0");
+        assertEquals(0, outcome.metrics().get("assignedTaskCount"),
+                "TIMEOUT 时部分解被丢弃，已排位数为 0");
+        assertTrue(outcome.tasks().isEmpty(), "TIMEOUT 不得返回部分解");
+        // 对照：没有得分就是 null（确实“没有”），不是被补出来的 0。
+        assertNull(outcome.metrics().get("bestScore"));
     }
 
     @Test
     void missingAdapterShouldReportSolverUnavailable() {
         ScheduleService service = new ScheduleService(List.of(), assembler, resultWriter,
-                solveTaskRepository, strategyService, true);
+                solveTaskRepository, strategyService, true, false);
         when(assembler.assemble(any(), any())).thenReturn(assembled());
 
         ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
@@ -107,12 +121,39 @@ class ScheduleServiceFallbackTest {
 
         assertEquals(SolveTaskStatus.FAILED, outcome.status());
         assertEquals("SOLVER_UNAVAILABLE", outcome.metrics().get("engineFallbackReason"));
+        assertEquals(EngineRoute.DETAIL_SOLVER_NOT_ASSEMBLED, outcome.metrics().get("engineFallbackDetail"));
+    }
+
+    @Test
+    void lockContentionShouldBeDistinguishedFromEngineException() {
+        SolverAdapter busyAdapter = new SolverAdapter() {
+            @Override
+            public SolverEngine engine() {
+                return SolverEngine.TIMEFOLD;
+            }
+
+            @Override
+            public ScheduleSolution solve(ScheduleProblem problem, SolveConfig config) {
+                return new ScheduleSolution("FAILED", null, List.of(), List.of(), metrics(),
+                        "求解器正被其他求解任务占用，等待 5 秒仍未释放，请稍后重试");
+            }
+        };
+        ScheduleService service = new ScheduleService(List.of(busyAdapter), assembler,
+                resultWriter, solveTaskRepository, strategyService, true, false);
+        when(assembler.assemble(any(), any())).thenReturn(assembled());
+
+        ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
+                busyAdapter, () -> false, (phase, progress, bestScore) -> { });
+
+        assertEquals(SolveTaskStatus.FAILED, outcome.status());
+        assertEquals("ENGINE_ERROR", outcome.metrics().get("engineFallbackReason"));
+        assertEquals(EngineRoute.DETAIL_LOCK_CONTENTION, outcome.metrics().get("engineFallbackDetail"));
     }
 
     @Test
     void validationFailureShouldNotWriteFallbackMarker() {
         ScheduleService service = new ScheduleService(List.of(new ThrowingAdapter()), assembler,
-                resultWriter, solveTaskRepository, strategyService, true);
+                resultWriter, solveTaskRepository, strategyService, true, false);
         when(assembler.assemble(any(), any()))
                 .thenThrow(new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "租户下没有可用资源，无法排产"));
 
@@ -143,7 +184,7 @@ class ScheduleServiceFallbackTest {
             }
         };
         ScheduleService service = new ScheduleService(List.of(adapter), assembler, resultWriter,
-                solveTaskRepository, strategyService, true);
+                solveTaskRepository, strategyService, true, false);
         when(assembler.assemble(any(), any())).thenReturn(assembled());
         when(resultWriter.persist(any(), eq(solution), eq(7L)))
                 .thenReturn(new ScheduleResultWriter.WriteOutcome(2, 1));
@@ -164,7 +205,7 @@ class ScheduleServiceFallbackTest {
         UUID strategyId = UUID.randomUUID();
         when(strategyService.get(strategyId)).thenReturn(strategy(strategyId));
         ScheduleService service = new ScheduleService(List.of(), assembler, resultWriter,
-                solveTaskRepository, strategyService, true);
+                solveTaskRepository, strategyService, true, false);
 
         SolveConfig config = service.toConfig(
                 new SolveRequest("T-1", SANDBOX_ID, strategyId, "timefold",
@@ -184,7 +225,7 @@ class ScheduleServiceFallbackTest {
     @Test
     void noEffectiveStrategyShouldKeepWeightsAbsent() {
         ScheduleService service = new ScheduleService(List.of(), assembler, resultWriter,
-                solveTaskRepository, strategyService, true);
+                solveTaskRepository, strategyService, true, false);
 
         SolveConfig config = service.toConfig(request(), SolverEngine.TIMEFOLD);
 

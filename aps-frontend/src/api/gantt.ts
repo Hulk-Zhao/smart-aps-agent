@@ -4,14 +4,14 @@ import { listResources } from './resources'
 import type { Calendar } from '@/types/calendars'
 import type {
   GanttCalendarBinding,
-  GanttTask,
   OrderGanttData,
   OrderGanttQuery,
   PlanAction,
   ResourceCalendarResolution,
   ResourceGanttData,
   ResourceGanttQuery,
-  TaskAdjustRequest
+  TaskAdjustRequest,
+  TaskAdjustResult
 } from '@/types/gantt'
 import type { Resource } from '@/types/resources'
 
@@ -166,14 +166,41 @@ export async function getOrderGantt(query: OrderGanttQuery): Promise<OrderGanttD
   return response.data
 }
 
+/** C22 人工调整：dryRun=true 时后端只校验不落库（applied=true 但 adjustmentId=null）。 */
 export async function adjustTask(
   taskId: number,
   payload: TaskAdjustRequest,
   idempotencyKey?: string
-): Promise<GanttTask> {
-  const response = await http.post<GanttTask>(`/tasks/${taskId}/adjust`, payload, {
+): Promise<TaskAdjustResult> {
+  const response = await http.post<TaskAdjustResult>(`/tasks/${taskId}/adjust`, payload, {
     headers: idempotencyHeaders(idempotencyKey)
   })
+  return response.data
+}
+
+/** C22 撤销：只允许撤销该任务栈最近一次调整；撤销后再调整会产生新记录。 */
+export async function undoAdjustment(
+  adjustmentId: number,
+  idempotencyKey?: string
+): Promise<TaskAdjustResult> {
+  const response = await http.post<TaskAdjustResult>(
+    `/tasks/adjustments/${adjustmentId}/undo`,
+    null,
+    { headers: idempotencyHeaders(idempotencyKey) }
+  )
+  return response.data
+}
+
+/** C22 重做：若该调整之后已有新调整，后端返回 40901。 */
+export async function redoAdjustment(
+  adjustmentId: number,
+  idempotencyKey?: string
+): Promise<TaskAdjustResult> {
+  const response = await http.post<TaskAdjustResult>(
+    `/tasks/adjustments/${adjustmentId}/redo`,
+    null,
+    { headers: idempotencyHeaders(idempotencyKey) }
+  )
   return response.data
 }
 

@@ -1,0 +1,204 @@
+openapi: 3.0.3
+info:
+  title: 衡策 APS - Excel 导入导出 API
+  version: 0.1.0
+  description: |
+    C26 通用导入导出（M2）。实现实体集合以 ImportEntity 为准：
+    materials / boms / resources / calendars / operationTemplates / routings / orders / strategies / suppliers。
+    注意：C26 拟定名单写 customers 而未写 strategies，与实现不一致，最终名单待用户点名（见 contract-freeze §24.12）。
+    兼容别名（用于绕开 M1 遗留的 /materials/import 占位映射）：GET /import/{entity}/template、POST /import/{entity}、GET /export/{entity}，
+    不重复登记为独立 path。统一约定见 ../../docs/api/conventions.md。
+servers:
+  - url: /api/v1
+tags:
+  - name: 导入导出
+paths:
+  /{entity}/import/template:
+    x-milestone: M2
+    get:
+      operationId: downloadImportTemplate
+      tags: [导入导出]
+      summary: 下载导入模板
+      description: 状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。返回可直接被 Excel 打开的 xlsx。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/ImportEntity'
+      responses:
+        '200':
+          description: xlsx 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+            X-Template-Filename:
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /{entity}/import:
+    x-milestone: M2
+    post:
+      operationId: importEntityData
+      tags: [导入导出]
+      summary: 导入 Excel
+      description: |
+        状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。
+        mode=preview 只校验并返回规范化样例；mode=execute 全部行通过后落库。
+        X-Import-Token 幂等：执行模式下重复提交同一令牌返回首次结果（replayed=true）。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/ImportEntity'
+        - name: mode
+          in: query
+          required: false
+          description: preview（默认）/ execute
+          schema:
+            type: string
+            enum: [preview, execute]
+            default: preview
+        - name: X-Import-Token
+          in: header
+          required: false
+          description: 幂等令牌，8-128 位
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: 导入结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfImportResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /{entity}/export:
+    x-milestone: M2
+    get:
+      operationId: exportEntityData
+      tags: [导入导出]
+      summary: 导出数据
+      description: 状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。列顺序与导入模板一致，可直接回填导入。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/ImportEntity'
+      responses:
+        '200':
+          description: xlsx 文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+components:
+  parameters:
+    ImportEntity:
+      name: entity
+      in: path
+      required: true
+      description: 实体 slug
+      schema:
+        type: string
+        enum: [materials, boms, resources, calendars, operationTemplates, routings, orders, strategies, suppliers]
+  schemas:
+    Result:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          nullable: true
+        traceId:
+          type: string
+    ResultOfImportResult:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ImportResult'
+    ImportError:
+      type: object
+      required: [row, field, code, message]
+      properties:
+        row:
+          type: integer
+        field:
+          type: string
+        code:
+          type: integer
+        message:
+          type: string
+    ImportResult:
+      type: object
+      required: [entity, mode, totalRows, validRows, invalidRows, inserted, updated, skipped, committed, replayed, errors, preview]
+      properties:
+        entity:
+          type: string
+        mode:
+          type: string
+          enum: [PREVIEW, EXECUTE]
+        totalRows:
+          type: integer
+        validRows:
+          type: integer
+        invalidRows:
+          type: integer
+        inserted:
+          type: integer
+        updated:
+          type: integer
+        skipped:
+          type: integer
+        committed:
+          type: boolean
+        replayed:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportError'
+        preview:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+  responses:
+    BadRequest:
+      description: 参数或请求体非法
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'

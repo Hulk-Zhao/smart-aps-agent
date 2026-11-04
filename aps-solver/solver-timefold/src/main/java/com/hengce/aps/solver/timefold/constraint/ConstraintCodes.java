@@ -9,6 +9,15 @@ import java.util.List;
 public final class ConstraintCodes {
 
     /**
+     * 任务必须被排入某个资源序列且拥有开始时间；未排位任务按 1 次硬惩罚计。
+     *
+     * <p>这是“部分解不得冒充可行解”的兜底：{@code @PlanningListVariable} 默认
+     * {@code allowsUnassignedValues=false}，但构造启发式超时返回的仍是初始解 /
+     * 部分解，若不给未排位任务加硬惩罚，其得分为 {@code 0hard/0soft} 会被误判为可行。</p>
+     */
+    public static final String UNASSIGNED_TASK = "unassignedTask";
+
+    /**
      * 资源（主资源含换型、辅助资源仅加工窗口）不重叠。
      */
     public static final String RESOURCE_NO_OVERLAP = "resourceNoOverlap";

@@ -3,7 +3,15 @@
  * 约定：页面只依赖本接口，不直接依赖具体绘图库，便于 PoC 与生产实现替换。
  * 目录与归属对齐 docs/api/contract-freeze.md 0.3：FE1 负责 components/gantt。
  */
-import type { GanttCalendarBinding, GanttTask, TaskStatus } from '@/types/gantt'
+import type {
+  GanttCalendarBinding,
+  OrderFreezeStatus,
+  OrderPriority,
+  TaskAdjustRequest,
+  TaskAdjustResult,
+  TaskLockType,
+  TaskStatus
+} from '@/types/gantt'
 import type { ResourceType } from '@/types/materials'
 
 export type GanttMode = 'resource' | 'order'
@@ -37,6 +45,10 @@ export interface GanttBarModel {
   secondaryResourceCodes?: string[]
   qty?: number | null
   sequenceInResource?: number | null
+  /** C29：FROZEN 由 status 推导；TIME_WINDOW/RESOURCE 为 V5 锁。 */
+  lockType?: TaskLockType
+  /** C29：该任务结束时间超过订单交期线。 */
+  late?: boolean
 }
 
 export interface GanttRowModel {
@@ -45,6 +57,18 @@ export interface GanttRowModel {
   subLabel?: string
   resourceType?: ResourceType
   bars: GanttBarModel[]
+  /** 订单视图行元数据（C29），资源视图为空。 */
+  dueDate?: string
+  dueDateLine?: string
+  priority?: OrderPriority
+  freezeStatus?: OrderFreezeStatus
+  orderStatus?: string
+  late?: boolean
+  /** 仅 late=true 时有值（分钟），false/null 表示未延期，不得当 0 参与比例。 */
+  lateMinutes?: number | null
+  lateTaskCount?: number
+  /** 订单行涉及的资源编码（去重），用于日历解析与行头展示。 */
+  resourceCodes?: string[]
 }
 
 export interface GanttDataset {
@@ -68,5 +92,9 @@ export interface GanttDataset {
 export interface GanttAdapter {
   readonly mode: GanttMode
   load(query: GanttLoadQuery): Promise<GanttDataset>
-  adjust?(taskId: number, payload: unknown): Promise<GanttTask>
+  adjust?(
+    taskId: number,
+    payload: TaskAdjustRequest,
+    idempotencyKey?: string
+  ): Promise<TaskAdjustResult>
 }

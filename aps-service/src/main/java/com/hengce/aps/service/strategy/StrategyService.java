@@ -18,6 +18,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -27,6 +29,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * 排产策略服务：CRUD、克隆、导入导出与 8 条软约束权重校验。
@@ -63,6 +66,20 @@ public class StrategyService {
             "createdAt", "created_at");
 
     private static final String TOTAL_WEIGHT_MESSAGE = "8 条规则权重之和必须为 100";
+
+    /**
+     * checksum 格式：64 位小写十六进制 SHA-256（C19）。
+     */
+    private static final Pattern CHECKSUM_PATTERN = Pattern.compile("[0-9a-f]{64}");
+
+    /**
+     * 契约中的导入错误码（C19 只为导入端点定义 42200，不另造细分码）。
+     *
+     * <p>{@code errors[].code} 在 OpenAPI 中声明为 string，这里是其字符串形态；
+     * 它只是端点层错误码的投影，字段级差异走 {@code field}/{@code message}。</p>
+     */
+    private static final String IMPORT_ERROR_CODE =
+            Integer.toString(ErrorCode.UNPROCESSABLE_ENTITY.getCode());
 
     private final StrategyMapper strategyMapper;
 
@@ -274,56 +291,398 @@ public class StrategyService {
     }
 
     /**
-     * 导出策略为 JSON 载荷。
+     * 导出策略（C19）：返回 {@code {strategy, rules, checksum}}。
+     *
+     * <p>{@code checksum} = 规范化 {@code {strategy, rules}} 的 SHA-256（64 位小写十六进制），
+     * 规范化规则集中在 {@link StrategyCanonicalJson} 类注释中写死（字段字典序、null 省略、
+     * 数字去尾零、无空白、日期 {@code yyyy-MM-dd}）。同一份数据两次导出必得同一 checksum。</p>
      *
      * @param id 策略主键
-     * @return 导入导出载荷
+     * @return 导出载荷（含 checksum）
      */
-    public StrategyExportPayload export(UUID id) {
+    public StrategyExportBundle export(UUID id) {
         Strategy strategy = findOrThrow(id);
         List<StrategyRuleCommand> rules = new ArrayList<>();
         for (StrategyRule rule : findRules(id)) {
             rules.add(new StrategyRuleCommand(rule.getRuleCode(), rule.getWeight(),
                     copyMap(rule.getParams()), rule.getEnabled()));
         }
-        return new StrategyExportPayload(
-                StrategyExportPayload.FORMAT_VERSION,
-                strategy.getName(),
-                strategy.getDirection(),
-                strategy.getStrategyVersion(),
-                strategy.getEffectiveFrom(),
-                strategy.getEffectiveTo(),
-                copyMap(strategy.getInitialRules()),
-                copyMap(strategy.getApplyCondition()),
-                rules);
+        Map<String, Object> strategyNode = strategyNodeOf(strategy);
+        String checksum = StrategyCanonicalJson.checksum(strategyNode, ruleNodes(rules));
+        return new StrategyExportBundle(strategyNode, rules, checksum);
     }
 
     /**
-     * 导入策略；载荷版本与业务版本必须合法，规则按 8 条白名单校验。
+     * 导入策略（C19）：请求 {@code {payload, dryRun}}，响应 {@code {valid, errors[], strategyId, existing}}。
      *
-     * @param payload 导入载荷
-     * @return 创建后的策略视图
+     * <p>checksum 校验先于业务校验，三种失败用同一契约码 42200、不同 message 区分：
+     * 缺失、格式非法、内容被改动。checksum 通过后，{@code dryRun=true} 与真正导入
+     * <b>共用同一个校验器</b>（{@link #parseImport} + {@link #normalizeRules}），
+     * 试运行不落库且 {@code strategyId=null}。</p>
+     *
+     * <p><b>同名同版本判定（M2 收口口径）</b>：以 {@code name + strategyVersion} 定位既有记录，
+     * 再用 <b>内容 checksum</b> 判定是否同一份内容。内容 checksum 完全复用
+     * {@link StrategyCanonicalJson} 的 canonical JSON + SHA-256，只剔除 {@code strategy.id} 与
+     * {@code strategy.version} 两个“记录身份/乐观锁”元数据（新库主键必然不同，不剔除则重导必然误判冲突）。
+     * <b>checksum 相同即视为同一份内容，忽略 SHA-256 哈希碰撞，不做逐字段比对</b>：
+     * <ul>
+     *   <li>内容相同 → 幂等命中，200 返回既有 {@code strategyId}、{@code existing=true}，不新建、不升版本、不写 rules；</li>
+     *   <li>内容不同 → 409/40901，message 点名冲突的 {@code name} 与 {@code version}，<b>绝不自动升版本</b>。</li>
+     * </ul>
+     * dryRun 也执行同一判定：内容相同返回 {@code existing=true}（仍不落库、strategyId=null）；
+     * 同名同版本但内容不同则同样抛 40901。</p>
+     *
+     * @param request 导入请求
+     * @return 校验/落库/幂等结果
      */
     @Transactional
-    public StrategyView importStrategy(StrategyExportPayload payload) {
-        if (payload == null) {
+    public StrategyImportResult importStrategy(StrategyImportRequest request) {
+        if (request == null || request.payload() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "导入载荷不能为空");
         }
-        if (payload.formatVersion() != null
-                && !StrategyExportPayload.FORMAT_VERSION.equals(payload.formatVersion())) {
-            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
-                    "不支持的导入格式版本: " + payload.formatVersion());
+        Map<String, Object> payload = request.payload();
+        Map<String, Object> strategyNode = asObject(payload.get("strategy"),
+                "导入载荷缺少 strategy 对象（C19 导出形状为 {strategy, rules, checksum}）");
+        List<?> ruleNodes = asArray(payload.get("rules"),
+                "导入载荷缺少 rules 数组（C19 导出形状为 {strategy, rules, checksum}）");
+        verifyChecksum(payload, strategyNode, ruleNodes);
+
+        List<StrategyImportError> errors = new ArrayList<>();
+        StrategyCreateCommand command = parseImport(strategyNode, ruleNodes, errors);
+        if (!errors.isEmpty()) {
+            return new StrategyImportResult(false, errors, null, false);
         }
-        StrategyCreateCommand command = new StrategyCreateCommand(
-                payload.name(),
-                payload.direction(),
-                payload.strategyVersion(),
-                payload.effectiveFrom(),
-                payload.effectiveTo(),
-                payload.initialRules(),
-                payload.applyCondition(),
-                payload.rules());
-        return create(command);
+        int strategyVersion = command.strategyVersion() == null ? 1 : command.strategyVersion();
+        Strategy existing = findByNameAndVersion(command.name(), strategyVersion);
+        if (existing != null) {
+            if (!contentChecksum(strategyNode, ruleNodes)
+                    .equals(contentChecksumOf(existing))) {
+                throw new BizException(ErrorCode.STATE_CONFLICT,
+                        "同名同版本策略已存在且内容不同: " + command.name() + " v" + strategyVersion
+                                + "（checksum 不同，拒绝导入，不自动升版本）");
+            }
+            return new StrategyImportResult(true, List.of(),
+                    request.isDryRun() ? null : (UUID) existing.getId(), true);
+        }
+        if (request.isDryRun()) {
+            return new StrategyImportResult(true, List.of(), null, false);
+        }
+        StrategyCreateCommand persisted = new StrategyCreateCommand(
+                command.name(),
+                command.direction(),
+                strategyVersion,
+                command.effectiveFrom(),
+                command.effectiveTo(),
+                command.initialRules(),
+                command.applyCondition(),
+                command.rules());
+        StrategyView created = create(persisted);
+        return new StrategyImportResult(true, List.of(), created.id(), false);
+    }
+
+    /**
+     * 校验 checksum；失败即拒绝（42200），不进入业务校验、不落库。
+     *
+     * @param payload 导入载荷
+     * @param strategy 策略对象
+     * @param rules 规则数组
+     */
+    private static void verifyChecksum(Map<String, Object> payload,
+                                       Map<String, Object> strategy, List<?> rules) {
+        Object rawChecksum = payload.get("checksum");
+        if (rawChecksum == null) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "checksum 缺失：缺 checksum 的载荷不得视为合格导出（C19）");
+        }
+        if (!(rawChecksum instanceof String checksum)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "checksum 格式非法：必须为 64 位小写十六进制 SHA-256，实际类型为 "
+                            + rawChecksum.getClass().getSimpleName());
+        }
+        if (!CHECKSUM_PATTERN.matcher(checksum).matches()) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "checksum 格式非法：必须为 64 位小写十六进制 SHA-256，实际为 " + checksum);
+        }
+        String actual = StrategyCanonicalJson.checksum(strategy, rules);
+        if (!actual.equals(checksum)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "checksum 不匹配：载荷内容与导出时的 checksum 不一致，文件已被改动（C19）");
+        }
+    }
+
+    /**
+     * dryRun 与真正导入共用的校验器：解析字段并收集全部错误。
+     *
+     * @param strategy 策略对象
+     * @param rules 规则数组
+     * @param errors 错误收集器
+     * @return 解析后的创建命令（仅在 errors 为空时可用于落库）
+     */
+    private StrategyCreateCommand parseImport(Map<String, Object> strategy, List<?> rules,
+                                              List<StrategyImportError> errors) {
+        String formatVersion = readString(strategy, "formatVersion", "strategy.formatVersion", errors);
+        if (formatVersion != null && !StrategyExportPayload.FORMAT_VERSION.equals(formatVersion)) {
+            errors.add(new StrategyImportError("strategy.formatVersion", IMPORT_ERROR_CODE,
+                    "不支持的导入格式版本: " + formatVersion));
+        }
+        String name = readString(strategy, "name", "strategy.name", errors);
+        if (name == null || name.isBlank()) {
+            errors.add(new StrategyImportError("strategy.name", IMPORT_ERROR_CODE, "策略名称不能为空"));
+        }
+        String direction = readString(strategy, "direction", "strategy.direction", errors);
+        if (direction != null && !direction.isBlank()
+                && !DIRECTIONS.contains(direction.trim().toUpperCase(java.util.Locale.ROOT))) {
+            errors.add(new StrategyImportError("strategy.direction", IMPORT_ERROR_CODE,
+                    "排产方向必须是 FORWARD/BACKWARD/BOTTLENECK: " + direction));
+        }
+        Integer strategyVersion = readInteger(strategy, "strategyVersion",
+                "strategy.strategyVersion", errors);
+        LocalDate effectiveFrom = readDate(strategy, "effectiveFrom", "strategy.effectiveFrom", errors);
+        LocalDate effectiveTo = readDate(strategy, "effectiveTo", "strategy.effectiveTo", errors);
+        if (effectiveFrom != null && effectiveTo != null && effectiveTo.isBefore(effectiveFrom)) {
+            errors.add(new StrategyImportError("strategy.effectiveTo", IMPORT_ERROR_CODE,
+                    "失效日期不能早于生效日期"));
+        }
+        Map<String, Object> initialRules = readObject(strategy, "initialRules",
+                "strategy.initialRules", errors);
+        Map<String, Object> applyCondition = readObject(strategy, "applyCondition",
+                "strategy.applyCondition", errors);
+        List<StrategyRuleCommand> ruleCommands = readRules(rules, errors);
+        if (errors.isEmpty()) {
+            try {
+                ruleCommands = normalizeRules(ruleCommands);
+            } catch (BizException exception) {
+                errors.add(new StrategyImportError("rules",
+                        Integer.toString(exception.getErrorCode().getCode()), exception.getMessage()));
+            }
+        }
+        return new StrategyCreateCommand(
+                name == null ? null : name.trim(),
+                direction,
+                strategyVersion,
+                effectiveFrom,
+                effectiveTo,
+                initialRules,
+                applyCondition,
+                ruleCommands);
+    }
+
+    private static List<StrategyRuleCommand> readRules(List<?> rules,
+                                                       List<StrategyImportError> errors) {
+        List<StrategyRuleCommand> commands = new ArrayList<>();
+        for (int index = 0; index < rules.size(); index++) {
+            String field = "rules[" + index + "]";
+            Map<String, Object> item = readObjectValue(rules.get(index), field, errors);
+            if (item == null) {
+                continue;
+            }
+            String code = readString(item, "code", field + ".code", errors);
+            BigDecimal weight = readDecimal(item, "weight", field + ".weight", errors);
+            Boolean enabled = readBoolean(item, "enabled", field + ".enabled", errors);
+            Map<String, Object> params = readObject(item, "params", field + ".params", errors);
+            commands.add(new StrategyRuleCommand(code, weight, params, enabled));
+        }
+        return commands;
+    }
+
+    private static String readString(Map<String, Object> node, String key, String field,
+                                     List<StrategyImportError> errors) {
+        Object value = node.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String text) {
+            return text;
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是字符串"));
+        return null;
+    }
+
+    private static Integer readInteger(Map<String, Object> node, String key, String field,
+                                       List<StrategyImportError> errors) {
+        Object value = node.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            try {
+                return new BigDecimal(number.toString()).intValueExact();
+            } catch (ArithmeticException exception) {
+                errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是整数"));
+                return null;
+            }
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是整数"));
+        return null;
+    }
+
+    private static BigDecimal readDecimal(Map<String, Object> node, String key, String field,
+                                          List<StrategyImportError> errors) {
+        Object value = node.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return new BigDecimal(number.toString());
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是数值"));
+        return null;
+    }
+
+    private static Boolean readBoolean(Map<String, Object> node, String key, String field,
+                                       List<StrategyImportError> errors) {
+        Object value = node.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是布尔值"));
+        return null;
+    }
+
+    private static LocalDate readDate(Map<String, Object> node, String key, String field,
+                                      List<StrategyImportError> errors) {
+        Object value = node.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String text) {
+            try {
+                return LocalDate.parse(text, DateTimeFormatter.ISO_LOCAL_DATE);
+            } catch (DateTimeParseException exception) {
+                errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE,
+                        "日期格式必须为 yyyy-MM-dd: " + text));
+                return null;
+            }
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "日期必须是 yyyy-MM-dd 字符串"));
+        return null;
+    }
+
+    private static Map<String, Object> readObject(Map<String, Object> node, String key, String field,
+                                                  List<StrategyImportError> errors) {
+        return readObjectValue(node.get(key), field, errors);
+    }
+
+    private static Map<String, Object> readObjectValue(Object value, String field,
+                                                       List<StrategyImportError> errors) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+            return result;
+        }
+        errors.add(new StrategyImportError(field, IMPORT_ERROR_CODE, "字段必须是对象"));
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asObject(Object value, String message) {
+        if (!(value instanceof Map<?, ?> map)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, message);
+        }
+        return (Map<String, Object>) map;
+    }
+
+    private static List<?> asArray(Object value, String message) {
+        if (!(value instanceof List<?> list)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, message);
+        }
+        return list;
+    }
+
+    /**
+     * 按 {@code name + strategyVersion} 定位既有策略。
+     *
+     * @param name 策略名称
+     * @param strategyVersion 业务版本
+     * @return 既有策略；不存在返回 {@code null}
+     */
+    private Strategy findByNameAndVersion(String name, int strategyVersion) {
+        return strategyMapper.selectOne(Wrappers.lambdaQuery(Strategy.class)
+                .eq(Strategy::getName, name)
+                .eq(Strategy::getStrategyVersion, strategyVersion));
+    }
+
+    /**
+     * 幂等判定用的内容 checksum：剔除 {@code id}/{@code version} 两个记录身份与乐观锁元数据。
+     *
+     * <p>口径：checksum 相同即视为同一份内容，忽略 SHA-256 碰撞，不做逐字段比对。</p>
+     *
+     * @param strategyNode 策略对象
+     * @param rules 规则 canonical 视图
+     * @return 内容 checksum（64 位小写十六进制）
+     */
+    private static String contentChecksum(Map<String, Object> strategyNode, List<?> rules) {
+        Map<String, Object> content = new LinkedHashMap<>(strategyNode);
+        content.remove("id");
+        content.remove("version");
+        return StrategyCanonicalJson.checksum(content, rules);
+    }
+
+    /**
+     * 既有记录的导出形态内容 checksum（与导入载荷按同一 canonical 规则计算）。
+     *
+     * @param strategy 既有策略
+     * @return 内容 checksum
+     */
+    private String contentChecksumOf(Strategy strategy) {
+        List<StrategyRuleCommand> rules = new ArrayList<>();
+        for (StrategyRule rule : findRules((UUID) strategy.getId())) {
+            rules.add(new StrategyRuleCommand(rule.getRuleCode(), rule.getWeight(),
+                    copyMap(rule.getParams()), rule.getEnabled()));
+        }
+        return contentChecksum(strategyNodeOf(strategy), ruleNodes(rules));
+    }
+
+    /**
+     * 策略对象的导出形态（与 {@link #export} 使用同一字段集合，保证 checksum 口径不分叉）。
+     *
+     * @param strategy 策略实体
+     * @return 导出形态 Map
+     */
+    private static Map<String, Object> strategyNodeOf(Strategy strategy) {
+        Map<String, Object> strategyNode = new LinkedHashMap<>();
+        strategyNode.put("id", strategy.getId() == null ? null : strategy.getId().toString());
+        strategyNode.put("formatVersion", StrategyExportPayload.FORMAT_VERSION);
+        strategyNode.put("name", strategy.getName());
+        strategyNode.put("direction", strategy.getDirection());
+        strategyNode.put("strategyVersion", strategy.getStrategyVersion());
+        strategyNode.put("effectiveFrom", formatDate(strategy.getEffectiveFrom()));
+        strategyNode.put("effectiveTo", formatDate(strategy.getEffectiveTo()));
+        strategyNode.put("initialRules", copyMap(strategy.getInitialRules()));
+        strategyNode.put("applyCondition", copyMap(strategy.getApplyCondition()));
+        strategyNode.put("version", strategy.getVersion());
+        return strategyNode;
+    }
+
+    /**
+     * 规则数组的 canonical 视图：字段名与响应 JSON 一致（code/weight/params/enabled）。
+     *
+     * @param rules 规则命令
+     * @return canonical 视图
+     */
+    private static List<Map<String, Object>> ruleNodes(List<StrategyRuleCommand> rules) {
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        for (StrategyRuleCommand rule : rules) {
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("code", rule.code());
+            node.put("weight", rule.weight());
+            node.put("params", copyMap(rule.params()));
+            node.put("enabled", rule.enabled());
+            nodes.add(node);
+        }
+        return nodes;
+    }
+
+    private static String formatDate(LocalDate date) {
+        return date == null ? null : date.format(DateTimeFormatter.ISO_LOCAL_DATE);
     }
 
     private Strategy findOrThrow(UUID id) {

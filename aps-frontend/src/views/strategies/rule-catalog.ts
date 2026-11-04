@@ -13,7 +13,12 @@ export interface StrategyRuleCatalogItem {
 
 export const STRATEGY_RULE_CATALOG: readonly StrategyRuleCatalogItem[] = [
   { code: 'MIN_TARDINESS', name: '最小超期', type: 'SOFT', description: '减少总延期时间' },
-  { code: 'MIN_TARDY_COUNT', name: '最少超期订单数', type: 'SOFT', description: '减少延期订单数量' },
+  {
+    code: 'MIN_TARDY_COUNT',
+    name: '最少超期订单数',
+    type: 'SOFT',
+    description: '减少延期订单数量'
+  },
   { code: 'SPT', name: '短任务优先', type: 'SOFT', description: 'Shortest Processing Time' },
   { code: 'EDD', name: '交期优先', type: 'SOFT', description: 'Earliest Due Date' },
   {
@@ -23,7 +28,12 @@ export const STRATEGY_RULE_CATALOG: readonly StrategyRuleCatalogItem[] = [
     description: '减少换型次数'
   },
   { code: 'MIN_SETUP_TIME', name: '最小换型时长', type: 'SOFT', description: '总换型时间最小化' },
-  { code: 'BALANCE_TASK_COUNT', name: '均衡任务数量', type: 'SOFT', description: '各资源任务数均衡' },
+  {
+    code: 'BALANCE_TASK_COUNT',
+    name: '均衡任务数量',
+    type: 'SOFT',
+    description: '各资源任务数均衡'
+  },
   { code: 'BALANCE_LOAD', name: '均衡负载率', type: 'SOFT', description: '各资源负载率均衡' },
   {
     code: 'PRIORITY_RESPECT',

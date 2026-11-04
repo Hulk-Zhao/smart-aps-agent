@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Seed (or clean) the idempotent M1 closed-loop demo dataset in the local PostgreSQL.
@@ -9,18 +9,20 @@
     fixed UUIDs so the demo stays reproducible and cleanable. Every column used here is
     taken from db/migration/V1__init.sql.
 
-    Dataset:
-      material      : 1 finished good (DEMO-FG-100), 1 semi (DEMO-SA-200),
-                      2 raw materials, 1 finished good without BOM (DEMO-FG-NOBOM)
-      bom           : 2 levels (FG -> SA -> RAW2), both ACTIVE
-      calendar      : CAL-DEMO-7X24 (FACTORY, 00:00-24:00 every day)
+    Dataset (canonical energy-storage product family):
+      material      : MAT-FG-001 (finished module), MAT-SF-001 (semi-finished pack),
+                      MAT-RM-003 / MAT-RM-004 (structural raw materials),
+                      MAT-FG-002 (finished module without BOM, negative case)
+      bom           : 2 levels (FG -> SF -> RAW), both ACTIVE, V2.0 / V3.0
+      calendar      : CAL-FAC-7X24 (FACTORY, 00:00-24:00 every day)
       resource      : 6 resources covering UNIT_PER_HOUR / SECONDS_PER_UNIT / BATCH_SECONDS
-      operation     : 3 templates + 1 ACTIVE routing (6 nodes, FS edges, 30 min lag edge,
+      operation     : 4 templates + 1 ACTIVE routing (6 nodes, FS edges, 30 min lag edge,
                       auxiliary-resource overrides on node 40 and node 50)
-      strategy      : DEMO-M1-STRATEGY (used to isolate demo solve_task rows)
+      strategy      : 交期优先·正向排产策略 (used to isolate demo solve_task rows)
       orders        : 8 DRAFT orders + 1 DRAFT order without BOM (negative case)
 
-    Idempotent: cleanup by demo code prefixes + fixed UUIDs, then re-insert.
+    Idempotent: cleanup by fixed UUID lists, then re-insert. No code-prefix LIKE is used,
+    so other sessions' data can never be removed by this script.
 
 .PARAMETER Clean
     Only remove demo data, do not re-insert.
@@ -90,23 +92,24 @@ $tenant = $TenantId
 $sandbox = '00000000-0000-0000-0000-000000000401'
 
 $mFg = 'd0000000-0000-0000-0000-000000000101'
-$mSa = 'd0000000-0000-0000-0000-000000000102'
-$mR1 = 'd0000000-0000-0000-0000-000000000103'
-$mR2 = 'd0000000-0000-0000-0000-000000000104'
+$mSf = 'd0000000-0000-0000-0000-000000000102'
+$mR3 = 'd0000000-0000-0000-0000-000000000103'
+$mR4 = 'd0000000-0000-0000-0000-000000000104'
 $mNoBom = 'd0000000-0000-0000-0000-000000000105'
 
 $cal = 'd0000000-0000-0000-0000-000000000201'
 
-$rCnc1 = 'd0000000-0000-0000-0000-000000000301'
-$rCnc2 = 'd0000000-0000-0000-0000-000000000302'
+$rSmt1 = 'd0000000-0000-0000-0000-000000000301'
+$rSmt2 = 'd0000000-0000-0000-0000-000000000302'
 $rAsm = 'd0000000-0000-0000-0000-000000000303'
-$rBatch = 'd0000000-0000-0000-0000-000000000304'
+$rAge = 'd0000000-0000-0000-0000-000000000304'
 $rQa = 'd0000000-0000-0000-0000-000000000305'
 $rHuman = 'd0000000-0000-0000-0000-000000000306'
 
-$tCnc = 'd0000000-0000-0000-0000-000000000401'
+$tSmt = 'd0000000-0000-0000-0000-000000000401'
 $tAsm = 'd0000000-0000-0000-0000-000000000402'
 $tQa = 'd0000000-0000-0000-0000-000000000403'
+$tAge = 'd0000000-0000-0000-0000-000000000404'
 
 $routing = 'd0000000-0000-0000-0000-000000000501'
 $n10 = 'd0000000-0000-0000-0000-000000000511'
@@ -122,13 +125,26 @@ $e4 = 'd0000000-0000-0000-0000-000000000524'
 $e5 = 'd0000000-0000-0000-0000-000000000525'
 
 $bomFg = 'd0000000-0000-0000-0000-000000000601'
-$bomSa = 'd0000000-0000-0000-0000-000000000602'
+$bomSf = 'd0000000-0000-0000-0000-000000000602'
 $bi1 = 'd0000000-0000-0000-0000-000000000611'
 $bi2 = 'd0000000-0000-0000-0000-000000000612'
 $bi3 = 'd0000000-0000-0000-0000-000000000613'
 $bi4 = 'd0000000-0000-0000-0000-000000000614'
 
 $strategy = 'd0000000-0000-0000-0000-000000000801'
+
+$demoOrderIds = @(
+    'd0000000-0000-0000-0000-000000000701',
+    'd0000000-0000-0000-0000-000000000702',
+    'd0000000-0000-0000-0000-000000000703',
+    'd0000000-0000-0000-0000-000000000704',
+    'd0000000-0000-0000-0000-000000000705',
+    'd0000000-0000-0000-0000-000000000706',
+    'd0000000-0000-0000-0000-000000000707',
+    'd0000000-0000-0000-0000-000000000708',
+    'd0000000-0000-0000-0000-000000000709'
+)
+$orderIdList = ($demoOrderIds | ForEach-Object { "'$_'" }) -join ','
 
 $cleanupSql = @"
 BEGIN;
@@ -140,45 +156,25 @@ WHERE cj.tenant_id = '$tenant'
       WHERE (fact ->> 'id') ~ '^[0-9]+$'
         AND (fact ->> 'id')::bigint IN (
             SELECT t.id FROM task t
-            JOIN orders o ON o.id = t.order_id
             WHERE t.tenant_id = '$tenant'
-              AND o.tenant_id = '$tenant'
-              AND o.order_no LIKE 'DEMO-ORD-%'
+              AND t.order_id IN ($orderIdList)
         )
   );
--- 2) demo tasks and orders
-DELETE FROM task t
-USING orders o
-WHERE t.order_id = o.id
-  AND t.tenant_id = '$tenant'
-  AND o.tenant_id = '$tenant'
-  AND o.order_no LIKE 'DEMO-ORD-%';
-DELETE FROM orders WHERE tenant_id = '$tenant' AND order_no LIKE 'DEMO-ORD-%';
--- 3) process graph
-DELETE FROM routing_edge WHERE tenant_id = '$tenant' AND routing_id IN (
-    SELECT r.id FROM routing r JOIN material m ON m.id = r.product_id
-    WHERE r.tenant_id = '$tenant' AND m.tenant_id = '$tenant' AND m.code LIKE 'DEMO-%'
-);
-DELETE FROM routing_node WHERE tenant_id = '$tenant' AND routing_id IN (
-    SELECT r.id FROM routing r JOIN material m ON m.id = r.product_id
-    WHERE r.tenant_id = '$tenant' AND m.tenant_id = '$tenant' AND m.code LIKE 'DEMO-%'
-);
-DELETE FROM routing WHERE tenant_id = '$tenant' AND product_id IN (
-    SELECT id FROM material WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-%'
-);
--- 4) BOM
-DELETE FROM bom_item WHERE tenant_id = '$tenant' AND bom_id IN (
-    SELECT b.id FROM bom b JOIN material m ON m.id = b.parent_material_id
-    WHERE b.tenant_id = '$tenant' AND m.tenant_id = '$tenant' AND m.code LIKE 'DEMO-%'
-);
-DELETE FROM bom WHERE tenant_id = '$tenant' AND parent_material_id IN (
-    SELECT id FROM material WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-%'
-);
--- 5) templates, resources, calendar, materials
-DELETE FROM operation_template WHERE tenant_id = '$tenant' AND code LIKE 'OP-DEMO-%';
-DELETE FROM resource WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-RES-%';
-DELETE FROM calendar WHERE tenant_id = '$tenant' AND code = 'CAL-DEMO-7X24';
-DELETE FROM material WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-%';
+-- 2) demo tasks and orders (fixed UUID list, never a code prefix)
+DELETE FROM task WHERE tenant_id = '$tenant' AND order_id IN ($orderIdList);
+DELETE FROM orders WHERE tenant_id = '$tenant' AND id IN ($orderIdList);
+-- 3) process graph (fixed routing / node / edge ids)
+DELETE FROM routing_edge WHERE tenant_id = '$tenant' AND routing_id = '$routing';
+DELETE FROM routing_node WHERE tenant_id = '$tenant' AND routing_id = '$routing';
+DELETE FROM routing WHERE tenant_id = '$tenant' AND id = '$routing';
+-- 4) BOM (fixed ids)
+DELETE FROM bom_item WHERE tenant_id = '$tenant' AND bom_id IN ('$bomFg','$bomSf');
+DELETE FROM bom WHERE tenant_id = '$tenant' AND id IN ('$bomFg','$bomSf');
+-- 5) templates, resources, calendar, materials (fixed ids)
+DELETE FROM operation_template WHERE tenant_id = '$tenant' AND id IN ('$tSmt','$tAsm','$tQa','$tAge');
+DELETE FROM resource WHERE tenant_id = '$tenant' AND id IN ('$rSmt1','$rSmt2','$rAsm','$rAge','$rQa','$rHuman');
+DELETE FROM calendar WHERE tenant_id = '$tenant' AND id = '$cal';
+DELETE FROM material WHERE tenant_id = '$tenant' AND id IN ('$mFg','$mSf','$mR3','$mR4','$mNoBom');
 -- 6) demo strategy and its solve tasks
 DELETE FROM solve_task WHERE tenant_id = '$tenant' AND strategy_id = '$strategy';
 DELETE FROM strategy WHERE id = '$strategy';
@@ -189,41 +185,42 @@ $seedSql = @"
 BEGIN;
 INSERT INTO material (id, tenant_id, code, name, type, unit, spec, ext_attrs)
 VALUES
- ('$mFg',   '$tenant', 'DEMO-FG-100',   'Demo Finished Good',        'FINISHED', 'PCS', 'FG-100',  '{}'::jsonb),
- ('$mSa',   '$tenant', 'DEMO-SA-200',   'Demo Semi Assembly',        'SEMI',     'PCS', 'SA-200',  '{}'::jsonb),
- ('$mR1',   '$tenant', 'DEMO-RM-301',   'Demo Raw Material A',       'RAW',      'KG',  'RM-301',  '{}'::jsonb),
- ('$mR2',   '$tenant', 'DEMO-RM-302',   'Demo Raw Material B',       'RAW',      'KG',  'RM-302',  '{}'::jsonb),
- ('$mNoBom','$tenant', 'DEMO-FG-NOBOM', 'Demo Product Without BOM',  'FINISHED', 'PCS', 'NOBOM',   '{}'::jsonb);
+ ('$mFg',   '$tenant', 'MAT-FG-001', '储能电芯模组 48V/15Ah', 'FINISHED', '套', '48V 15Ah 16S1P', '{}'::jsonb),
+ ('$mSf',   '$tenant', 'MAT-SF-001', '电池包半成品 16S1P',   'SEMI',     '个', '16S1P 电池包',   '{}'::jsonb),
+ ('$mR3',   '$tenant', 'MAT-RM-003', '铝合金型材 6061-T6',   'RAW',      'KG',  '6061-T6',        '{}'::jsonb),
+ ('$mR4',   '$tenant', 'MAT-RM-004', 'ABS 阻燃粒料',         'RAW',      'KG',  'FR-ABS',         '{}'::jsonb),
+ ('$mNoBom','$tenant', 'MAT-FG-002', '储能电芯模组 48V/20Ah', 'FINISHED', '套', '48V 20Ah',       '{}'::jsonb);
 
 INSERT INTO calendar (id, tenant_id, code, name, type, effective_from, shifts, holidays, calendar_version, version)
-VALUES ('$cal', '$tenant', 'CAL-DEMO-7X24', 'Demo Factory Calendar 7x24', 'FACTORY', DATE '2026-01-01',
+VALUES ('$cal', '$tenant', 'CAL-FAC-7X24', '全厂 7×24 日历', 'FACTORY', DATE '2026-01-01',
         '[{"startTime": "00:00", "endTime": "24:00", "daysOfWeek": [1,2,3,4,5,6,7]}]'::jsonb,
         '[]'::jsonb, 1, 1);
 
 INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity,
                       efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs)
 VALUES
- ('$rCnc1',  '$tenant', 'DEMO-RES-CNC-01',   'CNC 01 (6 pcs/hour)',        'PRIMARY',   'UNIT_PER_HOUR',    6,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
- ('$rCnc2',  '$tenant', 'DEMO-RES-CNC-02',   'CNC 02 (4 pcs/hour)',        'PRIMARY',   'UNIT_PER_HOUR',    4,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
- ('$rAsm',   '$tenant', 'DEMO-RES-ASM-01',   'Assembly 01 (seconds/unit)', 'PRIMARY',   'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
- ('$rBatch', '$tenant', 'DEMO-RES-BATCH-01', 'Batch Oven 01 (600s/batch)','PRIMARY',   'BATCH_SECONDS',    600,  20,   1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
- ('$rQa',    '$tenant', 'DEMO-RES-QA-01',    'QA Inspector (auxiliary)',   'SECONDARY', 'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
- ('$rHuman', '$tenant', 'DEMO-RES-HUMAN-01', 'Operator (auxiliary)',       'HUMAN',     'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb);
+ ('$rSmt1',  '$tenant', 'RES-SMT-01', 'SMT 贴片机 1 号',    'PRIMARY',   'UNIT_PER_HOUR',    6,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
+ ('$rSmt2',  '$tenant', 'RES-SMT-02', 'SMT 贴片机 2 号',    'PRIMARY',   'UNIT_PER_HOUR',    4,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
+ ('$rAsm',   '$tenant', 'RES-ASSY-01','电池包总装线 1 号',  'PRIMARY',   'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
+ ('$rAge',   '$tenant', 'RES-AGE-01', '储能老化柜 1 号',    'PRIMARY',   'BATCH_SECONDS',    600,  20,   1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
+ ('$rQa',    '$tenant', 'RES-QC-01',  '质检工位 1 号',      'SECONDARY', 'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb),
+ ('$rHuman', '$tenant', 'RES-OP-01',  '装配操作工 1 名',    'HUMAN',     'SECONDS_PER_UNIT', 0,    NULL, 1.00, '$cal', 0, 0, '{}'::jsonb, '{}'::jsonb);
 
 INSERT INTO operation_template (id, tenant_id, code, name, primary_resource_id, primary_resource_group_id,
                                 secondary_resource_ids, input_material_ids, output_material_id,
                                 standard_seconds, setup_seconds, teardown_seconds, template_version, version)
 VALUES
- ('$tCnc', '$tenant', 'OP-DEMO-CNC', 'Demo CNC Machining', '$rCnc1', NULL, '[]'::jsonb, '[]'::jsonb, NULL, 60, 30, 0, 1, 1),
- ('$tAsm', '$tenant', 'OP-DEMO-ASM', 'Demo Assembly',      '$rAsm',  NULL, '[]'::jsonb, '[]'::jsonb, NULL, 30, 10, 0, 1, 1),
- ('$tQa',  '$tenant', 'OP-DEMO-QA',  'Demo Inspection',    '$rAsm',  NULL, '[]'::jsonb, '[]'::jsonb, NULL, 20, 10, 0, 1, 1);
+ ('$tSmt', '$tenant', 'OP-SMT-01',  'SMT 贴片',    '$rSmt1', NULL, '[]'::jsonb, '[]'::jsonb, NULL, 60,  30, 0, 1, 1),
+ ('$tAge', '$tenant', 'OP-AGE-01',  '老化烘烤',    '$rAge',  NULL, '[]'::jsonb, '[]'::jsonb, NULL, 600, 30, 0, 1, 1),
+ ('$tAsm', '$tenant', 'OP-ASSY-01', '电池包总装',  '$rAsm',  NULL, '[]'::jsonb, '[]'::jsonb, NULL, 30,  10, 0, 1, 1),
+ ('$tQa',  '$tenant', 'OP-QC-01',   '出厂检验',    '$rAsm',  NULL, '[]'::jsonb, '[]'::jsonb, NULL, 20,  10, 0, 1, 1);
 
 INSERT INTO routing (id, tenant_id, product_id, routing_version, effective_date, expiry_date, status,
                      is_panel, panel_size, nodes, edges, version)
-VALUES ('$routing', '$tenant', '$mFg', 'RT-DEMO-1', DATE '2026-01-01', NULL, 'ACTIVE', false, NULL,
-        '[{"id":"n10","templateId":"$tCnc","seqNo":10,"overrides":{}},
-          {"id":"n20","templateId":"$tCnc","seqNo":20,"overrides":{"primaryResourceId":"$rCnc2"}},
-          {"id":"n30","templateId":"$tCnc","seqNo":30,"overrides":{"primaryResourceId":"$rBatch"}},
+VALUES ('$routing', '$tenant', '$mFg', 'V2.0', DATE '2026-01-01', NULL, 'ACTIVE', false, NULL,
+        '[{"id":"n10","templateId":"$tSmt","seqNo":10,"overrides":{}},
+          {"id":"n20","templateId":"$tSmt","seqNo":20,"overrides":{"primaryResourceId":"$rSmt2"}},
+          {"id":"n30","templateId":"$tAge","seqNo":30,"overrides":{}},
           {"id":"n40","templateId":"$tAsm","seqNo":40,"overrides":{"secondaryResourceIds":["$rHuman"]}},
           {"id":"n50","templateId":"$tQa","seqNo":50,"overrides":{"secondaryResourceIds":["$rQa"]}},
           {"id":"n60","templateId":"$tAsm","seqNo":60,"overrides":{}}]'::jsonb,
@@ -238,12 +235,12 @@ INSERT INTO routing_node (id, tenant_id, routing_id, node_key, operation_templat
                           operation_name, standard_seconds, setup_seconds, teardown_seconds,
                           is_optional, overrides, position_x, position_y, seq_no, version)
 VALUES
- ('$n10','$tenant','$routing','n10','$tCnc','OP-DEMO-CNC','Demo CNC Machining', NULL, NULL, NULL, false, '{}'::jsonb, 100, 100, 10, 1),
- ('$n20','$tenant','$routing','n20','$tCnc','OP-DEMO-CNC','Demo CNC Machining', NULL, NULL, NULL, false, '{"primaryResourceId":"$rCnc2"}'::jsonb, 220, 100, 20, 1),
- ('$n30','$tenant','$routing','n30','$tCnc','OP-DEMO-CNC','Demo CNC Machining', NULL, NULL, NULL, false, '{"primaryResourceId":"$rBatch"}'::jsonb, 340, 100, 30, 1),
- ('$n40','$tenant','$routing','n40','$tAsm','OP-DEMO-ASM','Demo Assembly',      NULL, NULL, NULL, false, '{"secondaryResourceIds":["$rHuman"]}'::jsonb, 460, 100, 40, 1),
- ('$n50','$tenant','$routing','n50','$tQa', 'OP-DEMO-QA', 'Demo Inspection',    NULL, NULL, NULL, false, '{"secondaryResourceIds":["$rQa"]}'::jsonb, 580, 100, 50, 1),
- ('$n60','$tenant','$routing','n60','$tAsm','OP-DEMO-ASM','Demo Assembly',      NULL, NULL, NULL, false, '{}'::jsonb, 700, 100, 60, 1);
+ ('$n10','$tenant','$routing','n10','$tSmt','OP-SMT-01', 'SMT 贴片',        NULL, NULL, NULL, false, '{}'::jsonb, 100, 100, 10, 1),
+ ('$n20','$tenant','$routing','n20','$tSmt','OP-SMT-01', 'SMT 贴片',        NULL, NULL, NULL, false, '{"primaryResourceId":"$rSmt2"}'::jsonb, 220, 100, 20, 1),
+ ('$n30','$tenant','$routing','n30','$tAge','OP-AGE-01', '老化烘烤',        NULL, NULL, NULL, false, '{}'::jsonb, 340, 100, 30, 1),
+ ('$n40','$tenant','$routing','n40','$tAsm','OP-ASSY-01','电池包总装',      NULL, NULL, NULL, false, '{"secondaryResourceIds":["$rHuman"]}'::jsonb, 460, 100, 40, 1),
+ ('$n50','$tenant','$routing','n50','$tQa', 'OP-QC-01',  '出厂检验',        NULL, NULL, NULL, false, '{"secondaryResourceIds":["$rQa"]}'::jsonb, 580, 100, 50, 1),
+ ('$n60','$tenant','$routing','n60','$tAsm','OP-ASSY-01','包装入库',        NULL, NULL, NULL, false, '{}'::jsonb, 700, 100, 60, 1);
 
 INSERT INTO routing_edge (id, tenant_id, routing_id, from_node_id, to_node_id, depend_type, lag_minutes, version)
 VALUES
@@ -256,38 +253,38 @@ VALUES
 INSERT INTO bom (id, tenant_id, parent_material_id, bom_version, effective_date, expiry_date, status,
                  is_panel, panel_size, items, version)
 VALUES
- ('$bomFg','$tenant','$mFg','BOM-DEMO-FG-1',DATE '2026-01-01',NULL,'ACTIVE',false,NULL,
-  '[{"childMaterialId":"$mSa","materialCode":"DEMO-SA-200","qtyPerUnit":1,"scrapRate":0,"seqNo":1},
-    {"childMaterialId":"$mR1","materialCode":"DEMO-RM-301","qtyPerUnit":2,"scrapRate":0,"seqNo":2}]'::jsonb,1),
- ('$bomSa','$tenant','$mSa','BOM-DEMO-SA-1',DATE '2026-01-01',NULL,'ACTIVE',false,NULL,
-  '[{"childMaterialId":"$mR2","materialCode":"DEMO-RM-302","qtyPerUnit":1,"scrapRate":0,"seqNo":1},
-    {"childMaterialId":"$mR1","materialCode":"DEMO-RM-301","qtyPerUnit":0.5,"scrapRate":0,"seqNo":2}]'::jsonb,1);
+ ('$bomFg','$tenant','$mFg','V2.0',DATE '2026-01-01',NULL,'ACTIVE',false,NULL,
+  '[{"childMaterialId":"$mSf","materialCode":"MAT-SF-001","qtyPerUnit":1,"scrapRate":0,"seqNo":1},
+    {"childMaterialId":"$mR3","materialCode":"MAT-RM-003","qtyPerUnit":2,"scrapRate":0,"seqNo":2}]'::jsonb,1),
+ ('$bomSf','$tenant','$mSf','V3.0',DATE '2026-01-01',NULL,'ACTIVE',false,NULL,
+  '[{"childMaterialId":"$mR4","materialCode":"MAT-RM-004","qtyPerUnit":1,"scrapRate":0,"seqNo":1},
+    {"childMaterialId":"$mR3","materialCode":"MAT-RM-003","qtyPerUnit":0.5,"scrapRate":0,"seqNo":2}]'::jsonb,1);
 
 INSERT INTO bom_item (id, tenant_id, bom_id, child_material_id, qty_per_unit, scrap_rate, position,
                       substitutes, is_phantom, level, seq_no, version)
 VALUES
- ('$bi1','$tenant','$bomFg','$mSa',1.000000,0,NULL,'[]'::jsonb,false,1,1,1),
- ('$bi2','$tenant','$bomFg','$mR1',2.000000,0,NULL,'[]'::jsonb,false,1,2,1),
- ('$bi3','$tenant','$bomSa','$mR2',1.000000,0,NULL,'[]'::jsonb,false,2,1,1),
- ('$bi4','$tenant','$bomSa','$mR1',0.500000,0,NULL,'[]'::jsonb,false,2,2,1);
+ ('$bi1','$tenant','$bomFg','$mSf',1.000000,0,NULL,'[]'::jsonb,false,1,1,1),
+ ('$bi2','$tenant','$bomFg','$mR3',2.000000,0,NULL,'[]'::jsonb,false,1,2,1),
+ ('$bi3','$tenant','$bomSf','$mR4',1.000000,0,NULL,'[]'::jsonb,false,2,1,1),
+ ('$bi4','$tenant','$bomSf','$mR3',0.500000,0,NULL,'[]'::jsonb,false,2,2,1);
 
 INSERT INTO strategy (id, tenant_id, name, direction, strategy_version, initial_rules, optimization_rules,
                       effective_from, effective_to, apply_condition, version)
-VALUES ('$strategy', '$tenant', 'DEMO-M1-STRATEGY', 'FORWARD', 1, '{}'::jsonb, '{}'::jsonb,
+VALUES ('$strategy', '$tenant', '交期优先·正向排产策略', 'FORWARD', 1, '{}'::jsonb, '{}'::jsonb,
         DATE '2026-01-01', NULL, '{}'::jsonb, 1);
 
 INSERT INTO orders (id, tenant_id, order_no, source, product_id, qty, due_date, priority, status,
                     freeze_status, remark, ext_attrs, version)
 VALUES
- ('d0000000-0000-0000-0000-000000000701','$tenant','DEMO-ORD-001','MANUAL','$mFg', 8, CURRENT_DATE + 3, 'HIGH',   'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000702','$tenant','DEMO-ORD-002','MANUAL','$mFg',10, CURRENT_DATE + 4, 'NORMAL', 'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000703','$tenant','DEMO-ORD-003','MANUAL','$mFg',12, CURRENT_DATE + 5, 'URGENT', 'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000704','$tenant','DEMO-ORD-004','MANUAL','$mFg', 6, CURRENT_DATE + 6, 'LOW',    'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000705','$tenant','DEMO-ORD-005','MANUAL','$mFg',14, CURRENT_DATE + 7, 'HIGH',   'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000706','$tenant','DEMO-ORD-006','MANUAL','$mFg', 9, CURRENT_DATE + 8, 'NORMAL', 'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000707','$tenant','DEMO-ORD-007','MANUAL','$mFg',11, CURRENT_DATE + 9, 'HIGH',   'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000708','$tenant','DEMO-ORD-008','MANUAL','$mFg', 7, CURRENT_DATE +10, 'NORMAL', 'DRAFT','UNFROZEN','M1 closed-loop demo', '{}'::jsonb,1),
- ('d0000000-0000-0000-0000-000000000709','$tenant','DEMO-ORD-NOBOM','MANUAL','$mNoBom',5, CURRENT_DATE + 5, 'NORMAL','DRAFT','UNFROZEN','negative case: no ACTIVE BOM','{}'::jsonb,1);
+ ('d0000000-0000-0000-0000-000000000701','$tenant','SO-20261104-0001','MANUAL','$mFg', 8, CURRENT_DATE + 3, 'HIGH',   'DRAFT','UNFROZEN','标准模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000702','$tenant','SO-20261104-0002','MANUAL','$mFg',10, CURRENT_DATE + 4, 'NORMAL', 'DRAFT','UNFROZEN','标准模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000703','$tenant','SO-20261104-0003','MANUAL','$mFg',12, CURRENT_DATE + 5, 'URGENT', 'DRAFT','UNFROZEN','加急模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000704','$tenant','SO-20261104-0004','MANUAL','$mFg', 6, CURRENT_DATE + 6, 'LOW',    'DRAFT','UNFROZEN','小批量模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000705','$tenant','SO-20261104-0005','MANUAL','$mFg',14, CURRENT_DATE + 7, 'HIGH',   'DRAFT','UNFROZEN','标准模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000706','$tenant','SO-20261104-0006','MANUAL','$mFg', 9, CURRENT_DATE + 8, 'NORMAL', 'DRAFT','UNFROZEN','标准模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000707','$tenant','SO-20261104-0007','MANUAL','$mFg',11, CURRENT_DATE + 9, 'HIGH',   'DRAFT','UNFROZEN','标准模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000708','$tenant','SO-20261104-0008','MANUAL','$mFg', 7, CURRENT_DATE +10, 'NORMAL', 'DRAFT','UNFROZEN','小批量模组订单', '{}'::jsonb,1),
+ ('d0000000-0000-0000-0000-000000000709','$tenant','SO-20261104-0009','MANUAL','$mNoBom',5, CURRENT_DATE + 5, 'NORMAL','DRAFT','UNFROZEN','负例：无 ACTIVE BOM','{}'::jsonb,1);
 COMMIT;
 "@
 
@@ -315,15 +312,14 @@ finally {
 }
 
 $summary = & $psql -h $DbHost -p $DbPort -U $DbUser -d $DbName -t -A -F '|' -c @"
-SELECT 'materials', count(*) FROM material WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-%'
-UNION ALL SELECT 'boms', count(*) FROM bom b JOIN material m ON m.id = b.parent_material_id
-    WHERE b.tenant_id = '$tenant' AND m.code LIKE 'DEMO-%'
-UNION ALL SELECT 'resources', count(*) FROM resource WHERE tenant_id = '$tenant' AND code LIKE 'DEMO-RES-%'
-UNION ALL SELECT 'templates', count(*) FROM operation_template WHERE tenant_id = '$tenant' AND code LIKE 'OP-DEMO-%'
+SELECT 'materials', count(*) FROM material WHERE tenant_id = '$tenant' AND id IN ('$mFg','$mSf','$mR3','$mR4','$mNoBom')
+UNION ALL SELECT 'boms', count(*) FROM bom WHERE tenant_id = '$tenant' AND id IN ('$bomFg','$bomSf')
+UNION ALL SELECT 'resources', count(*) FROM resource WHERE tenant_id = '$tenant' AND id IN ('$rSmt1','$rSmt2','$rAsm','$rAge','$rQa','$rHuman')
+UNION ALL SELECT 'templates', count(*) FROM operation_template WHERE tenant_id = '$tenant' AND id IN ('$tSmt','$tAsm','$tQa','$tAge')
 UNION ALL SELECT 'routing_nodes', count(*) FROM routing_node WHERE tenant_id = '$tenant' AND routing_id = '$routing'
 UNION ALL SELECT 'routing_edges', count(*) FROM routing_edge WHERE tenant_id = '$tenant' AND routing_id = '$routing'
-UNION ALL SELECT 'orders', count(*) FROM orders WHERE tenant_id = '$tenant' AND order_no LIKE 'DEMO-ORD-%'
-UNION ALL SELECT 'orders_draft', count(*) FROM orders WHERE tenant_id = '$tenant' AND order_no LIKE 'DEMO-ORD-%' AND status = 'DRAFT'
+UNION ALL SELECT 'orders', count(*) FROM orders WHERE tenant_id = '$tenant' AND id IN ($orderIdList)
+UNION ALL SELECT 'orders_draft', count(*) FROM orders WHERE tenant_id = '$tenant' AND id IN ($orderIdList) AND status = 'DRAFT'
 ORDER BY 1;
 "@
 if ($LASTEXITCODE -ne 0) { throw "summary query failed with exit code $LASTEXITCODE" }

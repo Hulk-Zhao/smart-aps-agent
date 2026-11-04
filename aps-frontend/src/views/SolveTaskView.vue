@@ -3,20 +3,15 @@ import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { cancelSolveTask, createSolveProgressClient, getSolveTask, submitSolveTask } from '@/api'
-import type { SolveProgressChannelState, SolveProgressClient } from '@/api/solve'
+import type { SolveProgressChannelState } from '@/api/solve'
+import { createSolveTracker, type SolveTracker } from '@/api/solveTracker'
 import { StatusTag } from '@/components/common'
-import type {
-  SolveProgress,
-  SolveTaskDetail,
-  SolveTaskStatus,
-  SolverEngine
-} from '@/types/solve'
+import type { SolveProgress, SolveTaskDetail, SolveTaskStatus, SolverEngine } from '@/types/solve'
 
-const POLL_INTERVAL_MS = 2000
 const TERMINAL_STATUSES: SolveTaskStatus[] = ['SOLVED', 'FAILED', 'CANCELLED', 'TIMEOUT']
 
 const form = reactive<{ taskNo: string; engine: SolverEngine; orderNos: string }>({
-  taskNo: 'DEMO-001',
+  taskNo: 'SOLVE-20261104-0001',
   engine: 'timefold',
   orderNos: ''
 })
@@ -29,9 +24,7 @@ const progress = ref<SolveProgress | null>(null)
 const channelState = ref<SolveProgressChannelState | 'IDLE'>('IDLE')
 const channelWarning = ref('')
 
-let progressClient: SolveProgressClient | null = null
-let pollTimer: number | null = null
-let pollInFlight = false
+let tracker: SolveTracker | null = null
 
 const currentStatus = computed<SolveTaskStatus>(() => detail.value?.status ?? 'PENDING')
 const currentProgress = computed(() => {
@@ -44,9 +37,7 @@ const currentProgress = computed(() => {
   }
   return progress.value?.progress ?? detail.value?.progress ?? 0
 })
-const percent = computed(() =>
-  Math.round(Math.min(1, Math.max(0, currentProgress.value)) * 100)
-)
+const percent = computed(() => Math.round(Math.min(1, Math.max(0, currentProgress.value)) * 100))
 const barStatus = computed<'success' | 'exception' | undefined>(() => {
   if (currentStatus.value === 'SOLVED') {
     return 'success'
@@ -58,9 +49,7 @@ const barStatus = computed<'success' | 'exception' | undefined>(() => {
 })
 const phase = computed(() => progress.value?.phase ?? detail.value?.phase ?? '—')
 const bestScore = computed(() => progress.value?.bestScore ?? detail.value?.bestScore ?? '—')
-const elapsedMs = computed(
-  () => progress.value?.elapsedMs ?? detail.value?.elapsedMs ?? null
-)
+const elapsedMs = computed(() => progress.value?.elapsedMs ?? detail.value?.elapsedMs ?? null)
 const isTerminal = computed(() => TERMINAL_STATUSES.includes(currentStatus.value))
 
 const degraded = computed(() => detail.value?.metrics?.engineFallback === true)
@@ -98,90 +87,50 @@ function formatElapsed(value: number | null): string {
   return `${(value / 1000).toFixed(1)} s`
 }
 
-async function refreshDetail() {
-  if (!detail.value) {
-    return
-  }
-  try {
-    detail.value = await getSolveTask(detail.value.id)
-    if (isTerminalStatus(detail.value.status)) {
-      stopTracking()
-    }
-  } catch {
-    // 查询失败时保留上一份事实，等待 STOMP 或下一轮轮询
-  }
+/** 立即刷新：走同一个快照通道，终态即停止跟踪。 */
+function refreshDetail() {
+  void tracker?.refreshNow()
 }
 
-function startPolling() {
-  if (pollTimer !== null) {
-    return
-  }
-  pollTimer = window.setInterval(() => {
-    void pollOnce()
-  }, POLL_INTERVAL_MS)
-}
-
-function stopPolling() {
-  if (pollTimer !== null) {
-    window.clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
-async function pollOnce() {
-  if (!detail.value || pollInFlight) {
-    return
-  }
-  pollInFlight = true
-  try {
-    detail.value = await getSolveTask(detail.value.id)
-    if (isTerminalStatus(detail.value.status)) {
-      stopTracking()
-    }
-  } catch {
-    // 保留上一份事实
-  } finally {
-    pollInFlight = false
-  }
-}
-
-/** STOMP 仅推送；GET /solve-tasks/{id} 是事实源，连接中/断线均按 2 秒轮询兜底。 */
+/**
+ * STOMP 仅推送；`GET /solve-tasks/{id}` 是事实源。
+ * 连接建立后无条件补一次快照（即使已收到首帧），快照失败时保留轮询兜底。
+ */
 function startTracking(task: SolveTaskDetail) {
   stopTracking()
-  detail.value = task
   progress.value = null
   channelWarning.value = ''
   channelState.value = 'CONNECTING'
-  startPolling()
-
-  progressClient = createSolveProgressClient(task.id, {
-    onMessage: (message) => {
-      progress.value = message
-      if (isTerminalStatus(message.status)) {
-        void refreshDetail()
+  tracker = createSolveTracker(
+    {
+      onDetail: (next) => {
+        detail.value = next
+      },
+      onProgress: (message) => {
+        progress.value = message
+      },
+      onTerminal: () => {
+        // 以事实源为准，丢弃早于终态的推送帧
+        progress.value = null
+      },
+      onChannelState: (state) => {
+        channelState.value = state
+      },
+      onWarning: (message) => {
+        channelWarning.value = message
       }
     },
-    onStateChange: (state) => {
-      channelState.value = state
-      if (state === 'CONNECTED') {
-        stopPolling()
-        void refreshDetail()
-      } else {
-        startPolling()
-      }
-    },
-    onError: (message) => {
-      channelWarning.value = message
+    {
+      getDetail: (taskId) => getSolveTask(taskId),
+      subscribe: (taskId, handlers) => createSolveProgressClient(taskId, handlers)
     }
-  })
+  )
+  tracker.start(task)
 }
 
 function stopTracking() {
-  stopPolling()
-  if (progressClient) {
-    progressClient.disconnect()
-    progressClient = null
-  }
+  tracker?.stop()
+  tracker = null
 }
 
 async function onSubmit() {

@@ -36,6 +36,10 @@ public final class ConstraintJustifications {
     public static List<ConstraintJustification> from(SchedulePlan plan) {
         List<TaskPlan> tasks = plan == null ? List.of() : plan.getTasks();
         List<ConstraintJustification> justifications = new ArrayList<>();
+        addIfAny(justifications, ConstraintCodes.UNASSIGNED_TASK, tasks.stream()
+                .filter(ConstraintPredicates::unassigned)
+                .map(ConstraintJustifications::label)
+                .toList());
         addIfAny(justifications, ConstraintCodes.RESOURCE_NO_OVERLAP, resourceOverlaps(tasks));
         addIfAny(justifications, ConstraintCodes.CALENDAR_AVAILABILITY, calendarViolations(tasks));
         addIfAny(justifications, ConstraintCodes.OPERATION_DEPENDENCY, dependencyViolations(plan));

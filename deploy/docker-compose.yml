@@ -1,10 +1,20 @@
 # =============================================================================
-# 衡策 APS 一键整栈（M1-QA-02）
+# 衡策 APS 一键整栈（M1-QA-02 建立，M2-QA-03 改为「制品挂载」）
 #   PostgreSQL 15 / Redis 7 / MinIO / aps-backend / aps-frontend
+#
+# M2-QA-03 变更（部署环节不再编译任何业务代码，构建制品归 W9）：
+#   - aps-backend 不再使用 aps-admin/Dockerfile 在镜像里跑 mvn package，
+#     改为 deploy/backend/Dockerfile 的运行时镜像 + 只读挂载已构建的 fat jar
+#     （默认 ../aps-admin/target/aps-admin-0.1.0-SNAPSHOT.jar，可用 APS_BACKEND_JAR 覆盖）。
+#     因此容器内运行的 jar 与仓库里的制品是同一份文件，SHA256 可逐字节核对。
+#   - aps-frontend 同理不再在镜像里跑 npm ci/build，改为只读挂载
+#     aps-frontend/dist 静态产物（可用 APS_FRONTEND_DIST 覆盖）。
+#   - 源码构建方式仍保留在 aps-admin/Dockerfile / aps-frontend/Dockerfile（未改动），
+#     仅不在一键部署链路中使用。
 #
 # 与 docker-compose.dev.yml 的区别：
 #   - dev 栈只提供中间件，供宿主机 IDE 里运行的前后端使用；
-#   - 本栈把后端（aps-admin/Dockerfile）与前端（aps-frontend/Dockerfile）也编排进来，
+#   - 本栈把后端运行时镜像与前端静态产物也编排进来，
 #     一条命令即可得到可访问的完整环境。
 #   - 工程名固定为 aps-stack，与 dev 栈的 aps-dev
 #     容器/网络/卷前缀隔离，避免误伤本地开发栈。
@@ -159,13 +169,15 @@ services:
     logging: *default-logging
 
   # ---------------------------------------------------------------------------
-  # aps-backend：Spring Boot 单体（构建上下文必须是仓库根目录）
-  # 依赖 postgres / redis / minio 健康后再启动；Flyway 由 APS_FLYWAY_ENABLED 开关。
+  # aps-backend：Spring Boot 单体。运行时镜像只装 JRE + curl，
+  #   业务 jar 以只读方式从宿主机挂载（APS_BACKEND_JAR），确保容器内运行的
+  #   就是 W9 交付的那份 fat jar，不再在部署环节重新编译。
+  #   依赖 postgres / redis / minio 健康后再启动；Flyway 由 APS_FLYWAY_ENABLED 开关。
   # ---------------------------------------------------------------------------
   aps-backend:
     build:
-      context: ..
-      dockerfile: aps-admin/Dockerfile
+      context: ./backend
+      dockerfile: Dockerfile
     image: ${APS_BACKEND_IMAGE:-aps-stack/aps-backend:local}
     container_name: aps-stack-backend
     restart: unless-stopped
@@ -176,6 +188,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    volumes:
+      - ${APS_BACKEND_JAR:-../aps-admin/target/aps-admin-0.1.0-SNAPSHOT.jar}:/app/app.jar:ro
     environment:
       TZ: Asia/Shanghai
       SPRING_PROFILES_ACTIVE: ${APS_SPRING_PROFILES:-dev}
@@ -225,18 +239,18 @@ services:
 
   # ---------------------------------------------------------------------------
   # aps-frontend：Nginx 托管 Vue 构建产物，/api 反代到 aps-backend:8080
-  # 构建上下文为 aps-frontend 目录（与 aps-frontend/Dockerfile 注释一致）。
+  #   dist 静态产物与 nginx 配置模板均从宿主机只读挂载，部署环节不跑 npm。
   # ---------------------------------------------------------------------------
   aps-frontend:
-    build:
-      context: ../aps-frontend
-      dockerfile: Dockerfile
-    image: ${APS_FRONTEND_IMAGE:-aps-stack/aps-frontend:local}
+    image: ${APS_FRONTEND_IMAGE:-nginxinc/nginx-unprivileged:1.31-alpine}
     container_name: aps-stack-frontend
     restart: unless-stopped
     depends_on:
       aps-backend:
         condition: service_healthy
+    volumes:
+      - ${APS_FRONTEND_DIST:-../aps-frontend/dist}:/usr/share/nginx/html:ro
+      - ../aps-frontend/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
     environment:
       # 与 Dockerfile 默认值一致；此处显式声明，便于排障时确认实际指向
       APS_BACKEND_URL: http://aps-backend:8080

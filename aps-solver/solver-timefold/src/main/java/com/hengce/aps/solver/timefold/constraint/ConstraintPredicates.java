@@ -4,6 +4,7 @@ import com.hengce.aps.solver.timefold.dependency.TaskDependency;
 import com.hengce.aps.solver.timefold.model.TaskPlan;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -12,6 +13,48 @@ import java.util.UUID;
 final class ConstraintPredicates {
 
     private ConstraintPredicates() {
+    }
+
+    /**
+     * 任务是否未被排位：没有资源序列归属，或没有开始时间。
+     *
+     * <p>{@code forEach} 会静默跳过未初始化实体，因此未排位任务必须走
+     * {@code forEachIncludingUnassigned} + 本谓词才能被惩罚，否则部分解会被判为可行。</p>
+     *
+     * @param task 任务
+     * @return {@code true} 表示未排位
+     */
+    static boolean unassigned(TaskPlan task) {
+        return task.getResourceId() == null || task.getStartTime() == null;
+    }
+
+    /**
+     * 同一资源上的占用切片是否存在重叠（半开区间 {@code [start, end)}）。
+     *
+     * @param left 切片一
+     * @param right 切片二
+     * @return {@code true} 表示重叠
+     */
+    static boolean slotOverlap(TaskPlan.OccupancySlot left, TaskPlan.OccupancySlot right) {
+        return left.start().isBefore(right.end()) && right.start().isBefore(left.end());
+    }
+
+    /**
+     * 统计同一资源分组内的重叠切片对数。
+     *
+     * @param slots 同一资源的全部占用切片
+     * @return 重叠对数
+     */
+    static int overlapPairCount(List<TaskPlan.OccupancySlot> slots) {
+        int count = 0;
+        for (int first = 0; first < slots.size(); first++) {
+            for (int second = first + 1; second < slots.size(); second++) {
+                if (slotOverlap(slots.get(first), slots.get(second))) {
+                    count++;
+                }
+            }
+        }
+        return count;
     }
 
     /**

@@ -163,7 +163,7 @@ async function submit() {
           v-model="form.orderNo"
           :disabled="editing"
           maxlength="64"
-          placeholder="租户内唯一，如 SO-20261104-010"
+          placeholder="租户内唯一，如 SO-20261104-0010"
         />
       </el-form-item>
       <el-form-item label="产品物料" prop="materialCode">

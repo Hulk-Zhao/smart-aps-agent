@@ -3,11 +3,11 @@ info:
   title: 衡策 APS - 求解与 Agent API
   version: 0.1.0
   description: |
-    solve 分组静态契约（P0-08）。POST /solve-tasks 已实现（同步 MVP），其余为占位。
-    M2 冻结：C20（异步生命周期/取消/STOMP 进度）、C21（增量重排）、C28（引擎降级）。
+    solve 分组静态契约（P0-08）。已实现：POST /solve-tasks、GET /solve-tasks/{id}、取消、增量重排、justifications、C19 受控 DSL；其余为占位。
+    M2 冻结：C19（策略规则与受控 DSL）、C20（异步生命周期/取消/STOMP 进度）、C21（增量重排）、C28（引擎降级）。
     统一约定见 ../../docs/api/conventions.md。
     WebSocket 进度推送：/ws/solve-tasks/{id}，STOMP 订阅 /topic/solve-tasks/{id}，消息 SolveProgress，不纳入 OpenAPI paths。
-    GET /solve-tasks/{id} 是唯一事实源；STOMP 只推送，断线后前端回退 2 秒轮询。
+    GET /solve-tasks/{id} 是唯一事实源；STOMP 只推送（快照为 best-effort，可能丢失），断线后前端回退 2 秒轮询，重连先 GET 对账。
 servers:
   - url: /api/v1
 tags:
@@ -17,7 +17,9 @@ x-websocket-endpoints:
   /ws/solve-tasks/{id}:
     description: |
       求解进度推送（STOMP over WebSocket）；{id} 为 solve_task BIGSERIAL id。
-      订阅目的地：/topic/solve-tasks/{id}；连接成功后服务端立即推送一条当前快照。
+      订阅目的地：/topic/solve-tasks/{id}；连接后服务端尝试立即推送当前快照，但**是 best-effort、可能丢失**
+      （SUBSCRIBE 异步注册与推送给出的时序竞态，C20 §24.2）。
+      客户端连接后必须无条件补一次 GET /solve-tasks/{id} 并与推送帧合并；终态任务首帧一丢即永久空白，兜底不得删。
       推送节流：状态变化立即推送，progress/bestScore 最多 1 次/秒；终态必推一次并含 resultTaskId。
       不重放历史消息；事实源为 GET /solve-tasks/{id}。回滚开关 aps.solve.progress-push=poll。
     messageSchema:
@@ -33,6 +35,9 @@ paths:
         一律返回 SolveTaskDetail（C20）：状态使用六值枚举
         PENDING/RUNNING/SOLVED/FAILED/CANCELLED/TIMEOUT，SUCCESS 已废弃；
         SOLVED 时 tasks[] 返回场景任务快照。调用方按 GET /solve-tasks/{id} 轮询终态。
+        订单范围（C5 §7 / C20 §24.2）：orders 无 sandbox_id，订单只按 tenant 过滤，sandboxId 只决定任务写入场景。
+        未传 orderNos 时只取 status=CONFIRMED；显式 orderNos 覆盖 onlyConfirmed（DRAFT/SCHEDULED/RELEASED/IN_PROGRESS/COMPLETED 照排），
+        但 CANCELLED 必须拒绝 400/40000 并逐字点名。该拒绝行为当前未实现，属 M2 必须补（W4），不随本端点计为已实现。
       x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -84,9 +89,9 @@ paths:
       tags: [求解]
       summary: 取消求解任务
       description: |
-        状态：占位（契约已冻结 C20，实现归 W3）。仅 PENDING/RUNNING 可取消；其他状态返回 40901。
+        状态：代码已落地（C20，W3）；未做制品级 HTTP 验收，故标 partial。仅 PENDING/RUNNING 可取消；其他状态返回 40901。
         取消后任务进入 CANCELLED，并终止正在运行的 Solver。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -109,6 +114,33 @@ paths:
           $ref: '#/components/responses/Conflict'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /solve-tasks/{id}/justifications:
+    get:
+      operationId: listSolveTaskJustifications
+      tags: [求解]
+      summary: 求解任务约束归因
+      description: |
+        状态：已实现（M2-SE-05）。不分页（规模上限 8 行/次）；固定排序 deduction DESC, constraintCode ASC。
+        空结果返回 200 + data: []（不是 404）；任务不存在返回 404/40400。
+        deduction 是规则聚合后的扣分（weight × 违反量），不是逐条事实明细。
+      x-implementation-status: implemented
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 求解任务 BIGSERIAL id
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintJustificationList'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /solve-tasks/incremental:
     post:
       operationId: submitIncrementalSolveTask
@@ -118,7 +150,9 @@ paths:
         M2 冻结 C21。以 baseSolveTaskId 为 startingSolution，仅重排 affectedTaskIds 中的非冻结任务。
         写入新 solve_task 行，并在计划域生成新的 plan_version(DRAFT)；不得覆盖已 PUBLISHED 的任务。
         FROZEN 优先级高于 lockType(FROZEN/TIME_WINDOW/RESOURCE) 高于 M1 的 frozen 布尔别名。
-      x-implementation-status: placeholder
+        场景内存在 IN_PROGRESS/COMPLETED → 409/40903（场景级；与 C22/C24 同一语义，不得拆码）。
+        状态：代码已落地（C21）；未做制品级 HTTP 验收，故标 partial。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -142,7 +176,147 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
+  /constraint-dsls/validate:
+    post:
+      operationId: validateConstraintDsl
+      tags: [求解]
+      summary: 校验 DSL（不落库）
+      description: |
+        C19 冻结。非法 DSL 仍返回 200，由报告内 valid=false 表达；问题码为 422xx。
+        x-implementation-status=partial：代码已落地（W2），尚未做制品级 HTTP 验收。
+      x-implementation-status: partial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConstraintDslValidateRequest'
+      responses:
+        '200':
+          description: 校验报告
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfDslValidationReport'
+  /constraint-dsls:
+    post:
+      operationId: createConstraintDsl
+      tags: [求解]
+      summary: 创建 DSL 草稿版本
+      description: |
+        C19 冻结。校验通过后写入 DRAFT 版本，versionNo 自增；失败 42200。
+        x-implementation-status=partial：代码已落地（W2），尚未做制品级 HTTP 验收。
+      x-implementation-status: partial
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConstraintDslCreateRequest'
+      responses:
+        '200':
+          description: 新版本
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintDsl'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    get:
+      operationId: listConstraintDslVersions
+      tags: [求解]
+      summary: 某 code 的全部版本
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。versionNo 倒序，不分页。
+      x-implementation-status: partial
+      parameters:
+        - name: code
+          in: query
+          required: true
+          description: DSL 标识
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintDslList'
+  /constraint-dsls/{id}:
+    get:
+      operationId: getConstraintDsl
+      tags: [求解]
+      summary: DSL 版本详情
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintDsl'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /constraint-dsls/{id}/activate:
+    post:
+      operationId: activateConstraintDsl
+      tags: [求解]
+      summary: 激活 DSL 版本
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。同 code 仅一条 ACTIVE；失败自动恢复上一 ACTIVE 并 40901。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintDsl'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /constraint-dsls/{id}/rollback:
+    post:
+      operationId: rollbackConstraintDsl
+      tags: [求解]
+      summary: 回滚 DSL 版本
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。当前 ACTIVE 置 ROLLBACK，目标版本置 ACTIVE 并记 rollbackOf。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfConstraintDsl'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /agent/events:
+    x-milestone: M3
     post:
       operationId: reportAgentEvent
       tags: [Agent]
@@ -169,6 +343,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /agent/nl-to-dsl:
+    x-milestone: M3
     post:
       operationId: nlToDsl
       tags: [Agent]
@@ -197,6 +372,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /agent/explain/{taskId}:
+    x-milestone: M3
     get:
       operationId: explainTask
       tags: [Agent]
@@ -222,6 +398,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /agent/whatif:
+    x-milestone: M3
     post:
       operationId: whatIf
       tags: [Agent]
@@ -329,6 +506,11 @@ components:
           $ref: '#/components/schemas/SolverEngine'
         orderNos:
           type: array
+          description: |
+            显式订单号；为空时只排 status=CONFIRMED 的订单。
+            显式点名覆盖该状态过滤（DRAFT/SCHEDULED/RELEASED/IN_PROGRESS/COMPLETED 照排），
+            但 CANCELLED 必须拒绝 400/40000 并逐字点名（C20 §24.2；当前未实现，M2 必须补，责任人 W4）。
+            订单按租户读取，无沙箱归属校验。
           items:
             type: string
         parameters:
@@ -349,6 +531,140 @@ components:
         endTime:
           type: string
           format: date-time
+    ConstraintJustification:
+      type: object
+      description: |
+        约束归因；软约束按 constraintCode 聚合为一行（最多 8 行/次）。
+        weight/deduction 为 V7 增补字段；硬约束 weight=null、deduction=0。
+      required: [constraintCode, type, taskIds, description, deduction]
+      properties:
+        constraintCode:
+          type: string
+          description: |
+            规则键：软约束取自 RuleCode（8 条），硬约束取自 ConstraintCodes 的 8 条硬约束编码；
+            禁止用中文标题当键，中文只允许出现在 description。
+        type:
+          type: string
+          enum: [HARD, SOFT]
+        taskIds:
+          type: array
+          description: 聚合后的受影响任务主键（求解期新解由结果写回阶段回填）
+          items:
+            type: integer
+            format: int64
+        description:
+          type: string
+          description: 面向人的中文说明
+        weight:
+          type: integer
+          nullable: true
+          description: 该规则求解时生效权重；硬约束为 null
+        deduction:
+          type: number
+          description: |
+            该规则聚合后的软分扣分，正数表示被扣掉的分（weight × 违反量）；
+            不是逐条违反事实的明细；硬约束为 0。始终输出。
+    ResultOfConstraintJustificationList:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConstraintJustification'
+    ConstraintDslView:
+      type: object
+      description: C19 受控 DSL 版本视图
+      properties:
+        id:
+          type: string
+          format: uuid
+        code:
+          type: string
+        versionNo:
+          type: integer
+        status:
+          type: string
+          enum: [DRAFT, ACTIVE, ROLLBACK]
+        checksum:
+          type: string
+          description: 规范化 YAML 的 SHA-256
+        rollbackOf:
+          type: string
+          format: uuid
+          nullable: true
+        effectiveFrom:
+          type: string
+          format: date-time
+          nullable: true
+        yamlText:
+          type: string
+        compiledSpec:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    ConstraintDslValidateRequest:
+      type: object
+      required: [yamlText]
+      properties:
+        yamlText:
+          type: string
+          description: YAML 文本，≤256KB
+    ConstraintDslCreateRequest:
+      type: object
+      required: [code, yamlText]
+      properties:
+        code:
+          type: string
+        yamlText:
+          type: string
+    DslValidationIssue:
+      type: object
+      properties:
+        code:
+          type: integer
+        field:
+          type: string
+        message:
+          type: string
+    DslValidationReport:
+      type: object
+      required: [valid, issues]
+      properties:
+        valid:
+          type: boolean
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/DslValidationIssue'
+    ResultOfConstraintDsl:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ConstraintDslView'
+    ResultOfConstraintDslList:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConstraintDslView'
+    ResultOfDslValidationReport:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DslValidationReport'
     SolveTaskStatus:
       type: string
       enum: [PENDING, RUNNING, SOLVED, FAILED, CANCELLED, TIMEOUT]

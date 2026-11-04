@@ -179,6 +179,7 @@ public class ScheduleProblemAssembler {
         boolean allOrders = request.orderNos() == null || request.orderNos().isEmpty();
         List<OrderSourceRow> requestedRows = scheduleRepository.findOrders(
                 tenantId, request.orderNos(), allOrders);
+        requireAllRequestedOrdersFound(request.orderNos(), requestedRows);
         List<OrderSourceRow> pinnedRows = allOrders
                 ? List.of() : findPinnedOrders(tenantId, request.orderNos(),
                 readStringList(request.parameters() == null
@@ -290,6 +291,88 @@ public class ScheduleProblemAssembler {
                             + "；钉住的订单不能同时作为重排目标");
         }
         return pinned.stream().distinct().toList();
+    }
+
+    /**
+     * 受理前的订单存在性校验：请求里显式点名但库里查不到的订单号必须 400 拒绝，
+     * 不能静默漏排后照常返回 SOLVED。
+     *
+     * <p>与 {@link #requireDisjointPinnedOrders} 是两件事：那条管“同一订单既 pin 又重排”的自相矛盾，
+     * 这条管“调用方点名的订单被悄悄丢掉”。口径按租户：{@code orders} 表没有 {@code sandbox_id}，
+     * 订单不按场景隔离，因此不存在“订单不在该场景范围”这一维度；存在性判断不看 {@code status}
+     * （显式点名时既有行为本就不按状态过滤）。但终态取消是“这活不干了”的否决语义，显式点名
+     * 也不能覆盖：查到的订单里只要有一个 {@code CANCELLED} 即拒绝，见
+     * {@link #requireNoCancelledOrderNos}。</p>
+     *
+     * <p>放在提交入口而不是只放在装配阶段，是为了在异步模式下也能直接返回 400，
+     * 而不是先受理成 PENDING、再在后台降级成 FAILED。</p>
+     *
+     * @param request 求解请求
+     */
+    public void requireExistingOrderNos(SolveRequest request) {
+        if (request.orderNos() == null || request.orderNos().isEmpty()) {
+            return;
+        }
+        List<OrderSourceRow> requestedRows = scheduleRepository.findOrders(
+                TenantContext.getTenantId(), request.orderNos(), false);
+        requireAllRequestedOrdersFound(request.orderNos(), requestedRows);
+        requireNoCancelledOrderNos(request.orderNos(), requestedRows);
+    }
+
+    /**
+     * 校验请求点名的订单号都能在读取结果里找到；缺任何一个都 400，并在 message 中逐字点名。
+     *
+     * @param requestedOrderNos 请求点名的订单号
+     * @param foundRows 实际读取到的订单行
+     * @throws BizException 存在查不到的订单号时抛出 {@code 400/40000}
+     */
+    static void requireAllRequestedOrdersFound(List<String> requestedOrderNos, List<OrderSourceRow> foundRows) {
+        if (requestedOrderNos == null || requestedOrderNos.isEmpty()) {
+            return;
+        }
+        Set<String> found = foundRows.stream()
+                .map(OrderSourceRow::orderNo)
+                .collect(Collectors.toSet());
+        List<String> missing = requestedOrderNos.stream()
+                .filter(orderNo -> orderNo == null || !found.contains(orderNo))
+                .distinct()
+                .toList();
+        if (!missing.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "请求的订单号不存在: " + String.join("、",
+                            missing.stream().map(orderNo -> orderNo == null ? "<空>" : orderNo).toList()));
+        }
+    }
+
+    /**
+     * 校验请求点名的订单里没有终态 {@code CANCELLED}；有则 400 并逐字点名。
+     *
+     * <p>只拦 {@code CANCELLED}：{@code DRAFT/PLANNED/IN_PROGRESS/COMPLETED} 的显式点名是既有语义，
+     * 其中在制/完工的重排由增量与调整链路负责，不在受理入口否决。</p>
+     *
+     * <p>调用顺序固定在 {@link #requireAllRequestedOrdersFound} 之后：混合输入（1 个不存在 +
+     * 1 个已取消）只报“不存在”，因为查无此单时无从判断状态。</p>
+     *
+     * @param requestedOrderNos 请求点名的订单号
+     * @param foundRows 实际读取到的订单行
+     * @throws BizException 存在已取消订单时抛出 {@code 400/40000}
+     */
+    static void requireNoCancelledOrderNos(List<String> requestedOrderNos, List<OrderSourceRow> foundRows) {
+        if (requestedOrderNos == null || requestedOrderNos.isEmpty()) {
+            return;
+        }
+        Set<String> cancelled = foundRows.stream()
+                .filter(row -> "CANCELLED".equals(row.status()))
+                .map(OrderSourceRow::orderNo)
+                .collect(Collectors.toSet());
+        List<String> blocked = requestedOrderNos.stream()
+                .filter(orderNo -> orderNo != null && cancelled.contains(orderNo))
+                .distinct()
+                .toList();
+        if (!blocked.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "请求的订单号已取消，不能排产: " + String.join("、", blocked));
+        }
     }
 
     /**
@@ -819,5 +902,24 @@ public class ScheduleProblemAssembler {
      */
     public record AssembledProblem(UUID tenantId, UUID sandboxId, ScheduleProblem problem,
                                    List<UUID> orderIds) {
+
+        /**
+         * 本次场景应参与排产的任务数（= 装配问题内全部订单的工序数之和）。
+         *
+         * <p>这是完整性校验的唯一口径：求解结果 {@code assignments.size()} 必须与它相等，
+         * 否则说明构造启发式未排满，不得判定 {@code SOLVED}、不得落库。</p>
+         *
+         * @return 期望任务数
+         */
+        public int expectedTaskCount() {
+            if (problem == null) {
+                return 0;
+            }
+            int count = 0;
+            for (SchedulingOrder order : problem.orders()) {
+                count += order.operations().size();
+            }
+            return count;
+        }
     }
 }

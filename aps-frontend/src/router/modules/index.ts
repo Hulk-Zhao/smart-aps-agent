@@ -2,9 +2,11 @@ import type { RouterModule } from '../types'
 
 import { dashboardModule } from './dashboard'
 import { ganttModule } from './gantt'
+import { ganttOrderModule } from './gantt-order'
 import { masterDataModule } from './master-data'
 import { mrpModule } from './mrp'
 import { ordersModule } from './orders'
+import { plansModule } from './plans'
 import { processModule } from './process'
 import { solveModule } from './solve'
 import { strategiesModule } from './strategies'
@@ -21,7 +23,9 @@ export const routerModules: RouterModule[] = [
   strategiesModule,
   mrpModule,
   solveModule,
-  ganttModule
+  ganttModule,
+  ganttOrderModule,
+  plansModule
 ]
 
 export const menuModules: RouterModule[] = [...routerModules]

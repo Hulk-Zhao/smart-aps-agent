@@ -30,11 +30,9 @@ const props = withDefaults(
     visible: boolean
     mode: 'create' | 'edit'
     strategy?: StrategyDetail | null
-    draft?: StrategyCreateRequest | null
   }>(),
   {
-    strategy: null,
-    draft: null
+    strategy: null
   }
 )
 
@@ -76,9 +74,7 @@ const saving = ref(false)
 const validationError = ref('')
 
 const softWeightSum = computed(() => sumEnabledSoftWeights(form.rules))
-const softWeightOk = computed(
-  () => Math.abs(softWeightSum.value - SOFT_WEIGHT_TOTAL) < 1e-6
-)
+const softWeightOk = computed(() => Math.abs(softWeightSum.value - SOFT_WEIGHT_TOTAL) < 1e-6)
 const dimensionWeightSum = computed(() =>
   form.dimensions.reduce((total, item) => total + (Number(item.weight) || 0), 0)
 )
@@ -119,9 +115,7 @@ function readStringArray(value: unknown): string[] {
 }
 
 /** 解析初排维度：优先使用 dimensions，其次回退到 sequence（旧 initial_rules 形态）。 */
-function parseDimensions(
-  initialRules?: Record<string, unknown>
-): InitialDimensionRule[] {
+function parseDimensions(initialRules?: Record<string, unknown>): InitialDimensionRule[] {
   const defaults = buildDefaultInitialDimensions()
   if (!isRecord(initialRules)) {
     return defaults
@@ -151,7 +145,7 @@ function parseDimensions(
     const index = sequence.indexOf(fallback.dimension)
     return {
       ...fallback,
-      weight: index >= 0 ? weights[index] ?? 0 : 0
+      weight: index >= 0 ? (weights[index] ?? 0) : 0
     }
   })
 }
@@ -177,26 +171,19 @@ function parseRules(source: { rules?: StrategyRule[] } | null): StrategyRule[] {
 function resetForm() {
   validationError.value = ''
   const strategy = props.mode === 'edit' ? props.strategy : null
-  const draft = props.mode === 'create' ? props.draft : null
-  const initialRules = (strategy?.initialRules ?? draft?.initialRules) as
-    | Record<string, unknown>
-    | undefined
-  const applyCondition = (strategy?.applyCondition ?? draft?.applyCondition) as
-    | Record<string, unknown>
-    | undefined
+  const initialRules = strategy?.initialRules as Record<string, unknown> | undefined
+  const applyCondition = strategy?.applyCondition as Record<string, unknown> | undefined
 
-  form.name = strategy?.name ?? draft?.name ?? ''
-  form.direction = strategy?.direction ?? draft?.direction ?? 'FORWARD'
-  form.strategyVersion =
-    strategy?.strategyVersion ?? draft?.strategyVersion ?? 1
-  form.effectiveFrom =
-    strategy?.effectiveFrom ?? draft?.effectiveFrom ?? todayString()
-  form.effectiveTo = strategy?.effectiveTo ?? draft?.effectiveTo ?? null
+  form.name = strategy?.name ?? ''
+  form.direction = strategy?.direction ?? 'FORWARD'
+  form.strategyVersion = strategy?.strategyVersion ?? 1
+  form.effectiveFrom = strategy?.effectiveFrom ?? todayString()
+  form.effectiveTo = strategy?.effectiveTo ?? null
   form.defaultSetupMinutes = isRecord(initialRules)
     ? Number(initialRules.defaultSetupMinutes) || 30
     : 30
   form.dimensions = parseDimensions(initialRules)
-  form.rules = parseRules(strategy ?? draft)
+  form.rules = parseRules(strategy)
   form.applyProductLines = isRecord(applyCondition)
     ? readStringArray(applyCondition.productLines).join(', ')
     : ''
@@ -336,8 +323,7 @@ async function onSave() {
     emit('saved')
     emit('update:visible', false)
   } catch (exception) {
-    validationError.value =
-      exception instanceof Error ? exception.message : '策略保存失败'
+    validationError.value = exception instanceof Error ? exception.message : '策略保存失败'
   } finally {
     saving.value = false
   }
@@ -356,9 +342,7 @@ function softRuleCount(): number {
 }
 
 function mvpRuleMissing(): boolean {
-  return MVP_SOFT_RULE_CODES.some(
-    (code) => !form.rules.some((rule) => rule.code === code)
-  )
+  return MVP_SOFT_RULE_CODES.some((code) => !form.rules.some((rule) => rule.code === code))
 }
 </script>
 
@@ -456,8 +440,8 @@ function mvpRuleMissing(): boolean {
       <el-table-column label="维度" min-width="120">
         <template #default="{ row }">
           {{
-            INITIAL_DIMENSION_CATALOG.find((item) => item.dimension === row.dimension)
-              ?.label ?? row.dimension
+            INITIAL_DIMENSION_CATALOG.find((item) => item.dimension === row.dimension)?.label ??
+            row.dimension
           }}
         </template>
       </el-table-column>
@@ -476,10 +460,7 @@ function mvpRuleMissing(): boolean {
       </el-table-column>
     </el-table>
     <div class="weight-summary">
-      初排维度权重和：<el-tag
-        :type="dimensionWeightSum > 0 ? 'success' : 'danger'"
-        size="small"
-      >
+      初排维度权重和：<el-tag :type="dimensionWeightSum > 0 ? 'success' : 'danger'" size="small">
         {{ sumOf(form.dimensions) }}
       </el-tag>
       <span class="hint">（BR-SS-001-04：权重和不得为 0）</span>
@@ -502,12 +483,7 @@ function mvpRuleMissing(): boolean {
     <el-table :data="form.rules" border size="small" row-key="code">
       <el-table-column label="规则代码" min-width="220">
         <template #default="{ row }">
-          <el-select
-            v-model="row.code"
-            size="small"
-            filterable
-            @change="onRuleCodeChange(row)"
-          >
+          <el-select v-model="row.code" size="small" filterable @change="onRuleCodeChange(row)">
             <el-option
               v-for="item in STRATEGY_RULE_CATALOG"
               :key="item.code"
@@ -520,11 +496,7 @@ function mvpRuleMissing(): boolean {
       </el-table-column>
       <el-table-column label="约束类型" width="130">
         <template #default="{ row }">
-          <el-select
-            v-model="row.type"
-            size="small"
-            @change="onRuleTypeChange(row)"
-          >
+          <el-select v-model="row.type" size="small" @change="onRuleTypeChange(row)">
             <el-option label="软约束 SOFT" value="SOFT" />
             <el-option label="硬约束 HARD" value="HARD" />
           </el-select>
@@ -556,9 +528,7 @@ function mvpRuleMissing(): boolean {
 
     <div class="drawer-footer">
       <el-button @click="onClose">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="onSave">
-        保存策略
-      </el-button>
+      <el-button type="primary" :loading="saving" @click="onSave"> 保存策略 </el-button>
     </div>
   </el-drawer>
 </template>

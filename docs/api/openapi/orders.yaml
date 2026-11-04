@@ -309,6 +309,7 @@ paths:
         '422':
           $ref: '#/components/responses/Unprocessable'
   /orders/atp:
+    x-milestone: M3
     post:
       operationId: atp
       tags: [订单]
@@ -411,7 +412,117 @@ paths:
           $ref: '#/components/responses/Conflict'
         '501':
           $ref: '#/components/responses/NotImplemented'
+  /strategies/{id}:
+    get:
+      operationId: getStrategy
+      tags: [策略]
+      summary: 策略详情
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。返回含 rules 的策略视图。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateStrategy
+      tags: [策略]
+      summary: 更新策略（全量替换 rules）
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。需携带 version 乐观锁。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyUpdateRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategy'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /strategies/{id}/export:
+    get:
+      operationId: exportStrategy
+      tags: [策略]
+      summary: 导出策略
+      description: |
+        C19 冻结形状为 `data = {strategy, rules, checksum}`，`checksum` 必出现：记录摘要（文件完整性），即 `SHA-256(canonical({strategy, rules}))`，其中 `strategy` 含 `id` 与乐观锁 `version`（hex 64 位）；同一内容从不同记录导出值不同属预期。
+        实现现状（2026-11-04 核对）：当前返回扁平 StrategyExportPayload（9 字段、无 checksum），未按 wrapper 返回
+        → **实现待补，M2 收口前必须补齐（W2）**，故标 partial；补齐前不得翻 implemented。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategyExport'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /strategies/import:
+    post:
+      operationId: importStrategy
+      tags: [策略]
+      summary: 导入策略
+      description: |
+        C19 冻结：请求 `{payload, dryRun}`，响应 `{valid, errors[], strategyId, existing}`。先按记录摘要校验文件完整性（缺失/非法/不一致 → 422/42200），再按剔除 id/version 的内容摘要比对（相同 → 200 幂等 existing=true；不同 → 409/40901，禁止自动升版本）。`dryRun=true` 共用同一套判定但不落库。
+        实现现状（2026-11-04 核对）：当前只接收扁平 StrategyExportPayload、无 `dryRun` 参数，直接落库
+        → **M2 必须补（W2）**，故标 partial。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StrategyImportRequest'
+      responses:
+        '200':
+          description: 校验/导入结果（幂等命中返回既有 strategyId 且 existing=true；dryRun=true 时不落库，strategyId 为 null）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfStrategyImport'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
   /sandboxes:
+    x-milestone: M3
     get:
       operationId: listSandboxes
       tags: [场景]
@@ -459,6 +570,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /sandboxes/{id}/apply:
+    x-milestone: M3
     post:
       operationId: applySandbox
       tags: [场景]
@@ -487,6 +599,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /sandboxes/{id}/compare:
+    x-milestone: M3
     get:
       operationId: compareSandbox
       tags: [场景]
@@ -856,6 +969,165 @@ components:
           type: object
         applyCondition:
           type: object
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyRule'
+        ruleCount:
+          type: integer
+        weightSum:
+          type: number
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    StrategyRule:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        phase:
+          type: string
+          enum: [INITIAL, OPTIMIZATION]
+        type:
+          type: string
+          enum: [HARD, SOFT]
+        weight:
+          type: number
+        params:
+          type: object
+        enabled:
+          type: boolean
+        seqNo:
+          type: integer
+    StrategyUpdateRequest:
+      type: object
+      required: [version]
+      properties:
+        version:
+          type: integer
+          description: 乐观锁版本，必填
+        name:
+          type: string
+          maxLength: 128
+        direction:
+          $ref: '#/components/schemas/StrategyDirection'
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        initialRules:
+          type: object
+        applyCondition:
+          type: object
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyRule'
+    StrategyExportPayload:
+      type: object
+      description: 实现当前的扁平导出载荷（9 字段、无 checksum）；C19 冻结形状见 StrategyExportPackage。
+      required: [formatVersion, name, direction, strategyVersion]
+      properties:
+        formatVersion:
+          type: string
+          example: '1.0'
+        name:
+          type: string
+        direction:
+          $ref: '#/components/schemas/StrategyDirection'
+        strategyVersion:
+          type: integer
+        effectiveFrom:
+          type: string
+          format: date
+        effectiveTo:
+          type: string
+          format: date
+          nullable: true
+        initialRules:
+          type: object
+        applyCondition:
+          type: object
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyRule'
+    StrategyExportPackage:
+      type: object
+      description: C19 冻结导出形状；checksum 必出现，是记录摘要（文件完整性）：SHA-256(canonical({strategy, rules}))，其中 strategy 含 id 与乐观锁 version。
+      required: [strategy, rules, checksum]
+      properties:
+        strategy:
+          $ref: '#/components/schemas/StrategyExportPayload'
+          description: 策略头与规则集（实现当前为扁平载荷；补齐时按 C19 拆出 rules）
+        rules:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyRule'
+        checksum:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: 记录摘要（文件完整性），SHA-256(canonical({strategy, rules}))，strategy 含 id 与乐观锁 version；仅用于回灌前判断文件是否被改动，同一内容从不同记录导出值不同属预期，不得作为内容同一性判据
+    ResultOfStrategyExport:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/StrategyExportPackage'
+    StrategyImportRequest:
+      type: object
+      required: [payload]
+      properties:
+        payload:
+          $ref: '#/components/schemas/StrategyExportPayload'
+        dryRun:
+          type: boolean
+          default: false
+          description: true 只做校验、不落库
+    StrategyImportIssue:
+      type: object
+      properties:
+        code:
+          type: string
+        field:
+          type: string
+        message:
+          type: string
+    StrategyImportResult:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyImportIssue'
+        strategyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: dryRun=false 时给出（新建成功返回新 id，幂等命中返回既有 id）；dryRun=true 时为 null
+        existing:
+          type: boolean
+          default: false
+          description: 为 true 仅表示本次没有新建、没有升版本、没有写 rules（幂等命中既有记录）；缺省 false，不能用 strategyId 相同与否替代
+    ResultOfStrategyImport:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/StrategyImportResult'
     SandboxType:
       type: string
       enum: [BASELINE, WHAT_IF, ARCHIVED]

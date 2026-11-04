@@ -1223,6 +1223,7 @@ paths:
         '501':
           $ref: '#/components/responses/NotImplemented'
   /mrp/suggestions:
+    x-milestone: M3
     get:
       operationId: mrpSuggestions
       tags: [MRP]
@@ -1291,6 +1292,12 @@ components:
             $ref: '#/components/schemas/Result'
     Conflict:
       description: 状态或幂等冲突（code=40900/40901）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Unprocessable:
+      description: 业务校验失败（code=42200）
       content:
         application/json:
           schema:

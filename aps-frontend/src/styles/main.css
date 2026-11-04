@@ -10,6 +10,8 @@
   --primary-dark: #2f6eba;
   --primary-light: rgba(59, 138, 232, 0.14);
   --primary-bg: rgba(59, 138, 232, 0.1);
+  /* 辅助强调色：班次时间轴第 6 色（其余 5 色取状态色） */
+  --accent: #9b59b6;
 
   /* 背景层级 */
   --bg: #0a1322;
@@ -36,6 +38,13 @@
   --danger-bg: rgba(244, 105, 107, 0.13);
   --info: #93a8c6;
   --info-bg: rgba(147, 168, 198, 0.12);
+
+  /* 甘特图领域令牌（B3）：跨组件共享色值先收敛，再在组件内引用；几何尺寸不入令牌 */
+  --gantt-bar-run: var(--primary);
+  --gantt-bar-frozen: #909399;
+  --gantt-bar-frozen-light: #b4b6bb;
+  --gantt-setup-stripe: #c8c9cc;
+  --gantt-setup-fill: #e9e9eb;
 
   /* 形状 */
   --radius: 12px;
@@ -134,7 +143,11 @@
   --el-table-header-text-color: var(--text);
   --el-card-bg-color: var(--card);
   --el-card-border-color: var(--border);
+  --el-card-border-radius: var(--radius);
   --el-dialog-bg-color: var(--card);
+  --el-dialog-border-radius: var(--radius);
+  --el-drawer-padding-primary: var(--space-5);
+  --el-border-radius-base: var(--radius-sm);
   --el-menu-bg-color: var(--sidebar-bg);
   --el-menu-text-color: var(--text-2);
   --el-menu-active-color: var(--text);
@@ -164,6 +177,61 @@ body {
   color: var(--text);
   background: var(--bg);
   font-size: var(--font-base);
+}
+
+/* 统一键盘焦点环：仅键盘导航触发，鼠标点击不出现；用主色派生半透明，避免硬编码。 */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 70%, transparent);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+   响应式（B5）：≥1440 用基础令牌；1024–1439 收缩侧栏与内容内边距；
+   <1024 进一步压缩侧栏、顶栏与弹层宽度
+   ============================================================ */
+@media (max-width: 1439px) {
+  :root {
+    --sidebar-w: 188px;
+    --content-pad-x: 20px;
+    --content-pad-top: 18px;
+    --content-pad-bottom: 32px;
+  }
+
+  .el-table .el-scrollbar__wrap {
+    overflow-x: auto;
+  }
+
+  .el-drawer {
+    max-width: 92vw;
+  }
+
+  .el-dialog {
+    max-width: 92vw;
+  }
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --sidebar-w: 164px;
+    --content-pad-x: var(--space-4);
+    --content-pad-top: var(--space-4);
+    --content-pad-bottom: var(--space-6);
+    --font-title: 18px;
+  }
+
+  .el-table .el-scrollbar__wrap {
+    overflow-x: auto;
+  }
+
+  .el-drawer {
+    width: 100% !important;
+    max-width: 100vw;
+  }
+
+  .el-dialog {
+    width: calc(100vw - var(--space-6)) !important;
+    max-width: 100vw;
+  }
 }
 
 .el-main {

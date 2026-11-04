@@ -70,7 +70,14 @@ function segmentsOfDay(day: number): Segment[] {
 }
 
 function colorOf(index: number): string {
-  const palette = ['#409eff', '#67c23a', '#e6a23c', '#f56c6c', '#909399', '#9b59b6']
+  const palette = [
+    'var(--primary)',
+    'var(--ok)',
+    'var(--warn)',
+    'var(--danger)',
+    'var(--text-3)',
+    'var(--accent)'
+  ]
   return palette[index % palette.length]
 }
 </script>
@@ -114,7 +121,7 @@ function colorOf(index: number): string {
     </div>
     <div class="legend">
       <span class="legend-item">
-        <i class="legend-dot" style="background-color: #409eff" />
+        <i class="legend-dot" style="background-color: var(--primary)" />
         同一颜色代表同一班次；跨零点班次会拆成两段显示。
       </span>
     </div>
@@ -123,10 +130,10 @@ function colorOf(index: number): string {
 
 <style scoped>
 .timeline {
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 12px;
-  background: #fafcff;
+  background: var(--card);
 }
 
 .timeline-header,
@@ -136,7 +143,7 @@ function colorOf(index: number): string {
 }
 
 .timeline-header {
-  color: #909399;
+  color: var(--text-3);
   font-size: 12px;
   margin-bottom: 4px;
 }
@@ -145,7 +152,7 @@ function colorOf(index: number): string {
   width: 44px;
   flex: 0 0 44px;
   font-size: 12px;
-  color: #606266;
+  color: var(--text-2);
 }
 
 .hours {
@@ -171,8 +178,8 @@ function colorOf(index: number): string {
   position: relative;
   flex: 1;
   height: 22px;
-  background: #fff;
-  border: 1px solid #ebeef5;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -182,7 +189,7 @@ function colorOf(index: number): string {
   top: 0;
   bottom: 0;
   width: 1px;
-  background: #f2f6fc;
+  background: var(--border);
 }
 
 .bar {
@@ -195,7 +202,7 @@ function colorOf(index: number): string {
 
 .legend {
   margin-top: 8px;
-  color: #909399;
+  color: var(--text-3);
   font-size: 12px;
 }
 

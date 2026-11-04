@@ -268,7 +268,7 @@ onMounted(() => {
 <style scoped>
 .selected-hint {
   margin-top: 12px;
-  color: #606266;
+  color: var(--text-2);
   font-size: 13px;
 }
 </style>

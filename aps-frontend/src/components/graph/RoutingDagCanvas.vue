@@ -51,15 +51,16 @@ const flowNodes = ref<Node[]>([])
 const flowEdges = ref<Edge[]>([])
 const { fitView } = useVueFlow()
 
-const EDGE_LABEL_STYLE = {
-  fontSize: '12px',
-  fill: '#475569',
-  fontWeight: 600
-}
+const tokenCache = new Map<string, string>()
 
-const EDGE_LABEL_BG_STYLE = {
-  fill: '#f1f5f9',
-  stroke: '#cbd5e1'
+/** 设计令牌 → 具体色值：Vue Flow 的 SVG 标签样式需要实色，统一走 :root 解析。 */
+function tokenColor(name: string): string {
+  let value = tokenCache.get(name)
+  if (value === undefined) {
+    value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    tokenCache.set(name, value)
+  }
+  return value
 }
 
 function toFlowNode(node: RoutingNode): Node {
@@ -85,8 +86,15 @@ function toFlowEdge(edge: RoutingEdge): Edge {
     type: 'smoothstep',
     markerEnd: MarkerType.ArrowClosed,
     label: edge.lagMinutes > 0 ? `${edge.dependType} +${edge.lagMinutes}min` : edge.dependType,
-    labelStyle: EDGE_LABEL_STYLE,
-    labelBgStyle: EDGE_LABEL_BG_STYLE,
+    labelStyle: {
+      fontSize: '12px',
+      fill: tokenColor('--text-2'),
+      fontWeight: 600
+    },
+    labelBgStyle: {
+      fill: tokenColor('--bg-soft'),
+      stroke: tokenColor('--border')
+    },
     labelBgPadding: [6, 3],
     labelBgBorderRadius: 4,
     class: [
@@ -232,7 +240,7 @@ function hasIssue(id: string): boolean {
   height: 560px;
   border: 1px solid var(--el-border-color-light);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--bg-soft);
   overflow: hidden;
 }
 
@@ -264,15 +272,15 @@ function hasIssue(id: string): boolean {
   align-items: stretch;
   min-width: 210px;
   max-width: 240px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 2px 6px rgb(15 23 42 / 8%);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
 }
 
 .routing-node.is-selected {
   border-color: var(--el-color-primary);
-  box-shadow: 0 0 0 2px rgb(64 158 255 / 18%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 18%, transparent);
 }
 
 .routing-node.is-invalid {
@@ -280,7 +288,7 @@ function hasIssue(id: string): boolean {
 }
 
 .routing-node.is-readonly {
-  background: #f8fafc;
+  background: var(--bg-soft);
 }
 
 .node-seq {
@@ -288,8 +296,8 @@ function hasIssue(id: string): boolean {
   align-items: center;
   justify-content: center;
   width: 38px;
-  background: #334155;
-  color: #fff;
+  background: var(--border-strong);
+  color: var(--text);
   font-weight: 700;
   font-size: 13px;
 }
@@ -303,7 +311,7 @@ function hasIssue(id: string): boolean {
 .node-title {
   font-weight: 600;
   font-size: 13px;
-  color: #0f172a;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -330,18 +338,18 @@ function hasIssue(id: string): boolean {
   border-radius: 3px;
   font-size: 10px;
   line-height: 16px;
-  background: #eef2f7;
-  color: #475569;
+  background: var(--bg-soft);
+  color: var(--text-2);
 }
 
 .node-tag-optional {
-  background: #ecfdf5;
-  color: #047857;
+  background: var(--ok-bg);
+  color: var(--ok);
 }
 
 .node-tag-error {
-  background: #fef2f2;
-  color: #b91c1c;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 :deep(.flow-node-invalid .routing-node) {

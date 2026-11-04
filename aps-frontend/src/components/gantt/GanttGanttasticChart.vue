@@ -15,11 +15,23 @@ const props = withDefaults(
   { rowHeight: 34 }
 )
 
-const STATUS_BACKGROUND: Record<TaskStatus, string> = {
-  PLANNED: '#409eff',
-  FROZEN: '#e6a23c',
-  IN_PROGRESS: '#67c23a',
-  COMPLETED: '#909399'
+const STATUS_TOKEN: Record<TaskStatus, string> = {
+  PLANNED: '--gantt-bar-run',
+  FROZEN: '--warn',
+  IN_PROGRESS: '--ok',
+  COMPLETED: '--text-3'
+}
+
+const tokenCache = new Map<string, string>()
+
+/** 设计令牌 → 具体色值：canvas / 内联样式无法直接使用 var()，统一走 :root 解析。 */
+function tokenColor(name: string): string {
+  let value = tokenCache.get(name)
+  if (value === undefined) {
+    value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    tokenCache.set(name, value)
+  }
+  return value
 }
 
 interface GanttasticBar {
@@ -56,7 +68,7 @@ function toBars(bar: GanttBarModel): GanttasticBar[] {
         immobile: true,
         style: {
           background:
-            'repeating-linear-gradient(-45deg, #c8c9cc, #c8c9cc 3px, #e9e9eb 3px, #e9e9eb 6px)',
+            'repeating-linear-gradient(-45deg, var(--gantt-setup-stripe), var(--gantt-setup-stripe) 3px, var(--gantt-setup-fill) 3px, var(--gantt-setup-fill) 6px)',
           borderRadius: '2px',
           height: '6px'
         }
@@ -71,10 +83,10 @@ function toBars(bar: GanttBarModel): GanttasticBar[] {
       label: bar.operationName ?? bar.orderNo,
       immobile: true,
       style: {
-        background: STATUS_BACKGROUND[bar.status],
+        background: tokenColor(STATUS_TOKEN[bar.status]),
         borderRadius: '3px',
-        color: '#fff',
-        fontSize: '11px'
+        color: 'var(--text)',
+        fontSize: 'var(--font-xs)'
       }
     }
   })
@@ -114,8 +126,8 @@ const rows = computed(() =>
   width: 100%;
   max-height: 560px;
   overflow: auto;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  background: #fff;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
 }
 </style>

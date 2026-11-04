@@ -819,7 +819,7 @@ onMounted(() => {
                 refY="3"
                 orient="auto"
               >
-                <path d="M0,0 L6,3 L0,6 Z" fill="#409eff" />
+                <path d="M0,0 L6,3 L0,6 Z" style="fill: var(--primary)" />
               </marker>
               <marker
                 id="gantt-arrow-violated"
@@ -829,7 +829,7 @@ onMounted(() => {
                 refY="3"
                 orient="auto"
               >
-                <path d="M0,0 L6,3 L0,6 Z" fill="#f56c6c" />
+                <path d="M0,0 L6,3 L0,6 Z" style="fill: var(--danger)" />
               </marker>
             </defs>
             <path
@@ -894,18 +894,18 @@ onMounted(() => {
 <style scoped>
 .gantt-timeline {
   display: flex;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #fff;
+  background: var(--card);
   position: relative;
 }
 
 .gantt-heads {
   flex: 0 0 auto;
   overflow: hidden;
-  border-right: 1px solid #dcdfe6;
-  background: #fafafa;
+  border-right: var(--border-width) solid var(--border);
+  background: var(--bg-soft);
 }
 
 .gantt-heads__corner {
@@ -915,12 +915,12 @@ onMounted(() => {
   height: 44px;
   display: flex;
   align-items: center;
-  padding: 0 12px;
-  font-size: 13px;
+  padding: 0 var(--space-3);
+  font-size: var(--font-sm);
   font-weight: 600;
-  color: #606266;
-  background: #f2f4f7;
-  border-bottom: 1px solid #dcdfe6;
+  color: var(--text-2);
+  background: var(--bg-soft);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .gantt-heads__canvas {
@@ -934,29 +934,29 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  padding: 0 12px;
-  border-bottom: 1px solid #ebeef5;
+  padding: 0 var(--space-3);
+  border-bottom: var(--border-width) solid var(--border);
   overflow: hidden;
 }
 
 .gantt-heads__name {
-  font-size: 13px;
-  color: #303133;
+  font-size: var(--font-sm);
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .gantt-heads__meta {
-  font-size: 11px;
-  color: #909399;
+  font-size: var(--font-xs);
+  color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .gantt-heads__conflict {
-  color: #f56c6c;
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -965,31 +965,31 @@ onMounted(() => {
 }
 
 .gantt-heads__calendar.is-bound {
-  color: #67c23a;
+  color: var(--ok);
 }
 
 .gantt-heads__calendar.is-unbound {
-  color: #e6a23c;
+  color: var(--warn);
 }
 
 .gantt-heads__calendar.is-missing,
 .gantt-heads__calendar.is-error {
-  color: #f56c6c;
+  color: var(--danger);
 }
 
 .gantt-heads__calendar.is-none {
-  color: #c0c4cc;
+  color: var(--text-3);
 }
 
 .gantt-heads__late {
-  color: #f56c6c;
+  color: var(--danger);
   font-style: normal;
   font-weight: 600;
   margin-left: 2px;
 }
 
 .gantt-heads__freeze {
-  color: #909399;
+  color: var(--text-3);
   font-weight: 600;
 }
 
@@ -999,7 +999,7 @@ onMounted(() => {
   top: 0;
   bottom: 0;
   width: 0;
-  border-left: 1px dashed #e6a23c;
+  border-left: 1px dashed var(--warn);
   pointer-events: none;
   z-index: 1;
 }
@@ -1017,32 +1017,32 @@ onMounted(() => {
   position: sticky;
   top: 0;
   z-index: 2;
-  background: #f2f4f7;
-  border-bottom: 1px solid #dcdfe6;
+  background: var(--bg-soft);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .gantt-axis__tick {
   position: absolute;
   top: 0;
   height: 100%;
-  border-left: 1px solid #dcdfe6;
+  border-left: var(--border-width) solid var(--border);
 }
 
 .gantt-axis__tick.is-major {
-  border-left-color: #c0c4cc;
+  border-left-color: var(--border-strong);
 }
 
 .gantt-axis__label {
   position: absolute;
   top: 8px;
   left: 4px;
-  font-size: 11px;
-  color: #606266;
+  font-size: var(--font-xs);
+  color: var(--text-2);
   white-space: nowrap;
 }
 
 .gantt-axis__tick.is-major .gantt-axis__label {
-  color: #303133;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -1057,7 +1057,7 @@ onMounted(() => {
 .gantt-grid {
   position: absolute;
   inset: 0;
-  background-image: linear-gradient(to right, #ebeef5 1px, transparent 1px);
+  background-image: linear-gradient(to right, var(--border) 1px, transparent 1px);
   pointer-events: none;
 }
 
@@ -1065,11 +1065,11 @@ onMounted(() => {
   position: absolute;
   left: 0;
   right: 0;
-  border-bottom: 1px solid #f2f3f5;
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .gantt-row:nth-child(even) {
-  background: rgba(250, 250, 250, 0.6);
+  background: color-mix(in srgb, var(--card) 60%, transparent);
 }
 
 .gantt-heat {
@@ -1080,15 +1080,15 @@ onMounted(() => {
 }
 
 .gantt-heat.heat-green {
-  background: rgba(103, 194, 58, 0.16);
+  background: color-mix(in srgb, var(--ok) 16%, transparent);
 }
 
 .gantt-heat.heat-yellow {
-  background: rgba(230, 162, 60, 0.24);
+  background: color-mix(in srgb, var(--warn) 24%, transparent);
 }
 
 .gantt-heat.heat-red {
-  background: rgba(245, 108, 108, 0.28);
+  background: color-mix(in srgb, var(--danger) 28%, transparent);
 }
 
 /* 日历停机层（C14 事实）：班次休息 / 非排班日 / 非工作例外日，均来自资源工作日历。 */
@@ -1100,15 +1100,15 @@ onMounted(() => {
 }
 
 .gantt-calendar-off.off-holiday {
-  background: rgba(245, 108, 108, 0.14);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 
 .gantt-calendar-off.off-non_workday {
-  background: rgba(144, 147, 153, 0.2);
+  background: color-mix(in srgb, var(--text-3) 20%, transparent);
 }
 
 .gantt-calendar-off.off-off_shift {
-  background: rgba(64, 158, 255, 0.09);
+  background: color-mix(in srgb, var(--primary) 9%, transparent);
 }
 
 .gantt-idle {
@@ -1118,10 +1118,10 @@ onMounted(() => {
   border-radius: 2px;
   background: repeating-linear-gradient(
     -45deg,
-    rgba(144, 147, 153, 0.16),
-    rgba(144, 147, 153, 0.16) 4px,
-    rgba(144, 147, 153, 0.06) 4px,
-    rgba(144, 147, 153, 0.06) 8px
+    color-mix(in srgb, var(--text-3) 16%, transparent),
+    color-mix(in srgb, var(--text-3) 16%, transparent) 4px,
+    color-mix(in srgb, var(--text-3) 6%, transparent) 4px,
+    color-mix(in srgb, var(--text-3) 6%, transparent) 8px
   );
   pointer-events: none;
 }
@@ -1136,13 +1136,13 @@ onMounted(() => {
 
 .gantt-link {
   fill: none;
-  stroke: #409eff;
+  stroke: var(--primary);
   stroke-width: 1.2;
   opacity: 0.9;
 }
 
 .gantt-link.is-violated {
-  stroke: #f56c6c;
+  stroke: var(--danger);
   stroke-width: 1.6;
   stroke-dasharray: 4 3;
 }
@@ -1156,9 +1156,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 0 4px;
-  font-size: 11px;
-  color: #fff;
+  padding: 0 var(--space-1);
+  font-size: var(--font-xs);
+  color: var(--text);
   overflow: hidden;
   cursor: default;
   box-sizing: border-box;
@@ -1173,61 +1173,61 @@ onMounted(() => {
 .gantt-bar__lock {
   flex: 0 0 auto;
   font-size: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  border: 1px solid color-mix(in srgb, var(--text) 70%, transparent);
   border-radius: 2px;
   padding: 0 2px;
   line-height: 12px;
 }
 
 .gantt-bar.tag-primary {
-  background: #409eff;
+  background: var(--gantt-bar-run);
 }
 
 .gantt-bar.tag-success {
-  background: #67c23a;
+  background: var(--ok);
 }
 
 .gantt-bar.tag-warning {
-  background: #e6a23c;
+  background: var(--warn);
 }
 
 .gantt-bar.tag-info {
-  background: #909399;
+  background: var(--text-3);
 }
 
 /* 冻结层：PRD BR-GT-001-06 要求灰色背景 + 锁标识，视觉上明确不可拖。 */
 .gantt-bar.is-frozen {
-  background: linear-gradient(180deg, #b4b6bb, #909399);
-  border: 1px dashed #606266;
+  background: linear-gradient(180deg, var(--gantt-bar-frozen-light), var(--gantt-bar-frozen));
+  border: 1px dashed var(--text-2);
   cursor: not-allowed;
 }
 
 .gantt-bar.is-conflict {
-  outline: 2px solid #f56c6c;
+  outline: 2px solid var(--danger);
   outline-offset: -1px;
   z-index: 2;
 }
 
 /* 延期任务（C29 late）：左侧红条，与订单行头延期分钟同源。 */
 .gantt-bar.is-late {
-  box-shadow: inset 3px 0 0 #f56c6c;
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 /* 工时窗锁 / 资源锁：锁标识在条内，视觉与订单冻结区分。 */
 .gantt-bar.is-window-locked,
 .gantt-bar.is-resource-locked {
-  border: 1px solid #e6a23c;
+  border: 1px solid var(--warn);
 }
 
 /* 任务占用落在资源日历非工作时段（订单视图 C14 校验）。 */
 .gantt-bar.is-off-calendar {
-  border: 1px dashed #e6a23c;
+  border: 1px dashed var(--warn);
 }
 
 .gantt-bar__off-calendar {
   flex: 0 0 auto;
   font-size: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  border: 1px solid color-mix(in srgb, var(--text) 70%, transparent);
   border-radius: 2px;
   padding: 0 2px;
   line-height: 12px;
@@ -1235,17 +1235,17 @@ onMounted(() => {
 
 /* 选中任务（M2-FE-03 调整面板目标）。 */
 .gantt-bar.is-selected {
-  outline: 2px solid #303133;
+  outline: 2px solid var(--text);
   outline-offset: 1px;
   z-index: 3;
 }
 
 /* 键盘聚焦必须可见：覆盖 bracket 冲突/选中态，保证 Tab 后能看出当前任务条。 */
 .gantt-bar:focus-visible {
-  outline: 2px solid #79bbff;
+  outline: 2px solid var(--primary-hover);
   outline-offset: 2px;
   z-index: 4;
-  box-shadow: 0 0 0 4px rgba(64, 158, 255, 0.28);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 28%, transparent);
 }
 
 .gantt-body {
@@ -1257,7 +1257,13 @@ onMounted(() => {
   top: 27px;
   height: 4px;
   border-radius: 2px;
-  background: repeating-linear-gradient(-45deg, #c8c9cc, #c8c9cc 3px, #e9e9eb 3px, #e9e9eb 6px);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--gantt-setup-stripe),
+    var(--gantt-setup-stripe) 3px,
+    var(--gantt-setup-fill) 3px,
+    var(--gantt-setup-fill) 6px
+  );
   box-sizing: border-box;
 }
 
@@ -1265,14 +1271,14 @@ onMounted(() => {
   position: fixed;
   z-index: 10000;
   max-width: 360px;
-  padding: 8px 10px;
-  border-radius: 4px;
-  background: rgba(48, 49, 51, 0.94);
-  color: #fff;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  color: var(--text);
+  font-size: var(--font-xs);
   line-height: 18px;
   pointer-events: none;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-sm);
 }
 
 .gantt-tooltip__title {
@@ -1281,8 +1287,8 @@ onMounted(() => {
 }
 
 .gantt-tooltip__conflict {
-  color: #ffb3b3;
-  border-top: 1px dashed rgba(255, 255, 255, 0.24);
+  color: var(--danger);
+  border-top: 1px dashed color-mix(in srgb, var(--text) 24%, transparent);
   margin-top: 3px;
   padding-top: 3px;
 }

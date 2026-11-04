@@ -22,6 +22,18 @@ const props = withDefaults(
 const containerRef = ref<HTMLElement | null>(null)
 const zoomPercent: Record<GanttZoom, number> = { hour: 15, day: 45, week: 100, month: 100 }
 
+const tokenCache = new Map<string, string>()
+
+/** 设计令牌 → 具体色值：canvas 无法直接使用 var()，统一走 :root 解析。 */
+function tokenColor(name: string): string {
+  let value = tokenCache.get(name)
+  if (value === undefined) {
+    value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    tokenCache.set(name, value)
+  }
+  return value
+}
+
 let chart: ReturnType<typeof echarts.init> | null = null
 let resizeObserver: ResizeObserver | null = null
 
@@ -67,7 +79,7 @@ function buildOption(): Record<string, unknown> {
     row.bars.forEach((task) => {
       runData.push({
         value: [rowIndex, Date.parse(task.startTime), Date.parse(task.endTime)],
-        itemStyle: { color: '#409eff' },
+        itemStyle: { color: tokenColor('--gantt-bar-run') },
         task,
         kind: 'run'
       })
@@ -77,7 +89,7 @@ function buildOption(): Record<string, unknown> {
         if (setupEnd > setupStart) {
           setupData.push({
             value: [rowIndex, setupStart, setupEnd],
-            itemStyle: { color: '#c8c9cc' },
+            itemStyle: { color: tokenColor('--gantt-setup-stripe') },
             task,
             kind: 'setup'
           })
@@ -206,9 +218,9 @@ onBeforeUnmount(() => {
 <style scoped>
 .gantt-echarts {
   width: 100%;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
-  background: #fff;
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
   overflow: hidden;
 }
 

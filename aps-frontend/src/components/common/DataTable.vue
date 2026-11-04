@@ -84,13 +84,13 @@ function onSizeChange(size: number) {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .pagination {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 </style>

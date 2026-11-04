@@ -274,7 +274,7 @@ watch(
 
 <style scoped>
 .form-hint {
-  color: #909399;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.6;
 }

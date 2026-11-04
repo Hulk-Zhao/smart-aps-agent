@@ -452,12 +452,19 @@ onMounted(() => {
       <template #header>发布</template>
       <div class="form-grid">
         <div class="form-field">
-          <label class="field-label">发布原因 reason</label>
-          <el-input v-model="publishReason" maxlength="500" show-word-limit placeholder="可选" />
+          <label class="field-label" for="plan-publish-reason">发布原因 reason</label>
+          <el-input
+            id="plan-publish-reason"
+            v-model="publishReason"
+            maxlength="500"
+            show-word-limit
+            placeholder="可选"
+          />
         </div>
         <div class="form-field">
-          <label class="field-label">审批人 approver</label>
+          <label class="field-label" for="plan-approver">审批人 approver</label>
           <el-input
+            id="plan-approver"
             v-model="approver"
             maxlength="64"
             placeholder="可选；留空则不记录审批人（落 NULL）"
@@ -479,8 +486,9 @@ onMounted(() => {
       <template #header>回滚</template>
       <div class="form-grid">
         <div class="form-field">
-          <label class="field-label">目标版本号 targetVersionNo</label>
+          <label class="field-label" for="plan-rollback-target">目标版本号 targetVersionNo</label>
           <el-input-number
+            id="plan-rollback-target"
             v-model="rollbackTarget"
             :min="1"
             :step="1"
@@ -489,8 +497,14 @@ onMounted(() => {
           />
         </div>
         <div class="form-field">
-          <label class="field-label">回滚原因 reason</label>
-          <el-input v-model="rollbackReason" maxlength="500" show-word-limit placeholder="可选" />
+          <label class="field-label" for="plan-rollback-reason">回滚原因 reason</label>
+          <el-input
+            id="plan-rollback-reason"
+            v-model="rollbackReason"
+            maxlength="500"
+            show-word-limit
+            placeholder="可选"
+          />
         </div>
         <div class="form-field form-actions">
           <el-button type="warning" :loading="rollingBack" @click="onRollback"
@@ -535,29 +549,29 @@ onMounted(() => {
 
 <style scoped>
 .hint-alert {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .section {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }
 
 .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .muted {
   color: var(--el-text-color-secondary);
-  font-size: 12px;
+  font-size: var(--font-xs);
   font-weight: 400;
 }
 
 .form-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -566,13 +580,13 @@ onMounted(() => {
 }
 
 .list-toolbar {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .form-grid {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: flex-end;
 }
 
@@ -590,17 +604,17 @@ onMounted(() => {
 }
 
 .field-label {
-  font-size: 12px;
+  font-size: var(--font-xs);
   color: var(--el-text-color-regular);
 }
 
 .field-hint {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-xs);
   color: var(--el-text-color-secondary);
 }
 
 .inline-alert {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 </style>

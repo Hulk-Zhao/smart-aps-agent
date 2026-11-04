@@ -466,7 +466,7 @@ onMounted(() => {
 
 .checksum-row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -476,12 +476,12 @@ onMounted(() => {
 }
 
 .dialog-alert {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .issue-summary {
-  margin: 12px 0 8px;
-  color: #606266;
-  font-size: 13px;
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--text-2);
+  font-size: var(--font-sm);
 }
 </style>

@@ -95,7 +95,7 @@ function substitutesText(items?: string[]): string {
   margin: 20px 0 8px;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .drawer-actions {

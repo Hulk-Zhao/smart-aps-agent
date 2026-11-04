@@ -933,7 +933,7 @@ watch(errorIssues, (current) => {
   padding: 6px 8px;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
-  background: #fff;
+  background: var(--card);
   cursor: pointer;
   text-align: left;
 }
@@ -947,8 +947,8 @@ watch(errorIssues, (current) => {
   min-width: 28px;
   padding: 0 4px;
   border-radius: 3px;
-  background: #334155;
-  color: #fff;
+  background: var(--border-strong);
+  color: var(--text);
   font-size: 11px;
   text-align: center;
 }

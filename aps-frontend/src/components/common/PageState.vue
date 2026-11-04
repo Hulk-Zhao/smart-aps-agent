@@ -37,6 +37,6 @@ const descriptionText = computed(
 
 <style scoped>
 .page-state {
-  padding: 16px 0;
+  padding: var(--space-4) 0;
 }
 </style>

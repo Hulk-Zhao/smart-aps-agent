@@ -117,4 +117,27 @@ async function copyTraceId() {
   color: var(--text-3);
   font-size: var(--font-xs);
 }
+
+/* 窄屏顶栏收缩：隐藏 traceId 文字标签，截断链路 ID，压缩左右内边距 */
+@media (max-width: 1439px) {
+  .trace :deep(.el-tag) {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (max-width: 1023px) {
+  .header {
+    padding: 0 var(--space-3);
+  }
+
+  .trace-label {
+    display: none;
+  }
+
+  .trace :deep(.el-tag) {
+    max-width: 88px;
+  }
+}
 </style>

@@ -564,33 +564,33 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 
 .toolbar__actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   padding-top: 2px;
 }
 
 .toolbar :deep(.el-form-item) {
-  margin-bottom: 8px;
-  margin-right: 16px;
+  margin-bottom: var(--space-2);
+  margin-right: var(--space-4);
 }
 
 .toolbar :deep(.el-checkbox) {
-  margin-right: 12px;
+  margin-right: var(--space-3);
 }
 
 .legend {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 14px;
-  margin: 4px 0 8px;
-  font-size: 12px;
-  color: #606266;
+  gap: var(--space-3);
+  margin: var(--space-1) 0 var(--space-2);
+  font-size: var(--font-xs);
+  color: var(--text-2);
 }
 
 .legend__title {
@@ -611,27 +611,35 @@ onMounted(() => {
 }
 
 .legend__dot.tag-primary {
-  background: #409eff;
+  background: var(--primary);
 }
 
 .legend__dot.tag-success {
-  background: #67c23a;
+  background: var(--ok);
 }
 
 .legend__dot.tag-warning {
-  background: #e6a23c;
+  background: var(--warn);
 }
 
 .legend__dot.tag-info {
-  background: #909399;
+  background: var(--text-3);
 }
 
 .legend__setup {
+  --setup-a: color-mix(in srgb, var(--text-3) 55%, var(--card));
+  --setup-b: var(--border);
   display: inline-block;
   width: 18px;
   height: 6px;
   border-radius: 2px;
-  background: repeating-linear-gradient(-45deg, #c8c9cc, #c8c9cc 3px, #e9e9eb 3px, #e9e9eb 6px);
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--setup-a),
+    var(--setup-a) 3px,
+    var(--setup-b) 3px,
+    var(--setup-b) 6px
+  );
 }
 
 .legend__frozen {
@@ -640,10 +648,14 @@ onMounted(() => {
   justify-content: center;
   width: 18px;
   height: 14px;
-  border: 1px dashed #606266;
+  border: 1px dashed var(--text-2);
   border-radius: 2px;
-  background: linear-gradient(180deg, #b4b6bb, #909399);
-  color: #fff;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--text-3) 55%, var(--card)),
+    var(--text-3)
+  );
+  color: var(--text);
   font-size: 10px;
   font-style: normal;
 }
@@ -652,9 +664,9 @@ onMounted(() => {
   display: inline-block;
   width: 16px;
   height: 12px;
-  border: 1px solid #f56c6c;
+  border: 1px solid var(--danger);
   border-radius: 2px;
-  background: #409eff;
+  background: var(--primary);
 }
 
 .legend__idle {
@@ -664,10 +676,10 @@ onMounted(() => {
   border-radius: 2px;
   background: repeating-linear-gradient(
     -45deg,
-    rgba(144, 147, 153, 0.3),
-    rgba(144, 147, 153, 0.3) 3px,
-    rgba(144, 147, 153, 0.08) 3px,
-    rgba(144, 147, 153, 0.08) 6px
+    color-mix(in srgb, var(--text-3) 30%, transparent),
+    color-mix(in srgb, var(--text-3) 30%, transparent) 3px,
+    color-mix(in srgb, var(--text-3) 8%, transparent) 3px,
+    color-mix(in srgb, var(--text-3) 8%, transparent) 6px
   );
 }
 
@@ -678,9 +690,9 @@ onMounted(() => {
   border-radius: 2px;
   background: linear-gradient(
     90deg,
-    rgba(144, 147, 153, 0.45) 0 6px,
-    rgba(64, 158, 255, 0.3) 6px 12px,
-    rgba(245, 108, 108, 0.35) 12px 18px
+    color-mix(in srgb, var(--text-3) 45%, transparent) 0 6px,
+    color-mix(in srgb, var(--primary) 30%, transparent) 6px 12px,
+    color-mix(in srgb, var(--danger) 35%, transparent) 12px 18px
   );
 }
 
@@ -688,30 +700,30 @@ onMounted(() => {
   display: inline-block;
   width: 22px;
   height: 2px;
-  background: #409eff;
+  background: var(--primary);
 }
 
 .scope-note,
 .perf-note {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-xs);
   line-height: 18px;
-  color: #909399;
+  color: var(--text-3);
 }
 
 .is-danger {
-  color: #f56c6c;
+  color: var(--danger);
 }
 
 .muted {
-  color: #909399;
+  color: var(--text-3);
   font-size: 11px;
 }
 
 .issue-list {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
   padding-left: 18px;
-  font-size: 12px;
+  font-size: var(--font-xs);
   line-height: 18px;
 }
 

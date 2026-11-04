@@ -140,16 +140,16 @@ watch(
 
 .tree-code {
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .tree-name {
-  color: #606266;
+  color: var(--text-2);
 }
 
 .tree-hint {
   margin-top: 12px;
-  color: #909399;
+  color: var(--text-3);
   font-size: 12px;
 }
 </style>

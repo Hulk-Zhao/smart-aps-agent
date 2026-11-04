@@ -623,7 +623,7 @@ watch(activeTab, (tab) => {
   margin: 12px 0;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .add-row {
@@ -638,7 +638,7 @@ watch(activeTab, (tab) => {
 
 .form-hint {
   margin-top: 6px;
-  color: #909399;
+  color: var(--text-3);
   font-size: 12px;
   line-height: 1.6;
 }

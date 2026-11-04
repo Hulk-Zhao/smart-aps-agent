@@ -535,20 +535,20 @@ function mvpRuleMissing(): boolean {
 
 <style scoped>
 .editor-alert {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .weight-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 8px 0 12px;
-  font-size: 13px;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: var(--font-sm);
 }
 
 .hint {
-  color: #909399;
-  font-size: 12px;
+  color: var(--text-3);
+  font-size: var(--font-xs);
 }
 
 .add-rule {
@@ -558,7 +558,7 @@ function mvpRuleMissing(): boolean {
 .drawer-footer {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 20px;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
 }
 </style>

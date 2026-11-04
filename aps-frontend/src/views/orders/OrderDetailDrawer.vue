@@ -99,25 +99,25 @@ const extAttrsText = computed(() =>
 
 <style scoped>
 .section-title {
-  margin: 20px 0 8px;
-  font-size: 14px;
+  margin: var(--space-5) 0 var(--space-2);
+  font-size: var(--font-base);
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .history-tip {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 .json-block {
-  margin: 0 0 16px;
-  padding: 12px;
+  margin: 0 0 var(--space-4);
+  padding: var(--space-3);
   max-height: 220px;
   overflow: auto;
-  border-radius: 4px;
-  background: #f5f7fa;
-  color: #606266;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  color: var(--text-2);
+  font-size: var(--font-xs);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
@@ -127,7 +127,7 @@ const extAttrsText = computed(() =>
   display: flex;
   justify-content: flex-end;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 24px;
+  gap: var(--space-2);
+  margin-top: var(--space-6);
 }
 </style>

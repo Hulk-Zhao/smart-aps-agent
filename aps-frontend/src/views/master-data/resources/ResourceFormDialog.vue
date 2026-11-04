@@ -496,7 +496,7 @@ watch(
   margin: 4px 0 12px;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .trial-inputs {

@@ -101,7 +101,7 @@ function close() {
   margin: 20px 0 8px;
   font-size: 14px;
   font-weight: 600;
-  color: #303133;
+  color: var(--text);
 }
 
 .json-block {
@@ -110,8 +110,8 @@ function close() {
   max-height: 220px;
   overflow: auto;
   border-radius: 4px;
-  background: #f5f7fa;
-  color: #606266;
+  background: var(--bg-soft);
+  color: var(--text-2);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;

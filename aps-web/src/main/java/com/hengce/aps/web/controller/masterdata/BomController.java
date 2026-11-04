@@ -9,6 +9,7 @@ import com.hengce.aps.service.masterdata.bom.BomService;
 import com.hengce.aps.service.masterdata.bom.BomStatus;
 import com.hengce.aps.service.masterdata.bom.BomTreeNodeView;
 import com.hengce.aps.service.masterdata.bom.BomView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -74,6 +75,7 @@ public class BomController {
      * @return 新建后的 BOM
      */
     @Operation(summary = "新建 BOM", description = "状态：已实现。同父件同版本返回 409/40900，物料缺失返回 422/42200。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping
     public Result<BomView> create(@Valid @RequestBody BomCreateRequest request) {
         return Result.success(bomService.create(request.toCommand()));
@@ -86,7 +88,8 @@ public class BomController {
      * @return BOM 详情
      */
     @Operation(summary = "BOM 详情", description = "状态：已实现。UUID 寻址（C6）。")
-    @GetMapping("/{bomId}")
+    // 排除通用导出/导入保留段，避免 GET /boms/export 被本方法抢先匹配（C38）
+    @GetMapping("/{bomId:^(?!export$)(?!import$).+}")
     public Result<BomView> get(@PathVariable UUID bomId) {
         return Result.success(bomService.get(bomId));
     }
@@ -110,6 +113,7 @@ public class BomController {
      * @return 激活后的 BOM
      */
     @Operation(summary = "激活 BOM", description = "状态：已实现。同父件双 ACTIVE 冲突返回 409/40901，无明细返回 422/42200。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping("/{id}/activate")
     public Result<BomView> activate(@PathVariable UUID id) {
         return Result.success(bomService.activate(id));
@@ -122,6 +126,7 @@ public class BomController {
      * @return 空响应
      */
     @Operation(summary = "删除 BOM", description = "状态：已实现。被订单或其它 BOM 子件行引用时返回 422/42200。")
+    @RequiresPermission("MD_WRITE")
     @DeleteMapping("/{bomId}")
     public Result<Void> delete(@PathVariable UUID bomId) {
         bomService.delete(bomId);

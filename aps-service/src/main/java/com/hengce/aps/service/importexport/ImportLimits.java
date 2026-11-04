@@ -5,8 +5,8 @@ package com.hengce.aps.service.importexport;
  */
 public final class ImportLimits {
 
-    /** 单个文件最大字节数（10MB）。 */
-    public static final long MAX_FILE_BYTES = 10L * 1024 * 1024;
+    /** 单个文件最大字节数（5MB，契约 C26 口径）。 */
+    public static final long MAX_FILE_BYTES = 5L * 1024 * 1024;
 
     /** 单次导入最大数据行数。 */
     public static final int MAX_ROWS = 5000;

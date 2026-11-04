@@ -1,8 +1,11 @@
 package com.hengce.aps.web.solve;
 
+import com.hengce.aps.web.config.ApiSecurityProperties;
 import com.hengce.aps.web.config.SolveProgressWebSocketConfiguration;
 import com.hengce.aps.web.controller.solve.SolveProgressStompBridge;
 import com.hengce.aps.web.controller.solve.SolveProgressSubscriptionListener;
+import com.hengce.aps.web.security.JwtTokenService;
+import com.hengce.aps.web.security.SolveProgressWebSocketAuthInterceptor;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.context.annotation.Import;
@@ -19,6 +22,7 @@ import org.springframework.context.annotation.Import;
         "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration"
 })
 @Import({SolveProgressWebSocketConfiguration.class, SolveProgressSubscriptionListener.class,
-        SolveProgressStompBridge.class})
+        SolveProgressStompBridge.class, ApiSecurityProperties.class, JwtTokenService.class,
+        SolveProgressWebSocketAuthInterceptor.class})
 public class SolveProgressStompTestApplication {
 }

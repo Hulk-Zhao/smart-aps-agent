@@ -105,7 +105,7 @@ fi
     echo ''
     echo '安装步骤:'
     echo '  1) docker load -i images/aps-stack-images.tar'
-    echo '  2) cp .env.example .env 并替换 POSTGRES_PASSWORD / REDIS_PASSWORD / MINIO_ROOT_PASSWORD / APS_JWT_SECRET'
+    echo '  2) cp .env.example .env 并替换 POSTGRES_PASSWORD / REDIS_PASSWORD / MINIO_ROOT_PASSWORD / APS_SECURITY_MODE / APS_SECURITY_JWT_SECRET'
     echo '  3) ./scripts/stack-up.sh --skip-pull'
     echo '  4) curl -fsS http://127.0.0.1:8080/api/v1/health'
     echo ''

@@ -9,6 +9,7 @@ import type {
   OrderQuery,
   OrderUpdateRequest,
   Sandbox,
+  SandboxApplyResult,
   SandboxCompare,
   SandboxCreateRequest,
   Strategy,
@@ -141,9 +142,11 @@ export async function cloneStrategy(
   return response.data
 }
 
-export async function listSandboxes(query: PageQuery = {}): Promise<PageResult<Sandbox>> {
+export async function listSandboxes(
+  query: PageQuery & { type?: string } = {}
+): Promise<PageResult<Sandbox>> {
   const response = await http.get<PageResult<Sandbox>>('/sandboxes', {
-    params: withPageQuery(query)
+    params: withPageQuery(query, { type: query.type })
   })
   return response.data
 }
@@ -158,10 +161,15 @@ export async function createSandbox(
   return response.data
 }
 
-export async function applySandbox(sandboxId: string, idempotencyKey?: string): Promise<Sandbox> {
-  const response = await http.post<Sandbox>(
+/** C32 `POST /sandboxes/{id}/apply`：Idempotency-Key 必传，reason 写入审计。 */
+export async function applySandbox(
+  sandboxId: string,
+  reason: string,
+  idempotencyKey: string
+): Promise<SandboxApplyResult> {
+  const response = await http.post<SandboxApplyResult>(
     `/sandboxes/${encodeURIComponent(sandboxId)}/apply`,
-    null,
+    { reason },
     { headers: idempotencyHeaders(idempotencyKey) }
   )
   return response.data

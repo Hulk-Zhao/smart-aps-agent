@@ -203,8 +203,6 @@ public final class TimefoldModelBuilder {
                 justifications,
                 new SolveMetrics(
                         elapsedMs,
-                        0L,
-                        0,
                         terminationReason,
                         List.of(),
                         assignments.size(),

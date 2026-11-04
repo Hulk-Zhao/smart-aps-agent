@@ -3,7 +3,7 @@ info:
   title: 衡策 APS - 甘特图与计划 API
   version: 0.1.0
   description: |
-    gantt 分组静态契约（P0-08）。当前已实现：C4（资源甘特）、C24（计划版本发布/回滚/列表/详情）、C29（订单甘特）；C21/C22 仍为占位。统一约定见 ../../docs/api/conventions.md。
+    gantt 分组静态契约（P0-08）。当前已实现：C4（资源甘特）、C24（计划版本发布/回滚/列表/详情）、C29（订单甘特）；C21/C22 为 partial（代码已落地、未做制品级 HTTP 验收）；C33 计划下发/状态为 partial。统一约定见 ../../docs/api/conventions.md。
     M2 冻结：C21（增量重排锁定）、C22（人工调整/撤销重做）、C24（计划版本发布回滚）、C29（订单甘特读接口）。
     所有时间字段为 ISO-8601 UTC；planId 一律使用 plan_version.id（UUID），不再以 sandboxId 充当计划 id。
     甘特图接口返回非分页结构；时间字段为 ISO-8601 UTC。
@@ -12,6 +12,7 @@ servers:
 tags:
   - name: 甘特图
   - name: 计划
+  - name: 计划下发
 paths:
   /gantt/resource:
     get:
@@ -299,6 +300,83 @@ paths:
                 $ref: '#/components/schemas/ResultOfPlanDetail'
         '404':
           $ref: '#/components/responses/NotFound'
+  /plans/{id}/dispatch:
+    x-milestone: M3
+    post:
+      operationId: dispatchPlan
+      tags: [计划下发]
+      summary: 计划下发
+      description: |
+        状态：代码已落地（PlanDispatchController#dispatch，aps-web/src/main/java/com/hengce/aps/web/controller/plan/PlanDispatchController.java:59-68）；
+        未做制品级 HTTP 验收，故标 partial（C33）。仅 PUBLISHED 生效；只写 outbox（QUEUED），不真实发送；
+        重复 Idempotency-Key 返回首次 dispatchId。字段取自 DispatchRequest/DispatchResultView，形状未经制品级验收。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 计划版本主键（plan_version.id）
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: 幂等键（≤128 字符）；同键重复返回首次 dispatchId
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DispatchRequest'
+      responses:
+        '200':
+          description: 成功（status 固定 QUEUED）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfDispatchResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /plans/{id}/dispatches:
+    x-milestone: M3
+    get:
+      operationId: listPlanDispatches
+      tags: [计划下发]
+      summary: 下发状态
+      description: |
+        状态：代码已落地（PlanDispatchController#dispatches，aps-web/src/main/java/com/hengce/aps/web/controller/plan/PlanDispatchController.java:80-85）；
+        未做制品级 HTTP 验收，故标 partial（C33）。按 createdAt 倒序；返回 QUEUED/SENT/PARTIAL/FAILED 聚合；
+        不扩展 PlanDetailView。字段取自 DispatchSummaryView，形状未经制品级验收。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 计划版本主键（plan_version.id）
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfDispatchSummaryPage'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /plans/{id}/publish:
     post:
       operationId: publishPlan
@@ -375,6 +453,44 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
+  /plans/compare:
+    post:
+      operationId: comparePlans
+      tags: [计划]
+      summary: 多计划版本对比与择优
+      description: |
+        状态：契约已冻结（C35，见 docs/api/contract-freeze.md §25.7.2）；W2 实现中，未上线前不可当作可用功能。
+        纯读：不落库、不产生新计划版本；同一输入重复调用返回同一结果（天然幂等，不使用 Idempotency-Key）。
+        权限：SS_READ；权限不足返回 403/40300。
+        `planIds` 按去重后计数，必须为 2–3 个 planId（plan_version.id，UUID）；缺失或个数越界 → 400/40000；
+        任一计划不存在或其版本无快照 → 422/42200。
+        选优确定性可复现：scoreHard 降序（越大越优，0 为无硬违约）→ scoreSoft 降序 → planId 字符串升序；
+        recommendedPlanId 取排序第一，不得随机选或取最新。
+        `metrics` 为 solve_task.metrics 原样 map，不重命名、不裁剪键；不得出现 stepCount/unimprovedStepCount（§24.2 已冻结不再输出）。
+      x-implementation-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanCompareRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfPlanCompare'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: 权限不足（code=40300）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
 components:
   parameters:
     SandboxId:
@@ -410,6 +526,23 @@ components:
         type: string
         minLength: 8
         maxLength: 128
+    Page:
+      name: page
+      in: query
+      description: 页码，从 1 开始
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Size:
+      name: size
+      in: query
+      description: 每页条数，默认 20，上限 200
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 20
   responses:
     BadRequest:
       description: 参数错误（code=40000）
@@ -829,6 +962,166 @@ components:
                   type: array
                   items:
                     $ref: '#/components/schemas/PlanVersionSummary'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    PlanCompareRequest:
+      type: object
+      required: [planIds]
+      properties:
+        planIds:
+          type: array
+          description: 待对比的 planId（plan_version.id，UUID）；按去重后计数必须为 2–3 个
+          minItems: 2
+          maxItems: 3
+          items:
+            type: string
+            format: uuid
+    PlanCompareItem:
+      type: object
+      description: 单个计划版本的对比项；metrics 为 solve_task.metrics 原样透传
+      required: [planId, planNo, version, scoreHard, scoreSoft, taskCount, metrics]
+      properties:
+        planId:
+          type: string
+          format: uuid
+        planNo:
+          type: string
+        version:
+          type: integer
+          description: 业务版本号（version_no），不是乐观锁列 version
+        scoreHard:
+          type: integer
+          description: 硬分，越大越优；0 表示无硬违约
+        scoreSoft:
+          type: integer
+          description: 软分，越大越优
+        taskCount:
+          type: integer
+        metrics:
+          type: object
+          additionalProperties: true
+          description: solve_task.metrics 原样 map，不重命名、不裁剪键；不得包含 stepCount/unimprovedStepCount（§24.2）
+          example:
+            engine: TIMEFOLD
+            phase: DONE
+            progress: 1.0
+            expectedTaskCount: 120
+            assignedTaskCount: 120
+            persistedTaskCount: 120
+    ResultOfPlanCompare:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PlanCompareItem'
+                recommendedPlanId:
+                  type: string
+                  format: uuid
+                tieBreak:
+                  type: string
+                  description: 选优并列规则，固定为 SCORE_HARD_DESC,SCORE_SOFT_DESC,PLAN_ID_ASC
+                  example: SCORE_HARD_DESC,SCORE_SOFT_DESC,PLAN_ID_ASC
+    DispatchRequest:
+      type: object
+      required: [targets]
+      description: 计划下发请求（PlanDispatchController.DispatchRequest）；字段取自代码，形状未经制品级验收
+      properties:
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/DispatchTarget'
+        message:
+          type: string
+          maxLength: 500
+          description: 附加说明，可空
+    DispatchTarget:
+      type: object
+      required: [channel, address]
+      description: 下发目标（DispatchTargetRequest）
+      properties:
+        channel:
+          type: string
+          maxLength: 16
+          description: EMAIL / SMS / FEISHU
+        address:
+          type: string
+          maxLength: 256
+          description: 目标地址
+    DispatchResult:
+      type: object
+      description: 下发响应（DispatchResultView）；字段取自代码，形状未经制品级验收
+      properties:
+        dispatchId:
+          type: string
+          format: uuid
+        planId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: 固定 QUEUED（outbox 入队）
+        targetCount:
+          type: integer
+        queuedAt:
+          type: string
+          format: date-time
+    DispatchSummary:
+      type: object
+      description: 下发批次聚合状态（DispatchSummaryView）；字段取自代码，形状未经制品级验收
+      properties:
+        dispatchId:
+          type: string
+          format: uuid
+        planId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [QUEUED, SENT, PARTIAL, FAILED]
+        targetCount:
+          type: integer
+        sentCount:
+          type: integer
+        failedCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+          description: 最早入队时间
+    ResultOfDispatchResult:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/DispatchResult'
+    ResultOfDispatchSummaryPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/DispatchSummary'
                 page:
                   type: integer
                 size:

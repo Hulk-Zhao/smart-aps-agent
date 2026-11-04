@@ -9,12 +9,22 @@ export const plansModule: RouterModule = {
   menuPath: '/plans/publish',
   order: 47,
   menu: true,
+  menuItems: [
+    { path: '/plans/publish', label: '计划发布与版本' },
+    { path: '/plans/compare', label: '计划对比择优' }
+  ],
   routes: [
     {
       path: 'plans/publish',
       name: 'plans-publish',
       component: () => import('@/views/plans/PlanPublishView.vue'),
       meta: { title: '计划发布与版本' }
+    },
+    {
+      path: 'plans/compare',
+      name: 'plans-compare',
+      component: () => import('@/views/plans/PlanCompareView.vue'),
+      meta: { title: '计划对比择优' }
     }
   ]
 }

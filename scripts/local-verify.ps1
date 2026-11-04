@@ -126,8 +126,12 @@ if (-not $SkipBackend) {
     $env:DB_NAME = $DbName
     $env:DB_USER = $DbUser
     $env:DB_PASSWORD = $DbPassword
+    # dev API Key 统一由本脚本以启动参数显式开启（application-dev.yml 保持默认关闭）。
+    # 依赖 X-API-Key 的脚本（verify-se5-justification/run-m2-perf/m2-qa-02-p1-regress）默认使用该密钥。
+    $devApiKey = if ($env:APS_DEV_API_KEY) { $env:APS_DEV_API_KEY } else { 'aps-dev-write-key-local-only' }
     $backendProcess = Start-Process -FilePath $javaExe `
-        -ArgumentList '-jar', $jar, "--server.port=$BackendPort" `
+        -ArgumentList '-Daps.security.mode=dev', '-Daps.security.dev.api-key-enabled=true', `
+            "-Daps.security.api-keys.write=$devApiKey", '-jar', $jar, "--server.port=$BackendPort" `
         -RedirectStandardOutput $backendLog -RedirectStandardError "$backendLog.err" `
         -NoNewWindow -PassThru
 

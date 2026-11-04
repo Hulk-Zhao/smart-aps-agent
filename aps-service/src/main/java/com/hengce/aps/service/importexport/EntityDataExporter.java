@@ -5,6 +5,7 @@ import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.infrastructure.persistence.process.routing.RoutingNode;
 import com.hengce.aps.service.masterdata.bom.BomItemView;
 import com.hengce.aps.service.masterdata.bom.BomService;
@@ -99,7 +100,7 @@ public class EntityDataExporter {
                     .map(this::resourceRow).toList();
             case ORDERS -> collect(query -> orderService.list(query, null, null, null, null, null, null)).stream()
                     .map(this::orderRow).toList();
-            case STRATEGIES -> collect(query -> strategyService.list(query, null, null)).stream()
+            case STRATEGIES -> collect(query -> strategyService.list(query, null, null, null)).stream()
                     .map(this::strategyRow).toList();
             case BOMS -> bomRows();
             case CALENDARS -> collect(query -> calendarService.list(null, null, null, null, query)).stream()
@@ -108,7 +109,26 @@ public class EntityDataExporter {
             case OPERATION_TEMPLATES -> collect(query -> operationTemplateService.list(query, null, null, null))
                     .stream().map(this::operationTemplateRow).toList();
             case SUPPLIERS -> supplierRows();
+            case CUSTOMERS -> customerRows();
         };
+    }
+
+    private List<Map<String, Object>> customerRows() {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        jdbcTemplate.queryForList("select code, name, priority, lead_time_days, payment_terms, blacklisted "
+                        + "from customer where tenant_id = ? and deleted = false order by code",
+                        TenantContext.getTenantId())
+                .forEach(record -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("code", record.get("code"));
+                    row.put("name", record.get("name"));
+                    row.put("priority", record.get("priority"));
+                    row.put("leadTimeDays", record.get("lead_time_days"));
+                    row.put("paymentTerms", record.get("payment_terms"));
+                    row.put("blacklisted", record.get("blacklisted"));
+                    rows.add(row);
+                });
+        return rows;
     }
 
     private List<Map<String, Object>> bomRows() {
@@ -134,7 +154,8 @@ public class EntityDataExporter {
     private List<Map<String, Object>> supplierRows() {
         List<Map<String, Object>> rows = new ArrayList<>();
         jdbcTemplate.queryForList("select code, name, lead_time_days, moq, quality_grade, blacklisted "
-                        + "from supplier where deleted = false order by code")
+                        + "from supplier where tenant_id = ? and deleted = false order by code",
+                        TenantContext.getTenantId())
                 .forEach(record -> {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("code", record.get("code"));
@@ -252,8 +273,8 @@ public class EntityDataExporter {
             return null;
         }
         List<String> codes = jdbcTemplate.query(
-                "select code from resource where id = ? and deleted = false",
-                (rs, index) -> rs.getString(1), resourceId);
+                "select code from resource where id = ? and tenant_id = ? and deleted = false",
+                (rs, index) -> rs.getString(1), resourceId, TenantContext.getTenantId());
         return codes.isEmpty() ? null : codes.get(0);
     }
 

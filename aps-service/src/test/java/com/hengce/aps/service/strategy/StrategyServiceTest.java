@@ -1,6 +1,10 @@
 package com.hengce.aps.service.strategy;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
@@ -43,6 +47,16 @@ import static org.mockito.Mockito.when;
  */
 @ExtendWith(MockitoExtension.class)
 class StrategyServiceTest {
+
+    @org.junit.jupiter.api.BeforeAll
+    static void initLambdaCache() {
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.getTypeHandlerRegistry().register(UUID.class,
+                new com.hengce.aps.infrastructure.persistence.process.template.handler.UuidTypeHandler());
+        configuration.getTypeHandlerRegistry().register(java.io.Serializable.class,
+                org.apache.ibatis.type.ObjectTypeHandler.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), Strategy.class);
+    }
 
     @Mock
     private StrategyMapper strategyMapper;
@@ -101,6 +115,42 @@ class StrategyServiceTest {
                 () -> strategyService.create(createCommand(rules)));
 
         assertTrue(exception.getMessage().contains("[42202]"), exception.getMessage());
+    }
+
+    @Test
+    void createAcceptsDisabledRuleOnlyWhenWeightIsZero() {
+        List<StrategyRuleCommand> rules = defaultRuleCommands();
+        rules.set(0, new StrategyRuleCommand(RuleCode.MIN_TARDINESS.name(), BigDecimal.ZERO,
+                Map.of(), false));
+        rules.set(1, new StrategyRuleCommand(RuleCode.EDD.name(), BigDecimal.valueOf(35),
+                Map.of(), true));
+        stubNoDuplicateName();
+        when(strategyRuleMapper.selectList(any()))
+                .thenAnswer(invocation -> ruleEntities(UUID.randomUUID(), rules));
+
+        StrategyView view = strategyService.create(createCommand(rules));
+
+        StrategyRuleView disabled = view.rules().stream()
+                .filter(rule -> RuleCode.MIN_TARDINESS.name().equals(rule.code()))
+                .findFirst().orElseThrow();
+        assertFalse(disabled.enabled());
+        assertEquals(0, disabled.weight().compareTo(BigDecimal.ZERO));
+        assertEquals(BigDecimal.valueOf(RuleCode.TOTAL_WEIGHT), view.weightSum());
+    }
+
+    @Test
+    void createRejectsDisabledRuleWithNonZeroWeight() {
+        List<StrategyRuleCommand> rules = defaultRuleCommands();
+        rules.set(0, new StrategyRuleCommand(RuleCode.MIN_TARDINESS.name(), BigDecimal.valueOf(20),
+                Map.of(), false));
+
+        BizException exception = assertThrows(BizException.class,
+                () -> strategyService.create(createCommand(rules)));
+
+        assertEquals(ErrorCode.UNPROCESSABLE_ENTITY, exception.getErrorCode());
+        assertTrue(exception.getMessage().contains("enabled=false 时权重必须为 0"),
+                exception.getMessage());
+        verify(strategyMapper, never()).insert(any(Strategy.class));
     }
 
     @Test
@@ -428,7 +478,7 @@ class StrategyServiceTest {
         when(strategyMapper.selectPage(any(), any())).thenReturn(page);
         when(strategyRuleMapper.selectList(any())).thenReturn(existingRules((UUID) strategy.getId()));
 
-        PageResult<StrategyView> result = strategyService.list(new PageQuery(), null, null);
+        PageResult<StrategyView> result = strategyService.list(new PageQuery(), null, null, null);
 
         assertEquals(1, result.items().size());
         StrategyView view = result.items().get(0);
@@ -438,6 +488,48 @@ class StrategyServiceTest {
         assertEquals("MIN_TARDINESS", view.rules().get(0).code());
         assertEquals("OPTIMIZATION", view.rules().get(0).phase());
         assertEquals("SOFT", view.rules().get(0).type());
+    }
+
+    @Test
+    void listAppliesEffectiveOnClosedWindow() {
+        LocalDate effectiveOn = LocalDate.of(2026, 6, 1);
+        stubListWithOneStrategy();
+
+        strategyService.list(new PageQuery(), null, null, effectiveOn);
+
+        LambdaQueryWrapper<Strategy> wrapper = captureListWrapper();
+        assertTrue(wrapper.getSqlSegment().contains("effective_from"), wrapper.getSqlSegment());
+        assertTrue(wrapper.getSqlSegment().contains("effective_to"), wrapper.getSqlSegment());
+        assertEquals(2, wrapper.getParamNameValuePairs().values().stream()
+                .filter(effectiveOn::equals).count(),
+                "effectiveFrom 与 effectiveTo 两端都必须带上生效日期");
+    }
+
+    @Test
+    void listWithoutEffectiveOnDoesNotFilterByWindow() {
+        stubListWithOneStrategy();
+
+        strategyService.list(new PageQuery(), null, null, null);
+
+        LambdaQueryWrapper<Strategy> wrapper = captureListWrapper();
+        assertFalse(wrapper.getSqlSegment().contains("effective_from"),
+                "未传 effectiveOn 时不得附加生效窗口条件");
+    }
+
+    private void stubListWithOneStrategy() {
+        Page<Strategy> page = new Page<>(1, 20);
+        Strategy strategy = existingStrategy(UUID.randomUUID());
+        page.setRecords(List.of(strategy));
+        page.setTotal(1);
+        when(strategyMapper.selectPage(any(), any())).thenReturn(page);
+        when(strategyRuleMapper.selectList(any())).thenReturn(existingRules((UUID) strategy.getId()));
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private LambdaQueryWrapper<Strategy> captureListWrapper() {
+        ArgumentCaptor<LambdaQueryWrapper> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(strategyMapper).selectPage(any(), captor.capture());
+        return captor.getValue();
     }
 
     private void stubNoDuplicateName() {
@@ -477,6 +569,27 @@ class StrategyServiceTest {
             rule.setWeight(BigDecimal.valueOf(entry.getValue()));
             rule.setParams(Map.of());
             rule.setEnabled(true);
+            rule.setSeqNo(seqNo++);
+            rule.setVersion(1);
+            rules.add(rule);
+        }
+        return rules;
+    }
+
+    private static List<StrategyRule> ruleEntities(UUID strategyId, List<StrategyRuleCommand> commands) {
+        List<StrategyRule> rules = new ArrayList<>();
+        int seqNo = 0;
+        for (StrategyRuleCommand command : commands) {
+            StrategyRule rule = new StrategyRule();
+            rule.setId(UUID.randomUUID());
+            rule.setStrategyId(strategyId);
+            rule.setRuleCode(command.code());
+            rule.setName(command.code());
+            rule.setRulePhase(StrategyService.PHASE_OPTIMIZATION);
+            rule.setRuleType(StrategyService.TYPE_SOFT);
+            rule.setWeight(command.weight());
+            rule.setParams(command.params() == null ? Map.of() : command.params());
+            rule.setEnabled(command.enabled() == null || command.enabled());
             rule.setSeqNo(seqNo++);
             rule.setVersion(1);
             rules.add(rule);

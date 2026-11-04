@@ -83,3 +83,39 @@
 - `task.status`：`PLANNED ↔ FROZEN`；`PLANNED/FROZEN → IN_PROGRESS → COMPLETED`。
 - `solve_task.status`：`PENDING → RUNNING → SOLVED/FAILED/TIMEOUT`；`PENDING/RUNNING → CANCELLED`。
 - `bom.status` / `routing.status`：同一父件/产品仅允许 1 个 `ACTIVE`（见 `contract-freeze.md` C8）。
+
+## 5. M3 增量枚举（D0 冻结，见 `contract-freeze.md` §25）
+
+> 本节只增不改：第 1–4 节与既有字典**一字不动**。下列值不新增 schema CHECK 的，仅用于 API/Java 枚举。
+
+| 位置 | 取值 | 依据/说明 |
+|---|---|---|
+| `PermissionCode`（API/Java） | `MD_READ` / `MD_WRITE` / `PR_READ` / `PR_WRITE` / `OM_READ` / `OM_WRITE` / `OM_ATP` / `ORDER_FREEZE` / `SS_READ` / `SS_WRITE` / `SE_SOLVE` / `SCHEDULE_ADJUST` / `SCHEDULE_PUBLISH` / `SYS_USER` / `SYS_ROLE` / `SYS_AUDIT` / `AGENT_EVENT` / `AGENT_CONFIRM` | 等于 V1 `permission.code` 18 值（C30）；**不得新增/改名** |
+| `RoleCode`（API/Java） | `ADMIN` / `PLANNER` / `PROCESS_ENGINEER` / `SALES` / `VIEWER` | V1 种子角色码；不可删除、不可改码 |
+| `users.status`（API 传输） | `ACTIVE` / `DISABLED` / `LOCKED` | 沿用第 1 节；`LOCKED` + `locked_until` 由登录失败策略写入（C30） |
+| `AuditEventType`（API/Java） | `ORDER_FROZEN` / `ORDER_PRIORITY_CHANGED` / `ORDER_RELEASED` / `AUTH_LOGIN` / `AUTH_LOGIN_FAILED` / `USER_CREATED` / `USER_UPDATED` / `ROLE_CREATED` / `ROLE_PERMISSION_CHANGED` / `PLAN_PUBLISHED` / `PLAN_ROLLBACK` / `PLAN_DISPATCHED` / `SANDBOX_CREATED` / `SANDBOX_APPLIED` / `IMPORT_EXECUTED` / `TASK_ADJUSTED` | 前 3 个为存量，**不得改名**（C31）；其余为 M3 新增 |
+| `AuditResourceType`（API/Java） | `USER` / `ROLE` / `ORDER` / `PLAN` / `SANDBOX` / `TASK` / `IMPORT` | C31 |
+| `SandboxCompare.changeType`（API） | `ADDED` / `REMOVED` / `MOVED` | C32 新增字段（yaml 待同步） |
+| `SandboxType`（API 入参） | 只接受 `WHAT_IF` | 创建/更新入参；`BASELINE`/`ARCHIVED` 由 apply 产生，传值 `42200`（C32） |
+| `NotificationChannel`（API/Java） | `EMAIL` / `SMS` / `FEISHU` | C33；不做 `WEBHOOK` |
+| `DispatchStatus`（API） | `QUEUED` / `SENT` / `PARTIAL` / `FAILED` | C33 聚合状态；单目标内部态 `PENDING/SENT/FAILED` 不对外 |
+| `ImportMode`（API/Java） | `preview` / `execute` / `async` | 前两值为存量（C26），`async` 为 C39 新增 |
+| `ImportJobStatus`（API/DB） | `PENDING` / `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` | C39；`FAILED` 必 `committed=false` |
+| `fallbackMode`（`solve_task.metrics`） | `HARD_ONLY` / `PARTIAL` | 沿用 C28；M3 起可产出 `PARTIAL`，**终态仍为 `FAILED`**（C37） |
+
+```json
+{
+  "permission.code": ["MD_READ", "MD_WRITE", "PR_READ", "PR_WRITE", "OM_READ", "OM_WRITE", "OM_ATP", "ORDER_FREEZE", "SS_READ", "SS_WRITE", "SE_SOLVE", "SCHEDULE_ADJUST", "SCHEDULE_PUBLISH", "SYS_USER", "SYS_ROLE", "SYS_AUDIT", "AGENT_EVENT", "AGENT_CONFIRM"],
+  "role.code": ["ADMIN", "PLANNER", "PROCESS_ENGINEER", "SALES", "VIEWER"],
+  "audit.action": ["ORDER_FROZEN", "ORDER_PRIORITY_CHANGED", "ORDER_RELEASED", "AUTH_LOGIN", "AUTH_LOGIN_FAILED", "USER_CREATED", "USER_UPDATED", "ROLE_CREATED", "ROLE_PERMISSION_CHANGED", "PLAN_PUBLISHED", "PLAN_ROLLBACK", "PLAN_DISPATCHED", "SANDBOX_CREATED", "SANDBOX_APPLIED", "IMPORT_EXECUTED", "TASK_ADJUSTED"],
+  "audit.resource_type": ["USER", "ROLE", "ORDER", "PLAN", "SANDBOX", "TASK", "IMPORT"],
+  "sandbox.compare.change_type": ["ADDED", "REMOVED", "MOVED"],
+  "notification.channel": ["EMAIL", "SMS", "FEISHU"],
+  "dispatch.status": ["QUEUED", "SENT", "PARTIAL", "FAILED"],
+  "import.mode": ["preview", "execute", "async"],
+  "import_job.status": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"],
+  "solve_task.metrics.fallbackMode": ["HARD_ONLY", "PARTIAL"]
+}
+```
+
+**M3 明确不新增**：`solve_task.status` 不加 `PARTIAL`（C37）；`sandbox.type` 不加新值；`orders.status`/`task.status` 不变。

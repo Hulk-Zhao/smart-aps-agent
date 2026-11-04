@@ -8,6 +8,7 @@ import com.hengce.aps.service.plan.PlanActionView;
 import com.hengce.aps.service.plan.PlanDetailView;
 import com.hengce.aps.service.plan.PlanVersionService;
 import com.hengce.aps.service.plan.PlanVersionSummaryView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -72,6 +73,7 @@ public class PlanController {
     @Operation(summary = "发布计划版本",
             description = "状态：已实现（C24）。DRAFT/REVIEW → PUBLISHED，固化不可变快照并回填 task.plan_version_id；"
                     + "重复发布幂等返回 200。")
+    @RequiresPermission("SCHEDULE_PUBLISH")
     @PostMapping("/{id}/publish")
     public Result<PlanActionView> publish(@PathVariable UUID id,
                                           @Valid @RequestBody(required = false) PlanPublishRequest request) {
@@ -90,6 +92,7 @@ public class PlanController {
     @Operation(summary = "回滚计划版本",
             description = "状态：已实现（C24）。新建 PUBLISHED 版本并复制目标快照；场景内存在 IN_PROGRESS/COMPLETED 任务时"
                     + "返回 409/40903。")
+    @RequiresPermission("SCHEDULE_PUBLISH")
     @PostMapping("/{id}/rollback")
     public Result<PlanActionView> rollback(@PathVariable UUID id,
                                            @Valid @RequestBody PlanRollbackRequest request) {

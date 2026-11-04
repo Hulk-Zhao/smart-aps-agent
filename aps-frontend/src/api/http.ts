@@ -29,6 +29,33 @@ const http = axios.create({
   }
 })
 
+/** C30 访问令牌存储键；token 只落 localStorage，页面不得各自散存。 */
+const AUTH_TOKEN_KEY = 'aps.accessToken'
+
+export function getAuthToken(): string {
+  try {
+    return globalThis.localStorage?.getItem(AUTH_TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function setAuthToken(token: string): void {
+  try {
+    globalThis.localStorage?.setItem(AUTH_TOKEN_KEY, token)
+  } catch {
+    // 隐私模式禁用 localStorage 时忽略，登录仍可继续使用当前会话。
+  }
+}
+
+export function clearAuthToken(): void {
+  try {
+    globalThis.localStorage?.removeItem(AUTH_TOKEN_KEY)
+  } catch {
+    // 同上。
+  }
+}
+
 /** 分页/查询参数序列化：数组按逗号拼接，跳过空值。 */
 function serializeParams(params: Record<string, unknown>): string {
   const search = new URLSearchParams()
@@ -110,6 +137,11 @@ http.interceptors.request.use((config) => {
   const headers = config.headers ?? new AxiosHeaders()
   if (!headers.has('X-Trace-Id')) {
     headers.set('X-Trace-Id', createTraceId())
+  }
+  // C30：登录成功后由 setAuthToken 统一存储，这里只负责注入，不在页面硬编码 token。
+  const token = getAuthToken()
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
   }
   config.headers = headers
   return config

@@ -231,7 +231,8 @@ async function loadDataset(): Promise<void> {
 function readQuery(): void {
   const query = route.query
   const key = String(query.dataset ?? '')
-  datasetKey.value = key === '100x10' || key === '500x50' || key === '48x8' ? key : '48x8'
+  datasetKey.value =
+    key === '100x10' || key === '500x50' || key === '5000x50' || key === '48x8' ? key : '48x8'
   const nextZoom = String(query.zoom ?? '')
   zoom.value = nextZoom === 'hour' || nextZoom === 'week' || nextZoom === 'month' ? nextZoom : 'day'
   dataSource.value = String(query.source ?? '') === 'api' ? 'api' : 'mock'

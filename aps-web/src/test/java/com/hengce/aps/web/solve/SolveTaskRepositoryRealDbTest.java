@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -24,21 +25,26 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 /**
- * M2-SE-03 / M2-SE-05 真库验收：连接本机便携 PostgreSQL 的 aps_m2_se3 库。
+ * M2-SE-03 / M2-SE-05 真库验收：库连接参数全部从 {@code APS_TEST_DB_*} 环境变量读取。
  *
- * <p>库不可用时整类跳过（{@link Assumptions}），不影响共享工作区其他模块构建。
- * 执行前由 Flyway 按 {@code db/migration} 把目标库迁到最新版本（当前 V7），
- * 与生产使用同一条迁移链；历史上手工建表、没有 {@code flyway_schema_history} 的库
- * 先 {@code clean} 再全量迁移（clean 前用 {@link RealDbTargetGuard} 校验数据库自报的
- * 真实库名属于受控测试库，避免误删 dev/生产库），避免测试库停留在旧结构。
- * 覆盖 V6 幂等唯一索引、条件终态写入、JSONB metrics 合并、归因 {@code task_ids} 解析与补齐。</p>
+ * <p>不依赖任何预存在的固定库名：默认库名 {@code aps_test_solve_task}，缺失时由本类
+ * 通过维护库 {@code postgres} 自动创建；显式提供 {@code APS_TEST_DB_URL} 时视为调用方
+ * 已准备库。服务不可用时整类跳过（{@link Assumptions}），不影响共享工作区其他模块构建。
+ * 测试仅在 {@code APS_TEST_DB_ENABLED=true} 下执行。执行前由 Flyway 按
+ * {@code db/migration} 把目标库迁到最新版本，与生产使用同一条迁移链；历史上手工建表、
+ * 没有 {@code flyway_schema_history} 的库先 {@code clean} 再全量迁移（clean 前用
+ * {@link RealDbTargetGuard} 校验数据库自报的真实库名属于受控测试库，避免误删 dev/生产库），
+ * 避免测试库停留在旧结构。覆盖 V6 幂等唯一索引、条件终态写入、JSONB metrics 合并、
+ * 归因 {@code task_ids} 解析与补齐。</p>
  */
+@EnabledIfEnvironmentVariable(named = "APS_TEST_DB_ENABLED", matches = "(?i)true")
 class SolveTaskRepositoryRealDbTest {
 
     private static final UUID TENANT_ID =
@@ -47,11 +53,21 @@ class SolveTaskRepositoryRealDbTest {
     private static final UUID SANDBOX_ID =
             UUID.fromString("00000000-0000-0000-0000-000000000401");
 
-    private static final String JDBC_URL = "jdbc:postgresql://127.0.0.1:55432/aps_m2_se3";
+    private static final String DB_HOST = env("APS_TEST_DB_HOST", "127.0.0.1");
 
-    private static final String DB_USER = "aps";
+    private static final String DB_PORT = env("APS_TEST_DB_PORT", "55432");
 
-    private static final String DB_PASSWORD = "aps_dev_pwd";
+    private static final String DB_NAME = env("APS_TEST_DB_NAME", "aps_test_solve_task");
+
+    private static final String DB_USER = env("APS_TEST_DB_USER", "aps");
+
+    private static final String DB_PASSWORD = env("APS_TEST_DB_PASSWORD", "aps_dev_pwd");
+
+    private static final String EXPLICIT_URL = env("APS_TEST_DB_URL", "");
+
+    private static final String JDBC_URL = EXPLICIT_URL.isEmpty()
+            ? "jdbc:postgresql://" + DB_HOST + ":" + DB_PORT + "/" + DB_NAME
+            : EXPLICIT_URL;
 
     private JdbcTemplate jdbcTemplate;
 
@@ -62,7 +78,7 @@ class SolveTaskRepositoryRealDbTest {
     private final List<Long> createdTaskIds = new ArrayList<>();
 
     /**
-     * 测试库自管 schema：Flyway 把 aps_m2_se3 迁移到最新版本（V1→V7）。
+     * 测试库自管 schema：缺失则先建库，再由 Flyway 迁移到最新版本。
      *
      * <p>遗留的手工建库（有业务表但无 flyway_schema_history）先 clean，再按迁移链全量重建，
      * 之后每次运行 only validate + migrate 到最新，不再依赖人工建表或迁移。</p>
@@ -71,9 +87,10 @@ class SolveTaskRepositoryRealDbTest {
     static void migrateSchemaToLatest() {
         SchemaState state;
         try {
+            ensureDatabaseExists();
             state = inspectSchema();
         } catch (Exception exception) {
-            Assumptions.assumeTrue(false, "aps_m2_se3 不可用，跳过真库验收: "
+            Assumptions.assumeTrue(false, "真库 " + DB_NAME + " 不可用，跳过真库验收: "
                     + exception.getMessage());
             return;
         }
@@ -89,16 +106,57 @@ class SolveTaskRepositoryRealDbTest {
             try {
                 flyway.clean();
             } catch (Exception exception) {
-                throw new IllegalStateException("aps_m2_se3 clean 失败: "
+                throw new IllegalStateException("真库 " + state.databaseName() + " clean 失败: "
                         + exception.getMessage(), exception);
             }
         }
         try {
             flyway.migrate();
         } catch (Exception exception) {
-            Assumptions.assumeTrue(false, "aps_m2_se3 迁移到最新版本失败，跳过真库验收: "
+            Assumptions.assumeTrue(false, "真库 " + DB_NAME + " 迁移到最新版本失败，跳过真库验收: "
                     + exception.getMessage());
         }
+    }
+
+    /**
+     * 库不存在时用维护库 {@code postgres} 自动创建，避免依赖机器上恰好存在某个固定库。
+     *
+     * @throws SQLException 服务不可用或建库失败
+     */
+    private static void ensureDatabaseExists() throws SQLException {
+        if (!EXPLICIT_URL.isEmpty()) {
+            return;
+        }
+        RealDbTargetGuard.requireCleanAllowed(DB_NAME);
+        String maintenanceUrl = "jdbc:postgresql://" + DB_HOST + ":" + DB_PORT + "/postgres";
+        try (Connection connection = DriverManager.getConnection(
+                maintenanceUrl, DB_USER, DB_PASSWORD)) {
+            try (PreparedStatement check = connection.prepareStatement(
+                    "SELECT count(*) FROM pg_database WHERE datname = ?")) {
+                check.setString(1, DB_NAME);
+                try (ResultSet resultSet = check.executeQuery()) {
+                    resultSet.next();
+                    if (resultSet.getLong(1) > 0) {
+                        return;
+                    }
+                }
+            }
+            try (Statement statement = connection.createStatement()) {
+                statement.execute("CREATE DATABASE \"" + DB_NAME.replace("\"", "\"\"") + "\"");
+            }
+        }
+    }
+
+    /**
+     * 读取环境变量，空白值退回默认值。
+     *
+     * @param key 变量名
+     * @param defaultValue 默认值
+     * @return 变量值
+     */
+    private static String env(String key, String defaultValue) {
+        String value = System.getenv(key);
+        return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 
     private static String migrationLocation() {
@@ -149,13 +207,13 @@ class SolveTaskRepositoryRealDbTest {
     @BeforeEach
     void setUp() {
         DriverManagerDataSource dataSource =
-                new DriverManagerDataSource(JDBC_URL, "aps", "aps_dev_pwd");
+                new DriverManagerDataSource(JDBC_URL, DB_USER, DB_PASSWORD);
         dataSource.setDriverClassName("org.postgresql.Driver");
         JdbcTemplate template = new JdbcTemplate(dataSource);
         try {
             template.queryForObject("SELECT 1", Integer.class);
         } catch (DataAccessException exception) {
-            Assumptions.assumeTrue(false, "aps_m2_se3 不可用，跳过真库验收: "
+            Assumptions.assumeTrue(false, "真库 " + DB_NAME + " 不可用，跳过真库验收: "
                     + exception.getMessage());
         }
         this.jdbcTemplate = template;

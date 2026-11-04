@@ -17,7 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
  * Excel 导入导出编排：模板下载、预览校验、执行落库与幂等令牌。
  *
  * <p>契约 C26：9 类实体共用模板/解析/错误定位/幂等管线；错误行统一为
- * {@code {row, field, code, message}}，单文件 10MB、单次 5000 行以内。</p>
+ * {@code {row, field, code, message}}，单文件 5MB、单次 5000 行以内。</p>
  */
 @Service
 public class ImportService {
@@ -91,7 +91,8 @@ public class ImportService {
             throw new BizException(ErrorCode.BAD_REQUEST, "导入文件不能为空");
         }
         if (size > ImportLimits.MAX_FILE_BYTES) {
-            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "导入文件不能超过 10MB");
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "导入文件不能超过 " + (ImportLimits.MAX_FILE_BYTES / 1024 / 1024) + "MB");
         }
         String normalizedToken = normalizeToken(token);
         if (mode == ImportMode.EXECUTE && normalizedToken != null) {
@@ -198,7 +199,14 @@ public class ImportService {
         return handler;
     }
 
-    private String normalizeToken(String token) {
+    /**
+     * 校验并归一化幂等令牌，供同步与异步导入共用。
+     *
+     * @param token 原始令牌，可为空
+     * @return 归一化令牌；空白返回 {@code null}
+     * @throws BizException 长度不在 8-128 位
+     */
+    public String normalizeToken(String token) {
         if (token == null || token.isBlank()) {
             return null;
         }

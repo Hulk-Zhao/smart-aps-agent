@@ -5,7 +5,13 @@
 import type { InternalAxiosRequestConfig } from 'axios'
 
 import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
-import type { PageResult, Result } from '@/types/common'
+import {
+  IMPORT_ENTITY_OPTIONS,
+  IMPORT_MAX_FILE_BYTES,
+  findImportEntity
+} from '@/constants/import'
+import type { ImportError, ImportJobStatus, ImportJobView, ImportResult } from '@/types/import'
+import type { PageResult } from '@/types/common'
 import type { Bom, BomCreateRequest, BomTreeNode } from '@/types/boms'
 import type { Material, MaterialCreateRequest } from '@/types/materials'
 import type { MrpAnalysisParams, MrpAnalysisResult } from '@/types/mrp'
@@ -27,6 +33,8 @@ import type {
   OrderFreezeRequest,
   OrderUpdateRequest,
   Sandbox,
+  SandboxApplyResult,
+  SandboxCompare,
   SandboxCreateRequest,
   Strategy,
   StrategyCreateRequest,
@@ -34,10 +42,28 @@ import type {
   StrategyRule,
   StrategyUpdateRequest
 } from '@/types/orders'
-import type { LoginRequest, User, UserCreateRequest, ConfigUpdateRequest } from '@/types/system'
+import type {
+  AuditLog,
+  ConfigUpdateRequest,
+  LoginRequest,
+  MeView,
+  PermissionCode,
+  RoleCreateRequest,
+  RoleView,
+  User,
+  UserCreateRequest,
+  UserUpdateRequest
+} from '@/types/system'
 import type { SolveSubmitRequest, SolveTaskDetail } from '@/types/solve'
 import type { TaskAdjustRequest } from '@/types/gantt'
-import type { PlanAction, PlanDetail, PlanPublishRequest, PlanRollbackRequest } from '@/types/plans'
+import type {
+  PlanAction,
+  PlanCompareItem,
+  PlanCompareResult,
+  PlanDetail,
+  PlanPublishRequest,
+  PlanRollbackRequest
+} from '@/types/plans'
 
 import {
   auditLogs,
@@ -52,7 +78,9 @@ import {
   mrpAnalysisFixture,
   operationTemplates,
   orders,
+  permissions,
   resources,
+  roles,
   routings,
   sandboxes,
   solveTaskDetails,
@@ -62,7 +90,9 @@ import {
 
 export interface MockReply {
   status: number
-  body: Result<unknown>
+  /** JSON 信封、裸对象（C39 JobView）或二进制 Blob 均可。 */
+  body: unknown
+  headers?: Record<string, string>
 }
 
 function traceOf(config: InternalAxiosRequestConfig): string {
@@ -846,6 +876,218 @@ function mockPlanOf(planId: string): PlanDetail {
   return created
 }
 
+const MOCK_SEED_PLAN_IDS = [
+  'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1',
+  'b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2',
+  'c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3'
+]
+
+/** Mock 对比页首次进入时补齐 3 个版本，避免必须先在“计划发布”页造数。 */
+function ensureSeedPlans(sandboxId: string): void {
+  const existing = [...mockPlanRecords.values()].filter(
+    (record) => record.action.sandboxId === sandboxId
+  )
+  if (existing.length > 0) {
+    return
+  }
+  MOCK_SEED_PLAN_IDS.forEach((planId, index) => {
+    const plan = createMockPlan(planId)
+    plan.action = {
+      ...plan.action,
+      planNo: `PLAN-20261104-${String(index + 1).padStart(3, '0')}`,
+      version: index + 1,
+      status: index === 0 ? 'PUBLISHED' : 'DRAFT',
+      publishedAt: index === 0 ? '2026-11-03T02:00:16Z' : null,
+      sandboxId,
+      taskCount: plan.tasks.length,
+      affectedTaskCount: plan.tasks.length,
+      reason: `Mock 对比版本 v${index + 1}`
+    }
+    mockPlanRecords.set(planId, plan)
+  })
+}
+
+const XLSX_MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+const MOCK_IMPORT_ENTITY_SLUGS = new Set(IMPORT_ENTITY_OPTIONS.map((entity) => entity.slug))
+
+interface MockImportJobRecord {
+  view: ImportJobView
+  polls: number
+  fail: boolean
+}
+
+const mockImportJobs = new Map<string, MockImportJobRecord>()
+
+function rawReply(body: unknown, status = 200): MockReply {
+  return { status, body }
+}
+
+function binaryReply(fileName: string, content: string): MockReply {
+  const body = typeof Blob === 'undefined' ? content : new Blob([content], { type: XLSX_MEDIA_TYPE })
+  return {
+    status: 200,
+    body,
+    headers: {
+      'content-type': XLSX_MEDIA_TYPE,
+      'content-disposition': `attachment; filename="${fileName}"`
+    }
+  }
+}
+
+function readUploadedFile(
+  config: InternalAxiosRequestConfig
+): { name: string; size: number } | null {
+  const raw = config.data
+  if (typeof FormData === 'undefined' || !(raw instanceof FormData)) {
+    return null
+  }
+  const value = raw.get('file')
+  if (!value) {
+    return null
+  }
+  if (typeof value === 'string') {
+    return { name: 'upload.xlsx', size: 0 }
+  }
+  return { name: value.name || 'upload.xlsx', size: value.size }
+}
+
+/** 文件名含 fail/bad/error 时模拟失败批次，便于走查行级错误定位。 */
+function mockImportFails(fileName: string): boolean {
+  return /fail|bad|error/i.test(fileName)
+}
+
+function mockImportErrors(entity: string): ImportError[] {
+  const columns = findImportEntity(entity)?.columns ?? []
+  const rows = [3, 6, 9]
+  return rows.map((row, index) => {
+    const column = columns[Math.min(index * 2, Math.max(columns.length - 1, 0))] ?? columns[0]
+    return {
+      row,
+      field: column?.key ?? 'header',
+      code: 42200,
+      message: `${column?.header ?? '字段'}校验未通过`
+    }
+  })
+}
+
+function mockPreviewRows(entity: string, count: number): Record<string, unknown>[] {
+  const columns = findImportEntity(entity)?.columns ?? []
+  return Array.from({ length: count }, (_, index) => {
+    const row: Record<string, unknown> = {}
+    columns.forEach((column, columnIndex) => {
+      if (column.key === 'code') {
+        row[column.key] = `CUS-${String(index + 1).padStart(3, '0')}`
+      } else if (column.key === 'name') {
+        row[column.key] = `Mock 客户 ${index + 1}`
+      } else if (column.key === 'priority') {
+        row[column.key] = ['VIP', 'NORMAL', 'LOW'][index % 3]
+      } else if (column.key === 'leadTimeDays') {
+        row[column.key] = index + 1
+      } else if (column.key === 'paymentTerms') {
+        row[column.key] = '月结30天'
+      } else if (column.key === 'blacklisted') {
+        row[column.key] = index % 4 === 0
+      } else {
+        row[column.key] = `${column.key}-${index + 1}-${columnIndex}`
+      }
+    })
+    return row
+  })
+}
+
+function mockSyncResult(
+  entity: string,
+  fail: boolean,
+  mode: 'PREVIEW' | 'EXECUTE'
+): ImportResult {
+  const totalRows = 10
+  const invalidRows = fail ? 3 : 0
+  const committed = mode === 'EXECUTE' && !fail
+  return {
+    entity,
+    mode,
+    totalRows,
+    validRows: totalRows - invalidRows,
+    invalidRows,
+    inserted: committed ? 8 : 0,
+    updated: committed ? 2 : 0,
+    skipped: 0,
+    committed,
+    replayed: false,
+    errors: fail ? mockImportErrors(entity) : [],
+    preview: mockPreviewRows(entity, totalRows)
+  }
+}
+
+function createMockAsyncJob(entity: string, fail: boolean): ImportJobView {
+  const jobId = uuid()
+  const view: ImportJobView = {
+    jobId,
+    entity,
+    mode: 'async',
+    status: 'PENDING',
+    totalRows: 10,
+    processedRows: 0,
+    inserted: 0,
+    updated: 0,
+    skipped: 0,
+    invalidRows: 0,
+    errors: [],
+    committed: false,
+    contentHash: `sha256:mock-${jobId.replace(/-/g, '').slice(0, 16)}`,
+    createdAt: now(),
+    startedAt: null,
+    finishedAt: null
+  }
+  mockImportJobs.set(jobId, { view, polls: 0, fail })
+  return view
+}
+
+function isTerminalImportStatus(status: ImportJobStatus): boolean {
+  return status === 'SUCCEEDED' || status === 'FAILED' || status === 'CANCELLED'
+}
+
+function advanceMockImportJob(jobId: string): ImportJobView | null {
+  const record = mockImportJobs.get(jobId)
+  if (!record) {
+    return null
+  }
+  if (isTerminalImportStatus(record.view.status)) {
+    return record.view
+  }
+  record.polls += 1
+  if (record.view.status === 'PENDING') {
+    record.view = {
+      ...record.view,
+      status: 'RUNNING',
+      startedAt: now(),
+      processedRows: 2
+    }
+    return record.view
+  }
+  record.view = record.fail
+    ? {
+        ...record.view,
+        status: 'FAILED',
+        processedRows: record.view.totalRows,
+        invalidRows: 3,
+        errors: mockImportErrors(record.view.entity),
+        committed: false,
+        finishedAt: now()
+      }
+    : {
+        ...record.view,
+        status: 'SUCCEEDED',
+        processedRows: record.view.totalRows,
+        inserted: 8,
+        updated: 2,
+        committed: true,
+        finishedAt: now()
+      }
+  return record.view
+}
+
 export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply {
   const method = (config.method ?? 'get').toUpperCase()
   const path = resolvePath(config)
@@ -855,27 +1097,49 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
     return ok(config, { status: 'UP', service: 'aps-admin (mock)' })
   }
 
+  // C30 登录：Mock 与真实后端保持同一错误口径——密码错误/禁用/锁定统一 401 + 40100，
+  // 不在前端伪造 423（后端当前不返回 423，页面仅做防御性映射）。
   if (method === 'POST' && path === '/auth/login') {
     const body = readBody<Partial<LoginRequest>>(config)
-    if (!body.username) {
-      return fail(config, 40000, '用户名不能为空', 400)
+    if (!body.username || !body.password) {
+      return fail(config, 40000, '用户名和密码不能为空', 400)
     }
+    const account = users.find((item) => item.username === body.username)
+    if (!account || body.password !== 'admin123' || account.status !== 'ACTIVE') {
+      return fail(config, 40100, '用户名或密码错误', 401)
+    }
+    account.lastLoginAt = now()
     return ok(config, {
       accessToken: 'mock-access-token',
       tokenType: 'Bearer',
-      expiresIn: 7200,
-      userId: 'ffffffff-ffff-4fff-8fff-ffffffffffff'
+      expiresIn: 28800,
+      userId: account.id
     })
   }
 
+  // C30 GET /me：权限 = 用户全部角色权限并集。
+  if (method === 'GET' && path === '/me') {
+    const current = users.find((item) => item.username === 'admin') ?? users[0]
+    const roleSet = new Set(roles.filter((role) => current.roleCodes.includes(role.code)))
+    const permissionSet = new Set<PermissionCode>()
+    roleSet.forEach((role) => role.permissionCodes.forEach((code) => permissionSet.add(code)))
+    const me: MeView = { ...current, permissions: [...permissionSet] }
+    return ok(config, me)
+  }
+
   if (method === 'GET' && path === '/users') {
-    return ok(config, paginate(users, params))
+    const status = String(params.status ?? '').trim()
+    const filtered = status ? users.filter((item) => item.status === status) : users
+    return ok(config, paginate(filtered, params))
   }
 
   if (method === 'POST' && path === '/users') {
     const body = readBody<Partial<UserCreateRequest>>(config)
-    if (!body.username) {
-      return fail(config, 40000, '用户名不能为空', 400)
+    if (!body.username || !body.password) {
+      return fail(config, 40000, '用户名与初始密码不能为空', 400)
+    }
+    if (users.some((item) => item.username === body.username)) {
+      return fail(config, 40900, '用户名已存在', 409)
     }
     const user: User = {
       id: uuid(),
@@ -885,14 +1149,125 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       phone: body.phone ?? null,
       status: 'ACTIVE',
       lastLoginAt: null,
-      version: 1
+      version: 1,
+      roleCodes: body.roleCodes ?? ['VIEWER']
     }
     users.unshift(user)
     return ok(config, user)
   }
 
+  const userMatch = path.match(/^\/users\/([^/]+)$/)
+  if (method === 'PATCH' && userMatch) {
+    const userId = decodeURIComponent(userMatch[1])
+    const user = users.find((item) => item.id === userId)
+    if (!user) {
+      return fail(config, 40400, '用户不存在', 404)
+    }
+    const body = readBody<Partial<UserUpdateRequest>>(config)
+    if (typeof body.version !== 'number' || body.version !== user.version) {
+      return fail(config, 40901, '用户已被他人修改，请刷新后重试', 409)
+    }
+    if (body.displayName !== undefined) {
+      user.displayName = body.displayName
+    }
+    if (body.email !== undefined) {
+      user.email = body.email
+    }
+    if (body.phone !== undefined) {
+      user.phone = body.phone
+    }
+    if (body.status) {
+      user.status = body.status
+    }
+    if (body.roleCodes) {
+      user.roleCodes = body.roleCodes
+    }
+    user.version += 1
+    return ok(config, user)
+  }
+
+  // C30 GET /roles：按契约返回 {items}（不是裸数组）。
+  if (method === 'GET' && path === '/roles') {
+    return ok(config, { items: roles })
+  }
+
+  if (method === 'POST' && path === '/roles') {
+    const body = readBody<Partial<RoleCreateRequest>>(config)
+    if (!body.code || !body.name) {
+      return fail(config, 40000, '角色码与角色名称不能为空', 400)
+    }
+    if (roles.some((item) => item.code === body.code)) {
+      return fail(config, 40900, '角色码已存在', 409)
+    }
+    const role: RoleView = {
+      id: uuid(),
+      code: body.code,
+      name: body.name,
+      description: body.description ?? null,
+      permissionCodes: body.permissionCodes ?? [],
+      version: 1
+    }
+    roles.push(role)
+    return ok(config, role)
+  }
+
+  const rolePermissionMatch = path.match(/^\/roles\/([^/]+)\/permissions$/)
+  if (method === 'PUT' && rolePermissionMatch) {
+    const role = roles.find((item) => item.id === decodeURIComponent(rolePermissionMatch[1]))
+    if (!role) {
+      return fail(config, 40400, '角色不存在', 404)
+    }
+    const body = readBody<{ permissionCodes?: string[] }>(config)
+    if (!Array.isArray(body.permissionCodes)) {
+      return fail(config, 40000, 'permissionCodes 必填，保存为全量替换', 400)
+    }
+    const legal = new Set(permissions.map((item) => item.code as string))
+    const invalid = body.permissionCodes.find((code) => !legal.has(code))
+    if (invalid) {
+      return fail(config, 42200, `权限码 ${invalid} 不在权限闭集内`, 422)
+    }
+    role.permissionCodes = body.permissionCodes as PermissionCode[]
+    role.version += 1
+    return ok(config, role)
+  }
+
+  // C30 GET /permissions：真实响应就是裸数组（与 /roles 的 {items} 不一致，前端按真实形状解析）。
+  if (method === 'GET' && path === '/permissions') {
+    return ok(config, permissions)
+  }
+
+  // C31 审计：过滤条件 AND，时间区间 [from, to)。
   if (method === 'GET' && path === '/audit-logs') {
-    return ok(config, paginate(auditLogs, params))
+    const action = String(params.action ?? '').trim()
+    const resourceType = String(params.resourceType ?? '').trim()
+    const resourceId = String(params.resourceId ?? '').trim()
+    const userId = String(params.userId ?? '').trim()
+    const from = String(params.from ?? '').trim()
+    const to = String(params.to ?? '').trim()
+    const fromMs = from ? Date.parse(from) : Number.NEGATIVE_INFINITY
+    const toMs = to ? Date.parse(to) : Number.POSITIVE_INFINITY
+    const filtered = auditLogs
+      .filter((item: AuditLog) => {
+        if (action && item.action !== action) {
+          return false
+        }
+        if (resourceType && item.resourceType !== resourceType) {
+          return false
+        }
+        if (resourceId && item.resourceId !== resourceId) {
+          return false
+        }
+        if (userId && item.userId !== userId) {
+          return false
+        }
+        const createdMs = Date.parse(item.createdAt)
+        return createdMs >= fromMs && createdMs < toMs
+      })
+      .sort((left, right) => {
+        const createdDiff = Date.parse(right.createdAt) - Date.parse(left.createdAt)
+        return createdDiff !== 0 ? createdDiff : Number(right.id) - Number(left.id)
+      })
+    return ok(config, paginate(filtered, params))
   }
 
   if (method === 'GET' && path === '/configs') {
@@ -978,17 +1353,6 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
     }
     materials.unshift(material)
     return ok(config, material)
-  }
-
-  if (method === 'POST' && path === '/materials/import') {
-    return ok(config, {
-      successCount: 12,
-      failureCount: 2,
-      errors: [
-        { row: 3, code: 'MAT-RM-009', message: '单位不能为空' },
-        { row: 9, code: 'MAT-RM-101', message: '物料编码重复' }
-      ]
-    })
   }
 
   const materialDetail = path.match(/^\/materials\/([^/]+)$/)
@@ -1619,21 +1983,28 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
   }
 
   if (method === 'GET' && path === '/sandboxes') {
-    return ok(config, paginate(sandboxes, params))
+    const type = String(params.type ?? '').trim()
+    // C32：列表默认不返回 ARCHIVED。
+    const filtered = sandboxes.filter((item) => item.type !== 'ARCHIVED' && (!type || item.type === type))
+    return ok(config, paginate(filtered, params))
   }
 
   if (method === 'POST' && path === '/sandboxes') {
     const body = readBody<Partial<SandboxCreateRequest>>(config)
-    if (!body.name || !body.type) {
-      return fail(config, 40000, '场景名称与类型不能为空', 400)
+    if (!body.name) {
+      return fail(config, 40000, '场景名称不能为空', 400)
+    }
+    // C32：创建只允许 WHAT_IF，缺省即 WHAT_IF。
+    if (body.type && body.type !== 'WHAT_IF') {
+      return fail(config, 42200, '创建场景只允许 WHAT_IF 类型', 422)
     }
     const sandbox: Sandbox = {
       id: uuid(),
       name: body.name,
-      type: body.type,
-      parentSandboxId: body.parentSandboxId ?? null,
+      type: 'WHAT_IF',
+      parentSandboxId: body.parentSandboxId ?? DEFAULT_SANDBOX_ID,
       expiresAt: body.expiresAt ?? null,
-      snapshot: body.snapshot ?? {},
+      snapshot: { capturedAt: now(), note: 'Mock WHAT_IF 场景' },
       version: 1,
       createdAt: now()
     }
@@ -1647,24 +2018,76 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
     if (!sandbox) {
       return fail(config, 40400, '场景不存在', 404)
     }
+    const idempotencyKey = config.headers?.get?.('Idempotency-Key')
+    if (!idempotencyKey || typeof idempotencyKey !== 'string') {
+      return fail(config, 40000, 'Idempotency-Key 请求头必填', 400)
+    }
+    if (sandbox.type !== 'WHAT_IF') {
+      return fail(config, 42200, '只有 WHAT_IF 场景可以 apply 提升为 BASELINE', 422)
+    }
+    const reason = readBody<{ reason?: string }>(config).reason?.trim()
+    if (!reason) {
+      return fail(config, 40000, 'apply 必须填写 reason（写入审计）', 400)
+    }
+    // 原 BASELINE 归档，目标场景提升为 BASELINE 并发布新版本。
+    sandboxes.forEach((item) => {
+      if (item.type === 'BASELINE') {
+        item.type = 'ARCHIVED'
+      }
+    })
     sandbox.type = 'BASELINE'
     sandbox.version += 1
-    return ok(config, sandbox)
+    const planId = uuid()
+    const plan = createMockPlan(planId)
+    plan.action = {
+      ...plan.action,
+      sandboxId: sandbox.id,
+      status: 'PUBLISHED',
+      publishedAt: now(),
+      taskCount: plan.tasks.length,
+      affectedTaskCount: plan.tasks.length,
+      approver: null,
+      reason
+    }
+    mockPlanRecords.set(planId, plan)
+    const result: SandboxApplyResult = { sandbox, plan: plan.action }
+    return ok(config, result)
   }
 
   const compareSandboxMatch = path.match(/^\/sandboxes\/([^/]+)\/compare$/)
   if (method === 'GET' && compareSandboxMatch) {
-    return ok(config, {
-      sandboxId: decodeURIComponent(compareSandboxMatch[1]),
-      targetId: String(params.targetId ?? ''),
-      dueDateDeltaMinutes: -120,
-      utilizationDelta: 3.5,
+    const sandboxId = decodeURIComponent(compareSandboxMatch[1])
+    const targetId = String(params.targetId ?? '')
+    const sandbox = sandboxes.find((item) => item.id === sandboxId)
+    if (!sandbox) {
+      return fail(config, 40400, '场景不存在', 404)
+    }
+    if (!targetId || targetId === sandboxId) {
+      return fail(config, 42200, 'targetId 必须指定另一个场景', 422)
+    }
+    if (!sandboxes.some((item) => item.id === targetId)) {
+      return fail(config, 40400, '对比目标场景不存在', 404)
+    }
+    // Mock 固定返回被截断的明细（counts 为全量），用于验证前端显式提示“结果被截断”。
+    const compare: SandboxCompare = {
+      sandboxId,
+      targetId,
+      dueDateDeltaMinutes: -180,
+      utilizationDelta: 0.037,
       setupCountDelta: -2,
+      addedTaskCount: 210,
+      removedTaskCount: 90,
+      movedTaskCount: 30,
       changedTasks: [
-        { taskId: 2101, orderNo: 'SO-20261101-0001', resourceCode: 'RES-SMT-01' },
-        { taskId: 2102, orderNo: 'SO-20261101-0001', resourceCode: 'RES-ASSY-01' }
-      ]
-    })
+        { taskId: 2101, orderNo: 'SO-20261101-0001', resourceCode: 'RES-SMT-01', changeType: 'MOVED' },
+        { taskId: 2102, orderNo: 'SO-20261101-0001', resourceCode: 'RES-ASSY-01', changeType: 'MOVED' },
+        { taskId: 2103, orderNo: 'SO-20261102-0003', resourceCode: 'RES-AGE-01', changeType: 'ADDED' },
+        { taskId: 2104, orderNo: 'SO-20261103-0004', resourceCode: 'RES-SMT-01', changeType: 'REMOVED' },
+        { taskId: 2105, orderNo: 'SO-20261104-0008', resourceCode: 'RES-ASSY-01', changeType: 'ADDED' }
+      ],
+      truncated: true
+    }
+    return ok(config, compare)
   }
 
   if (method === 'POST' && path === '/solve-tasks') {
@@ -1775,11 +2198,56 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
     return ok(config, task)
   }
 
+  // C35 POST /plans/compare：先去重再判 2–3 个，响应已排序并附推荐与 tieBreak。
+  if (method === 'POST' && path === '/plans/compare') {
+    const body = readBody<{ planIds?: string[] }>(config)
+    const unique = [...new Set((body.planIds ?? []).filter((planId) => Boolean(planId)))]
+    if (unique.length < 2 || unique.length > 3) {
+      return fail(config, 42200, 'planIds 去重后必须为 2–3 个', 422)
+    }
+    const items: PlanCompareItem[] = unique.map((planId) => {
+      const record = mockPlanOf(planId)
+      const hash = [...planId].reduce((sum, character) => sum + character.charCodeAt(0), 0)
+      return {
+        planId,
+        planNo: record.action.planNo ?? '',
+        version: record.action.version,
+        scoreHard: hash % 7 === 0 ? -1 : 0,
+        scoreSoft: -(hash % 60),
+        taskCount: record.tasks.length,
+        metrics: {
+          durationMs: 15000 + (hash % 5000),
+          engineFallbackReason: null,
+          scoreHistory: [0, -120, -(hash % 60)],
+          unassignedTaskCount: hash % 3
+        }
+      }
+    })
+    items.sort((left, right) => {
+      const hardDiff = (right.scoreHard ?? Number.NEGATIVE_INFINITY) - (left.scoreHard ?? Number.NEGATIVE_INFINITY)
+      if (hardDiff !== 0) {
+        return hardDiff
+      }
+      const softDiff = (right.scoreSoft ?? Number.NEGATIVE_INFINITY) - (left.scoreSoft ?? Number.NEGATIVE_INFINITY)
+      if (softDiff !== 0) {
+        return softDiff
+      }
+      return left.planId.localeCompare(right.planId)
+    })
+    const result: PlanCompareResult = {
+      items,
+      recommendedPlanId: items[0]?.planId ?? null,
+      tieBreak: 'SCORE_HARD_DESC,SCORE_SOFT_DESC,PLAN_ID_ASC'
+    }
+    return ok(config, result)
+  }
+
   if (method === 'GET' && path === '/plans') {
     const sandboxId = String(config.params?.sandboxId ?? '')
     if (!sandboxId) {
       return fail(config, 40000, 'sandboxId不能为空', 400)
     }
+    ensureSeedPlans(sandboxId)
     const page = Number(config.params?.page ?? 1)
     const size = Number(config.params?.size ?? 20)
     const all = [...mockPlanRecords.values()]
@@ -1873,6 +2341,83 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       tasks: target ? [...target.tasks] : [...record.tasks]
     })
     return ok(config, created)
+  }
+
+  // C38/C39 导入导出：/{entity}/import/template、/{entity}/import、/{entity}/export、异步任务查询与取消。
+  const importTemplateMatch = path.match(/^\/([^/]+)\/import\/template$/)
+  if (method === 'GET' && importTemplateMatch) {
+    const entity = decodeURIComponent(importTemplateMatch[1])
+    if (!MOCK_IMPORT_ENTITY_SLUGS.has(entity)) {
+      return fail(config, 40400, `未知实体: ${entity}`, 404)
+    }
+    return binaryReply(`${entity}-import-template.xlsx`, `Mock 导入模板：${entity}`)
+  }
+
+  const importExportMatch = path.match(/^\/([^/]+)\/export$/)
+  if (method === 'GET' && importExportMatch) {
+    const entity = decodeURIComponent(importExportMatch[1])
+    if (!MOCK_IMPORT_ENTITY_SLUGS.has(entity)) {
+      return fail(config, 40400, `未知实体: ${entity}`, 404)
+    }
+    return binaryReply(`${entity}-export.xlsx`, `Mock 导出数据：${entity}`)
+  }
+
+  const importSubmitMatch = path.match(/^\/([^/]+)\/import$/)
+  if (method === 'POST' && importSubmitMatch) {
+    const entity = decodeURIComponent(importSubmitMatch[1])
+    if (!MOCK_IMPORT_ENTITY_SLUGS.has(entity)) {
+      return fail(config, 40400, `未知实体: ${entity}`, 404)
+    }
+    const mode = String(params.mode ?? 'preview').toLowerCase()
+    if (mode !== 'preview' && mode !== 'execute' && mode !== 'async') {
+      return fail(config, 40000, 'mode 只支持 preview/execute/async', 400)
+    }
+    const file = readUploadedFile(config)
+    if (mode === 'async') {
+      if (!file || file.size === 0) {
+        return fail(config, 42200, '导入文件不能为空', 422)
+      }
+      if (file.size > IMPORT_MAX_FILE_BYTES) {
+        return fail(config, 42200, '导入文件不能超过 5MB', 422)
+      }
+      return rawReply(createMockAsyncJob(entity, mockImportFails(file.name)), 202)
+    }
+    if (!file || file.size === 0) {
+      return fail(config, 40000, '导入文件不能为空', 400)
+    }
+    if (file.size > IMPORT_MAX_FILE_BYTES) {
+      return fail(config, 42200, '导入文件不能超过 5MB', 422)
+    }
+    return ok(
+      config,
+      mockSyncResult(entity, mockImportFails(file.name), mode === 'execute' ? 'EXECUTE' : 'PREVIEW')
+    )
+  }
+
+  const importCancelMatch = path.match(/^\/([^/]+)\/import\/jobs\/([^/]+)\/cancel$/)
+  if (method === 'POST' && importCancelMatch) {
+    const entity = decodeURIComponent(importCancelMatch[1])
+    const jobId = decodeURIComponent(importCancelMatch[2])
+    const record = mockImportJobs.get(jobId)
+    if (!record || record.view.entity !== entity) {
+      return fail(config, 40400, '导入任务不存在', 404)
+    }
+    if (isTerminalImportStatus(record.view.status)) {
+      return fail(config, 40901, `导入任务已结束（${record.view.status}），无法取消`, 409)
+    }
+    record.view = { ...record.view, status: 'CANCELLED', finishedAt: now() }
+    return rawReply(record.view, 202)
+  }
+
+  const importJobMatch = path.match(/^\/([^/]+)\/import\/jobs\/([^/]+)$/)
+  if (method === 'GET' && importJobMatch) {
+    const entity = decodeURIComponent(importJobMatch[1])
+    const jobId = decodeURIComponent(importJobMatch[2])
+    const record = mockImportJobs.get(jobId)
+    if (!record || record.view.entity !== entity) {
+      return fail(config, 40400, '导入任务不存在', 404)
+    }
+    return rawReply(advanceMockImportJob(jobId), 200)
   }
 
   return fail(config, 40400, `Mock 未匹配到接口：${method} ${path}`, 404)

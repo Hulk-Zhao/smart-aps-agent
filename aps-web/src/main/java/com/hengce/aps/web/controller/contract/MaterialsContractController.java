@@ -1,11 +1,10 @@
 package com.hengce.aps.web.controller.contract;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.Result;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
-import org.springdoc.core.annotations.ParameterObject;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,11 +22,12 @@ import java.util.UUID;
  * {@code MaterialController} 实现，日历 CRUD（{@code /calendars}、{@code /calendars/{id}}）
  * 由 {@code CalendarController} 实现，资源（{@code /resources}）由 {@code ResourceController}
  * 实现，BOM（{@code /boms}）由 {@code BomController} 实现，工艺路线（{@code /routings}）
- * 由 {@code RoutingController} 实现，MRP 分析（{@code /mrp/analysis}）由 {@code MrpController}
- * 实现，Excel 导入（{@code POST /materials/import}）由 {@code ImportExportController} 实现
+ * 由 {@code RoutingController} 实现，MRP 分析（{@code /mrp/analysis}）与采购建议
+ * （{@code /mrp/suggestions}）由 {@code MrpController} 实现，Excel 导入
+ * （{@code POST /materials/import}）由 {@code ImportExportController} 实现
  * （{@code multipart/form-data}），对应占位方法已删除——此前 {@code /materials/import} 的
  * {@code JsonNode} 占位不声明 consumes，运行期会静默抢路由并导致 415。
- * 其余未实现端点（含 {@code /calendars/{id}/available}、{@code /mrp/suggestions}）
+ * 其余未实现端点（{@code /calendars/{id}/available}、{@code /resources/{code}/maintenance}）
  * 仍返回 501 / code=50100。字段契约见 {@code docs/api/openapi/materials.yaml}。</p>
  */
 @RestController
@@ -59,21 +59,10 @@ public class MaterialsContractController {
      * @return 占位响应
      */
     @Operation(summary = "资源维护计划", description = "状态：占位。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping("/resources/{code}/maintenance")
     public Result<Void> maintainResource(@PathVariable String code,
                                          @RequestBody(required = false) JsonNode body) {
-        throw ContractSupport.notImplemented();
-    }
-
-    /**
-     * MRP 补料建议。
-     *
-     * @param query 分页参数
-     * @return 占位响应
-     */
-    @Operation(summary = "MRP 补料建议", description = "状态：占位。")
-    @GetMapping("/mrp/suggestions")
-    public Result<Void> mrpSuggestions(@ParameterObject PageQuery query) {
         throw ContractSupport.notImplemented();
     }
 }

@@ -1,5 +1,6 @@
 package com.hengce.aps.service.mrp;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -70,6 +71,7 @@ public record MrpAnalysisResponse(UUID sandboxId, OffsetDateTime analyzedAt, Mrp
      * @param suggestedQty 建议采购数量（includeSuggestions=true 时输出）
      * @param supplierCode 建议供应商编码；M2 未接供应商主数据，固定为 null
      */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     public record MrpShortage(String materialCode, String materialName, BigDecimal requiredQty,
                               BigDecimal availableQty, BigDecimal shortageQty,
                               OffsetDateTime earliestRequiredAt, List<String> affectedOrderNos,

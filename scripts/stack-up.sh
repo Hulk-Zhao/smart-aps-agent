@@ -174,12 +174,12 @@ if [[ ! -f .env ]]; then
     [[ -f .env.example ]] || fail '缺少 .env 与 .env.example，无法启动' '请从版本库恢复 .env.example 后重试'
     cp .env.example .env
     ENV_COPIED=1
-    warn '未找到 .env，已从 .env.example 复制；上线前务必替换所有默认密码与 JWT secret'
+    warn '未找到 .env，已从 .env.example 复制；上线前务必替换所有默认密码、APS_SECURITY_MODE 与 APS_SECURITY_JWT_SECRET'
 fi
 
 # ---- 必填变量校验：缺失/为空即失败，绝不静默取默认值 ----
 step '校验 .env 必填变量'
-REQUIRED_KEYS=(POSTGRES_PASSWORD REDIS_PASSWORD MINIO_ROOT_PASSWORD APS_JWT_SECRET)
+REQUIRED_KEYS=(POSTGRES_PASSWORD REDIS_PASSWORD MINIO_ROOT_PASSWORD APS_SECURITY_MODE APS_SECURITY_JWT_SECRET)
 MISSING=()
 for key in "${REQUIRED_KEYS[@]}"; do
     env_has "$key" || MISSING+=("$key")

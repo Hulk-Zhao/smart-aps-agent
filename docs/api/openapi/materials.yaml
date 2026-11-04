@@ -180,8 +180,11 @@ paths:
       operationId: importMaterials
       tags: [物料]
       summary: 导入物料
-      description: 状态：占位。multipart/form-data，字段 file（Excel）。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（ImportExportController#importFile，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:108-136）；
+        未做制品级 HTTP 验收，故标 partial。multipart/form-data，字段 file（Excel/CSV）。
+        本路径是 /{entity}/import 的旧别名（entity=materials），由同一处理方法承接；响应为 ImportResult。
+      x-implementation-status: partial
       requestBody:
         required: true
         content:
@@ -204,8 +207,6 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /boms:
     get:
       operationId: listBoms
@@ -840,9 +841,10 @@ paths:
       tags: [工艺路线]
       summary: 工艺路线列表
       description: |
-        状态：占位。分页查询工艺路线。
+        状态：代码已落地（RoutingController#list，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:80-91）；
+        未做制品级 HTTP 验收，故标 partial。分页查询工艺路线。
         筛选条件之间为 **AND**：`productCode` 精确匹配 material.code，`version` 为业务版本号（routing_version），`status` 精确匹配。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -874,14 +876,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfRoutingPage'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
     post:
       operationId: createRouting
       tags: [工艺路线]
       summary: 创建工艺路线
-      description: 状态：占位。工序节点构成 DAG，不允许环。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（RoutingController#create，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:115-120）；
+        未做制品级 HTTP 验收，故标 partial。工序节点构成 DAG，不允许环。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -901,15 +903,71 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+  /routings/{id}:
+    get:
+      operationId: getRouting
+      tags: [工艺路线]
+      summary: 工艺路线详情
+      description: |
+        状态：代码已落地（RoutingController#detail，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:101-105）；
+        未做制品级 HTTP 验收，故标 partial。返回 RoutingView（含 nodes/edges）。
+        域内 `/{id}` 已加正则排除 export/import 保留段（C38），导出路径按原路径使用即可。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfRouting'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      operationId: deleteRouting
+      tags: [工艺路线]
+      summary: 删除工艺路线
+      description: |
+        状态：代码已落地（RoutingController#delete，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:176-180）；
+        未做制品级 HTTP 验收，故标 partial。被订单/任务引用时返回 42200；响应 `data` 为 null。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功（data=null）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: 仍被订单或工艺路线节点引用（code=42200）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
   /routings/{id}/graph:
     get:
       operationId: routingGraph
       tags: [工艺路线]
       summary: 工艺路线 DAG
-      description: 状态：占位。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（RoutingController#graph，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:129-132）；
+        未做制品级 HTTP 验收，故标 partial。边由 node UUID 映射为 fromSeqNo/toSeqNo。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -926,18 +984,17 @@ paths:
                 $ref: '#/components/schemas/ResultOfRoutingGraph'
         '404':
           $ref: '#/components/responses/NotFound'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
     put:
       operationId: updateRoutingGraph
       tags: [工艺路线]
       summary: 保存工艺路线 DAG
       description: |
-        状态：占位。整体替换 nodes/edges；`nodes.edges` 为事实来源，同时刷新 routing.nodes/edges 快照。
+        状态：代码已落地（RoutingController#updateGraph，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:143-153）；
+        未做制品级 HTTP 验收，故标 partial。整体替换 nodes/edges；`nodes.edges` 为事实来源，同时刷新 routing.nodes/edges 快照。
         约束：seqNo 在路线内唯一；边使用 fromSeqNo/toSeqNo；dependType 仅 FS/SS/FF；保存时做 DAG 环检测。
         资源引用使用 `primaryResourceId`（UUID），不再接受 code；服务端校验资源存在。
         `version` 必填用于乐观锁，不一致返回 40901。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -975,8 +1032,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Result'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
+  /routings/{id}/activate:
+    post:
+      operationId: activateRouting
+      tags: [工艺路线]
+      summary: 激活工艺路线
+      description: |
+        状态：代码已落地（RoutingController#activate，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:163-166）；
+        未做制品级 HTTP 验收，故标 partial（契约外补充）。同产品其他 ACTIVE 自动收敛；并发冲突 40901。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfRouting'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: 并发激活冲突（code=40901）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
   /operation-templates:
     get:
       operationId: listOperationTemplates
@@ -1163,11 +1251,11 @@ paths:
       tags: [MRP]
       summary: 批量写入库存
       description: |
-        M2 冻结 C25（数据来自 V2 的 inventory/inventory_transit）。
+        状态：代码已落地（InventoryController#upsert，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/InventoryController.java:54-57）；
+        未做制品级 HTTP 验收，故标 partial。
         按 materialCode + warehouseCode upsert；snapshotAt 缺省当前 UTC。
-        M2 不提供库存维护页（归 M3）；本端点供 Excel/脚本灌数。
         物料不存在 40400；数量为负 42200；并发版本冲突 40901。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1197,10 +1285,11 @@ paths:
       tags: [MRP]
       summary: MRP 齐套分析
       description: |
-        状态：占位（契约已冻结 C25，实现归 W6）。
+        状态：代码已落地（MrpController#analyze，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/MrpController.java:67-70）；
+        未做制品级 HTTP 验收，故标 partial。
         blocking=true（默认）时，status != FULL 将阻止排产提交（42200 + 缺料明细）。
         availableQty = onHandQty + transitQty - safetyStock，下限 0。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1220,20 +1309,40 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /mrp/suggestions:
     x-milestone: M3
     get:
       operationId: mrpSuggestions
       tags: [MRP]
       summary: MRP 补料建议
-      description: 状态：占位。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（MrpController#suggestions，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/MrpController.java:84-93）；
+        未做制品级 HTTP 验收，故标 partial。sandboxId 必填；orderNos 逗号分隔；horizonDays 1–365 默认 30；固定 materialCode ASC，sort 传值返回 40000。
+      x-implementation-status: partial
       parameters:
+        - name: sandboxId
+          in: query
+          required: true
+          description: 排产场景标识（UUID）
+          schema:
+            type: string
+            format: uuid
+        - name: orderNos
+          in: query
+          required: false
+          description: 逗号分隔的订单号，空表示全部可排产订单
+          schema:
+            type: string
+        - name: horizonDays
+          in: query
+          required: false
+          description: 需求时间窗口 1–365 天，默认 30
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
-        - $ref: '#/components/parameters/Sort'
       responses:
         '200':
           description: 成功
@@ -1241,8 +1350,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfMrpSuggestionPage'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
 components:
   parameters:
     Page:

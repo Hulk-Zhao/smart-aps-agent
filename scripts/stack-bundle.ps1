@@ -138,7 +138,7 @@ try {
         '',
         '安装步骤:',
         '  1) docker load -i images/aps-stack-images.tar',
-        '  2) Copy-Item .env.example .env 并替换 POSTGRES_PASSWORD / REDIS_PASSWORD / MINIO_ROOT_PASSWORD / APS_JWT_SECRET',
+        '  2) Copy-Item .env.example .env 并替换 POSTGRES_PASSWORD / REDIS_PASSWORD / MINIO_ROOT_PASSWORD / APS_SECURITY_MODE / APS_SECURITY_JWT_SECRET',
         '  3) .\scripts\stack-up.ps1 -SkipPull    （Linux: ./scripts/stack-up.sh --skip-pull）',
         '  4) curl http://127.0.0.1:8080/api/v1/health  （若 .env 改了 APS_BACKEND_PORT 请对应替换）',
         '',

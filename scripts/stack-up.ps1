@@ -246,13 +246,14 @@ try {
         }
         Copy-Item $envExamplePath $envPath
         $envCopied = $true
-        Write-Warn '未找到 .env，已从 .env.example 复制；上线前务必替换所有默认密码与 JWT secret'
+        Write-Warn '未找到 .env，已从 .env.example 复制；上线前务必替换所有默认密码、APS_SECURITY_MODE 与 APS_SECURITY_JWT_SECRET'
     }
 
     # ---- 必填变量校验：缺失/为空即失败，绝不静默取默认值 ----
     Write-Step '校验 .env 必填变量'
     $envMap = Get-EnvMap -Path $envPath
-    $requiredKeys = @('POSTGRES_PASSWORD', 'REDIS_PASSWORD', 'MINIO_ROOT_PASSWORD', 'APS_JWT_SECRET')
+    $requiredKeys = @('POSTGRES_PASSWORD', 'REDIS_PASSWORD', 'MINIO_ROOT_PASSWORD',
+        'APS_SECURITY_MODE', 'APS_SECURITY_JWT_SECRET')
     $missingKeys = @()
     foreach ($key in $requiredKeys) {
         $fromFile = if ($envMap.ContainsKey($key)) { $envMap[$key].Trim() } else { '' }

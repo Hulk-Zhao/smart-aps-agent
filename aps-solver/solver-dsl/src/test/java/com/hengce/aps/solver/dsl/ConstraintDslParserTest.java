@@ -46,6 +46,19 @@ class ConstraintDslParserTest {
     }
 
     @Test
+    void rejectsSingularConstraintArrayAfterAliasCleanup() {
+        String yaml = "version: 1\nconstraint:\n"
+                + "  - code: MIN_TARDINESS\n    weight: 20\n"
+                + "  - code: EDD\n    weight: 15\n";
+        DslValidationReport report = new ConstraintDslParser(true).validate(yaml);
+
+        assertFalse(report.valid(), "M3-BE-06 只保留单对象一版，数组形态不再接受");
+        assertEquals(DslErrorCodes.SYNTAX_ERROR, report.primaryCode());
+        assertTrue(report.issues().get(0).message().contains("单个映射"),
+                report.issues().get(0).message());
+    }
+
+    @Test
     void rejectsRepeatedSingularConstraintKeys() {
         String yaml = "version: 1\n"
                 + "constraint:\n  ruleCode: MIN_TARDINESS\n  weight: 20\n"

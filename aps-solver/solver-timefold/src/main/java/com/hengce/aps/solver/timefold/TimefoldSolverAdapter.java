@@ -385,8 +385,6 @@ public class TimefoldSolverAdapter implements SolverAdapter {
                 List.of(),
                 new SolveMetrics(
                         elapsedMillis(beginNanos),
-                        0L,
-                        0,
                         "TIME_LIMIT",
                         List.of(),
                         0,
@@ -402,8 +400,6 @@ public class TimefoldSolverAdapter implements SolverAdapter {
                 List.of(),
                 new SolveMetrics(
                         elapsedMs,
-                        0L,
-                        0,
                         "TERMINATED",
                         List.of(),
                         0,

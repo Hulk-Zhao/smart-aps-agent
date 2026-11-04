@@ -89,7 +89,7 @@ export interface OrderGanttData {
 }
 
 export interface TaskAdjustRequest {
-  /** C22：MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 由后端返回 50100。 */
+  /** C22：MOVE/LOCK/FREEZE/UNFREEZE；C36：SPLIT/MERGE。 */
   operation: 'MOVE' | 'LOCK' | 'FREEZE' | 'UNFREEZE' | 'SPLIT' | 'MERGE'
   version: number
   resourceCode?: string | null
@@ -99,6 +99,11 @@ export interface TaskAdjustRequest {
   lockFrom?: string | null
   lockTo?: string | null
   lockedResourceCodes?: string[]
+  /** C36 SPLIT：2–10 段，每段 > 0，和 = 源任务 qty（容差 1e-4）。 */
+  splitQuantities?: number[]
+  /** C36 MERGE：2–10 项，必须包含路径任务自身。 */
+  mergeTaskIds?: number[]
+  /** FREEZE / SPLIT / MERGE 必填，≤512。 */
   reason?: string
   dryRun?: boolean
   /** M1 兼容别名，等价 operation=FREEZE/UNFREEZE。 */
@@ -111,13 +116,19 @@ export interface TaskAdjustConflict {
   relatedTaskIds: number[]
 }
 
-/** C22 响应 TaskAdjustResult；dryRun 返回 applied=true 但不产生 adjustment 行。 */
+/** C22/C36 响应 TaskAdjustResult；dryRun 返回 applied=true 但不产生 adjustment 行。 */
 export interface TaskAdjustResult {
-  adjustmentId: string | null
+  /** task_adjustment.id BIGSERIAL → int64；dryRun 为 null。 */
+  adjustmentId: number | null
   applied: boolean
   dryRun: boolean
+  /** 操作后的主任务（SPLIT=源任务第 1 段，MERGE=目标任务）。 */
   task: GanttTask | null
   conflicts: TaskAdjustConflict[]
+  /** C36 SPLIT：本次新建任务 id；dryRun=true 时为空。 */
+  createdTaskIds?: number[]
+  /** C36 MERGE：本次软删任务 id；dryRun=true 时为空。 */
+  removedTaskIds?: number[]
 }
 
 export interface PlanAction {

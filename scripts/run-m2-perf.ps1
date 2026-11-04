@@ -40,7 +40,7 @@ param(
     [string]$DbName = 'aps_qa_perf',
     [string]$DbUser = 'aps',
     [string]$DbPassword = 'aps_dev_pwd',
-    [string]$ApiKey = 'dev-write-key',
+    [string]$ApiKey = $(if ($env:APS_DEV_API_KEY) { $env:APS_DEV_API_KEY } else { 'aps-dev-write-key-local-only' }),
     [string]$GcLog = 'D:\tools\_aps-localdata\qa-perf\gc-18089.log',
     [int]$JavaPid = 0,
     [int]$MoveThreadCount = 0,
@@ -147,11 +147,24 @@ if ($phaseTimeline.Contains('PERSISTING') -and $terminal -contains $final.status
 }
 
 # 独立核对库内落库行数
+# 中文 SQL 一律写临时 .sql 文件（UTF-8 无 BOM）再用 psql -f 执行：
+# PS 5.1 把含中文的 -c 参数按 GBK 传给 psql，服务端按 UTF-8 解析会报 0xb8 编码错误。
 $dbRows = -1
 if (Test-Path $psql) {
-    $raw = & $psql -h $DbHost -p $DbPort -U $DbUser -d $DbName -t -A `
-        -c "select count(*) from task t join orders o on o.id = t.order_id where t.tenant_id = '$tenant' and t.sandbox_id = '$sandbox' and o.remark = '高负载推演数据集' and t.created_at >= timestamptz '$createdAt';"
-    if ($LASTEXITCODE -eq 0) { $dbRows = [int]($raw.Trim()) }
+    $verifySql = "select count(*) from task t join orders o on o.id = t.order_id " +
+        "where t.tenant_id = '$tenant' and t.sandbox_id = '$sandbox' " +
+        "and o.remark = '高负载推演数据集' and t.created_at >= timestamptz '$createdAt';"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $verifySqlFile = Join-Path ([System.IO.Path]::GetTempPath()) ("aps-perf-verify-{0}.sql" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        [System.IO.File]::WriteAllText($verifySqlFile, $verifySql, $utf8NoBom)
+        $raw = & $psql -h $DbHost -p $DbPort -U $DbUser -d $DbName -t -A -v ON_ERROR_STOP=1 -f $verifySqlFile
+        if ($LASTEXITCODE -eq 0) { $dbRows = [int](($raw -join '').Trim()) }
+        else { Write-Host "[WARN] 库内落库行数核对失败（psql exit=$LASTEXITCODE），dbRows 记为 -1" -ForegroundColor Yellow }
+    }
+    finally {
+        Remove-Item $verifySqlFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # GC 日志增量解析（堆峰值 / 停顿）

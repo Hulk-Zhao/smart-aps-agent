@@ -9,6 +9,7 @@ import com.hengce.aps.service.process.template.OperationTemplateCommand;
 import com.hengce.aps.service.process.template.OperationTemplateService;
 import com.hengce.aps.web.controller.process.dto.OperationTemplateRequest;
 import com.hengce.aps.web.controller.process.dto.OperationTemplateView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -76,7 +77,8 @@ public class OperationTemplateController {
      * @return 工序模版
      */
     @Operation(summary = "工序模版详情", description = "已实现。路径参数为 UUID；不存在返回 40400。")
-    @GetMapping("/{id}")
+    // 排除通用导出/导入保留段，避免 GET /operation-templates/export 被本方法抢先匹配（C38）
+    @GetMapping("/{id:^(?!export$)(?!import$).+}")
     public Result<OperationTemplateView> detail(@PathVariable UUID id) {
         return Result.success(OperationTemplateView.from(operationTemplateService.get(id)));
     }
@@ -88,6 +90,7 @@ public class OperationTemplateController {
      * @return 新建后的工序模版
      */
     @Operation(summary = "新建工序模版", description = "已实现。编码+业务版本重复返回 40901。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping
     public Result<OperationTemplateView> create(@Valid @RequestBody OperationTemplateRequest request) {
         return Result.success(OperationTemplateView.from(operationTemplateService.create(toCommand(request))));
@@ -101,6 +104,7 @@ public class OperationTemplateController {
      * @return 更新后的工序模版
      */
     @Operation(summary = "更新工序模版", description = "已实现。version 用于乐观锁，冲突返回 40901。")
+    @RequiresPermission("MD_WRITE")
     @PutMapping("/{id}")
     public Result<OperationTemplateView> update(@PathVariable UUID id,
                                                 @Valid @RequestBody OperationTemplateRequest request) {
@@ -115,6 +119,7 @@ public class OperationTemplateController {
      * @return 空数据成功响应
      */
     @Operation(summary = "删除工序模版", description = "已实现。逻辑删除；被工艺路线节点引用返回 42200。")
+    @RequiresPermission("MD_WRITE")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable UUID id) {
         operationTemplateService.delete(id);

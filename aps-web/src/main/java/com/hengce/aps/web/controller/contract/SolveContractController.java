@@ -2,6 +2,7 @@ package com.hengce.aps.web.controller.contract;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.hengce.aps.common.api.Result;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,6 +30,7 @@ public class SolveContractController {
      * @return 占位响应
      */
     @Operation(summary = "上报异常事件", description = "状态：占位。")
+    @RequiresPermission("AGENT_EVENT")
     @PostMapping("/agent/events")
     public Result<Void> reportEvent(@RequestBody(required = false) JsonNode body) {
         throw ContractSupport.notImplemented();
@@ -41,6 +43,7 @@ public class SolveContractController {
      * @return 占位响应
      */
     @Operation(summary = "自然语言转 DSL", description = "状态：占位。")
+    @RequiresPermission("AGENT_EVENT")
     @PostMapping("/agent/nl-to-dsl")
     public Result<Void> nlToDsl(@RequestBody(required = false) JsonNode body) {
         throw ContractSupport.notImplemented();
@@ -65,6 +68,7 @@ public class SolveContractController {
      * @return 占位响应
      */
     @Operation(summary = "对话式 what-if", description = "状态：占位。")
+    @RequiresPermission("AGENT_EVENT")
     @PostMapping("/agent/whatif")
     public Result<Void> whatIf(@RequestBody(required = false) JsonNode body) {
         throw ContractSupport.notImplemented();

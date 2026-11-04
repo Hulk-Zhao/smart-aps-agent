@@ -18,7 +18,7 @@
 #>
 param(
     [string]$BaseUrl = 'http://localhost:18085/api/v1',
-    [string]$ApiKey = 'dev-write-key',
+    [string]$ApiKey = $(if ($env:APS_DEV_API_KEY) { $env:APS_DEV_API_KEY } else { 'aps-dev-write-key-local-only' }),
     [string]$SandboxId = 'a2a2a2a2-0000-4000-8000-000000000001',
     [string]$OrderNo = 'QA2-SO-003',
     [string[]]$NullMetricsTaskIds = @('77', '74', '73', '58'),

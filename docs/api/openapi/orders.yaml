@@ -3,8 +3,8 @@ info:
   title: 衡策 APS - 订单与场景 API
   version: 0.1.0
   description: |
-    orders 分组静态契约（P0-08）。GET /orders 与 GET /orders/{orderNo} 已实现，
-    其余为占位；统一约定见 ../../docs/api/conventions.md。
+    orders 分组静态契约（P0-08）。GET /orders 已实现；订单写、策略、场景代码已落地但未做制品级 HTTP 验收，标 partial；
+    订单开工与 ATP 仍为占位（501）。统一约定见 ../../docs/api/conventions.md。
 servers:
   - url: /api/v1
 tags:
@@ -36,8 +36,10 @@ paths:
       operationId: createOrder
       tags: [订单]
       summary: 创建订单
-      description: 状态：占位。orderNo 在租户内唯一。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（OrderController#create，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:115-118）；
+        未做制品级 HTTP 验收，故标 partial。默认 DRAFT/UNFROZEN；orderNo 在租户内唯一，重复返回 409/40900。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -59,8 +61,6 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /orders/{orderNo}:
     get:
       operationId: getOrder
@@ -89,11 +89,12 @@ paths:
       tags: [订单]
       summary: 更新订单
       description: |
-        状态：占位。仅 `DRAFT` 可修改；非 `DRAFT` 返回 42200。
+        状态：代码已落地（OrderController#update，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:130-134）；
+        未做制品级 HTTP 验收，故标 partial。仅 `DRAFT` 可修改；非 `DRAFT` 返回 42200。
         乐观锁：请求必须携带当前 `version`，与服务端 `orders.version` 不一致返回 40901。
         `orderNo` 不可修改；允许修改 materialCode/qty/dueDate/priority/customerId/routingId/remark/extAttrs。
-        路径参数为 order_no。
-      x-implementation-status: placeholder
+        路径参数为 order_no；域内 `/{orderNo}` 已加正则排除 export/import 保留段（C38）。
+      x-implementation-status: partial
       parameters:
         - name: orderNo
           in: path
@@ -127,17 +128,16 @@ paths:
                 $ref: '#/components/schemas/Result'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /orders/{orderNo}/confirm:
     put:
       operationId: confirmOrder
       tags: [订单]
       summary: 确认订单
       description: |
-        状态：占位。路径参数为 order_no；DRAFT → CONFIRMED。
+        状态：代码已落地（OrderController#confirm，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:145-148）；
+        未做制品级 HTTP 验收，故标 partial。路径参数为 order_no；DRAFT → CONFIRMED。
         幂等：重复确认返回 200，不重复执行副作用；目标状态幂等，不强制 Idempotency-Key。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: orderNo
           in: path
@@ -159,22 +159,21 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /orders/{orderNo}/freeze:
     put:
       operationId: freezeOrder
       tags: [订单]
       summary: 冻结/解冻订单
       description: |
-        状态：占位（契约已冻结 C23，实现归 W5）。路径参数为 order_no。
+        状态：代码已落地（OrderController#freeze，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:161-165）；
+        未做制品级 HTTP 验收，故标 partial。路径参数为 order_no。
         同一端点承载四态冻结与解冻：body `freezeStatus=UNFROZEN` 即解冻，**不提供独立 `/unfreeze`**。
         - LOCKED_TIME_WINDOW 必填 lockFrom/lockTo，to > from；缺失返回 400/40000
         - LOCKED_RESOURCE 必填 lockedResourceCodes（trim+去重后非空），否则 42200
         - UNFROZEN/FROZEN 自动清空锁信息（幂等，不报错）
         锁信息落 orders.ext_attrs.freezeLock，不新增列；OrderView 暴露只读 freezeLock。
         version 不一致返回 40901。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: orderNo
           in: path
@@ -200,18 +199,17 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /orders/{orderNo}/priority:
     put:
       operationId: updateOrderPriority
       tags: [订单]
       summary: 修改订单优先级
       description: |
-        状态：占位（契约已冻结 C23，实现归 W5）。
+        状态：代码已落地（OrderController#priority，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:177-182）；
+        未做制品级 HTTP 验收，故标 partial。
         优先级只影响软约束 PRIORITY_RESPECT，不改硬约束；URGENT 不提供抢占/插队语义。
         version 不一致返回 40901。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: orderNo
           in: path
@@ -244,10 +242,11 @@ paths:
       tags: [订单]
       summary: 释放订单
       description: |
-        M2 纳入（C23）。DRAFT/CONFIRMED -> RELEASED，并自动冻结该订单当前全部任务（lock_type=FROZEN）。
+        状态：代码已落地（OrderController#release，aps-web/src/main/java/com/hengce/aps/web/controller/OrderController.java:195-201）；
+        未做制品级 HTTP 验收，故标 partial。DRAFT/CONFIRMED/SCHEDULED -> RELEASED，并自动把订单下 PLANNED 任务置为 FROZEN。
         body 可空：{reason?, version?}。重复释放幂等返回 200，version 不变且不重复写审计。
         非法状态流转返回 42200；version 不一致返回 40901。
-      x-implementation-status: placeholder
+      x-implementation-status: partial
       parameters:
         - name: orderNo
           in: path
@@ -280,7 +279,8 @@ paths:
       tags: [订单]
       summary: 订单开工
       description: |
-        M2 纳入（C23）。RELEASED -> IN_PROGRESS，同样自动冻结该订单全部任务。
+        状态：占位。代码中不存在 `PUT /orders/{orderNo}/start` 映射（OrderController 仅有 list/detail/create/update/confirm/freeze/priority/release），
+        实际请求目前落 404；按 C23 契约保留 501 为待实现目标响应。
       x-implementation-status: placeholder
       parameters:
         - name: orderNo
@@ -308,6 +308,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
   /orders/atp:
     x-milestone: M3
     post:
@@ -342,8 +344,10 @@ paths:
       operationId: listStrategies
       tags: [策略]
       summary: 策略列表
-      description: 状态：占位。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（StrategyController#list，aps-web/src/main/java/com/hengce/aps/web/controller/strategy/StrategyController.java:58-66）；
+        未做制品级 HTTP 验收，故标 partial。每项返回 rules 与 ruleCount/weightSum；name/direction/effectiveOn 之间为 AND。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -355,14 +359,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfStrategyPage'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
     post:
       operationId: createStrategy
       tags: [策略]
       summary: 创建策略
-      description: 状态：占位。name + strategyVersion 租户内唯一。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（StrategyController#create，aps-web/src/main/java/com/hengce/aps/web/controller/strategy/StrategyController.java:89-92）；
+        未做制品级 HTTP 验收，故标 partial。name + strategyVersion 租户内唯一；rules 省略时使用 8 条默认权重。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -382,15 +386,15 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /strategies/{id}/clone:
     post:
       operationId: cloneStrategy
       tags: [策略]
       summary: 克隆策略
-      description: 状态：占位。生成新 strategyVersion，规则深拷贝。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（StrategyController#clone，aps-web/src/main/java/com/hengce/aps/web/controller/strategy/StrategyController.java:132-135）；
+        未做制品级 HTTP 验收，故标 partial。生成新 strategyVersion，规则深拷贝；id 不存在返回 40400。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -410,14 +414,12 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /strategies/{id}:
     get:
       operationId: getStrategy
       tags: [策略]
       summary: 策略详情
-      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。返回含 rules 的策略视图。
+      description: 状态：代码已落地（C19，W2）；未做制品级 HTTP 验收，故标 partial。返回含 rules 的策略视图。域内 `/{id}` 已加正则排除 export/import 保留段（C38）。
       x-implementation-status: partial
       parameters:
         - name: id
@@ -466,6 +468,32 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      operationId: deleteStrategy
+      tags: [策略]
+      summary: 删除策略
+      description: |
+        状态：代码已落地（StrategyController#delete，aps-web/src/main/java/com/hengce/aps/web/controller/strategy/StrategyController.java:117-121）；
+        未做制品级 HTTP 验收，故标 partial。逻辑删除；被订单引用时返回 42200。响应 `data` 为 null。
+      x-implementation-status: partial
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 成功（data=null）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Unprocessable'
   /strategies/{id}/export:
@@ -527,8 +555,10 @@ paths:
       operationId: listSandboxes
       tags: [场景]
       summary: 场景列表
-      description: 状态：占位。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（SandboxController#list，aps-web/src/main/java/com/hengce/aps/web/controller/sandbox/SandboxController.java:59-64）；
+        未做制品级 HTTP 验收，故标 partial。按 createdAt 倒序；返回 SandboxSummaryView（不含 snapshot）。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -540,14 +570,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfSandboxPage'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
     post:
       operationId: createSandbox
       tags: [场景]
       summary: 创建场景
-      description: 状态：占位。WHAT_IF 从 BASELINE 复制快照；BASELINE 每租户唯一。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（SandboxController#create，aps-web/src/main/java/com/hengce/aps/web/controller/sandbox/SandboxController.java:75-79）；
+        未做制品级 HTTP 验收，故标 partial。WHAT_IF 从 BASELINE 复制快照；BASELINE 每租户唯一。
+        响应为 SandboxSummaryView（不含 snapshot）。
+      x-implementation-status: partial
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -567,16 +598,16 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /sandboxes/{id}/apply:
     x-milestone: M3
     post:
       operationId: applySandbox
       tags: [场景]
       summary: 应用场景
-      description: 状态：占位。把 WHAT_IF 结果发布为主计划（BASELINE）。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（SandboxController#apply，aps-web/src/main/java/com/hengce/aps/web/controller/sandbox/SandboxController.java:93-100）；
+        未做制品级 HTTP 验收，故标 partial。把 WHAT_IF 结果发布为主计划（BASELINE）；响应为 SandboxApplyResultView（sandbox + plan）。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -591,21 +622,21 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResultOfSandbox'
+                $ref: '#/components/schemas/ResultOfSandboxApply'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Unprocessable'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
   /sandboxes/{id}/compare:
     x-milestone: M3
     get:
       operationId: compareSandbox
       tags: [场景]
       summary: 场景对比
-      description: 状态：占位。返回交期、利用率、切换次数差异。
-      x-implementation-status: placeholder
+      description: |
+        状态：代码已落地（SandboxController#compare，aps-web/src/main/java/com/hengce/aps/web/controller/sandbox/SandboxController.java:113-118）；
+        未做制品级 HTTP 验收，故标 partial。方向固定为 id - targetId；响应 SandboxCompareView。
+      x-implementation-status: partial
       parameters:
         - name: id
           in: path
@@ -631,8 +662,6 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
-        '501':
-          $ref: '#/components/responses/NotImplemented'
 components:
   parameters:
     Page:
@@ -1133,6 +1162,7 @@ components:
       enum: [BASELINE, WHAT_IF, ARCHIVED]
     Sandbox:
       type: object
+      description: 场景摘要（SandboxSummaryView）；不含 snapshot，字段取自 aps-service/.../service/sandbox/SandboxSummaryView.java
       properties:
         id:
           type: string
@@ -1149,13 +1179,20 @@ components:
           type: string
           format: date-time
           nullable: true
-        snapshot:
-          type: object
         version:
           type: integer
         createdAt:
           type: string
           format: date-time
+    SandboxApplyResult:
+      type: object
+      description: 场景应用结果（SandboxApplyResultView）；plan 为 C24 PlanActionView，形状定义在 gantt.yaml
+      properties:
+        sandbox:
+          $ref: '#/components/schemas/Sandbox'
+        plan:
+          type: object
+          description: PlanActionView（本文件不展开字段）
     SandboxCreateRequest:
       type: object
       required: [name, type]
@@ -1189,8 +1226,18 @@ components:
           type: number
         setupCountDelta:
           type: integer
+        addedTaskCount:
+          type: integer
+        removedTaskCount:
+          type: integer
+        movedTaskCount:
+          type: integer
+        truncated:
+          type: boolean
+          description: 明细是否被截断；计数字段始终为全量
         changedTasks:
           type: array
+          description: 变更明细，最多 200 条
           items:
             type: object
             properties:
@@ -1201,6 +1248,9 @@ components:
                 type: string
               resourceCode:
                 type: string
+              changeType:
+                type: string
+                enum: [ADDED, REMOVED, MOVED]
     ResultOfOrder:
       allOf:
         - $ref: '#/components/schemas/Result'
@@ -1271,6 +1321,13 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/Sandbox'
+    ResultOfSandboxApply:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SandboxApplyResult'
     ResultOfSandboxPage:
       allOf:
         - $ref: '#/components/schemas/Result'

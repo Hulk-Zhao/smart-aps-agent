@@ -8,6 +8,7 @@ import { ApiError } from '@/api/http'
 import { adjustTask, getOrderGantt, getResourceGantt, resolveResourceCalendars } from '@/api/gantt'
 import { getEnumLabel } from '@/constants/enums'
 import type {
+  GanttTask,
   OrderGanttData,
   ResourceGanttData,
   ResourceCalendarResolution,
@@ -274,15 +275,314 @@ export function createApiOrderGanttAdapter(): GanttAdapter {
   }
 }
 
-/** Mock 调整：按冻结语义模拟错误码，便于无后端写入时演示交互。 */
+/** Mock 调整：按冻结语义（C22 + C36）模拟错误码，便于无后端写入时演示交互。 */
+const MOCK_MIN_ADJUST_ITEMS = 2
+const MOCK_MAX_ADJUST_ITEMS = 10
+const MOCK_QTY_TOLERANCE = 1e-4
+let mockAdjustmentSequence = 5_200
+
+function toMockTask(bar: GanttBarModel, overrides: Partial<GanttTask> = {}): GanttTask {
+  return {
+    id: bar.taskId,
+    orderNo: bar.orderNo,
+    operationIndex: bar.operationIndex ?? 0,
+    operationName: bar.operationName ?? null,
+    resourceCode: bar.resourceCode ?? null,
+    secondaryResourceCodes: bar.secondaryResourceCodes ?? [],
+    setupStartTime: bar.setupStartTime,
+    setupEndTime: bar.setupEndTime,
+    startTime: bar.startTime,
+    endTime: bar.endTime,
+    qty: bar.qty ?? null,
+    status: bar.status,
+    sequenceInResource: bar.sequenceInResource ?? null,
+    version: bar.version,
+    lockType: bar.lockType ?? 'NONE',
+    late: bar.late ?? false,
+    ...overrides
+  }
+}
+
+function nextMockTaskId(dataset: GanttDataset): number {
+  let max = 0
+  dataset.rows.forEach((row) =>
+    row.bars.forEach((bar) => {
+      max = Math.max(max, bar.taskId)
+    })
+  )
+  return max + 1
+}
+
+function assertAdjustable(
+  row: GanttRowModel,
+  bar: GanttBarModel,
+  operation: TaskAdjustRequest['operation']
+): void {
+  if (bar.status === 'IN_PROGRESS' || bar.status === 'COMPLETED') {
+    throw new ApiError(40903, '进行中/已完成任务不可调整')
+  }
+  if (
+    operation === 'SPLIT' ||
+    operation === 'MERGE' ||
+    operation === 'MOVE' ||
+    operation === 'LOCK' ||
+    operation === 'UNFREEZE'
+  ) {
+    const taskFrozen =
+      bar.status === 'FROZEN' || bar.lockType === 'FROZEN' || bar.frozen
+    if (row.freezeStatus === 'FROZEN' || taskFrozen) {
+      throw new ApiError(42201, `任务/订单已冻结，${operation} 不可执行`)
+    }
+  }
+}
+
+function applyMockSplit(
+  dataset: GanttDataset,
+  row: GanttRowModel,
+  bar: GanttBarModel,
+  payload: TaskAdjustRequest
+): TaskAdjustResult {
+  if (!payload.reason?.trim()) {
+    throw new ApiError(40000, 'SPLIT 必须提供 reason')
+  }
+  const qty = bar.qty
+  if (qty === null || qty === undefined || qty <= 0) {
+    throw new ApiError(42200, 'SPLIT 要求源任务 qty 非空且 > 0')
+  }
+  const quantities = payload.splitQuantities
+  if (!quantities || quantities.length === 0) {
+    throw new ApiError(40000, 'SPLIT 必须提供 splitQuantities')
+  }
+  if (quantities.length < MOCK_MIN_ADJUST_ITEMS || quantities.length > MOCK_MAX_ADJUST_ITEMS) {
+    throw new ApiError(42200, `splitQuantities 需为 2–10 项: 实际 ${quantities.length} 项`)
+  }
+  if (quantities.some((value) => !Number.isFinite(value) || value <= 0)) {
+    throw new ApiError(42200, `splitQuantities 每项必须 > 0: ${quantities.join(',')}`)
+  }
+  const total = quantities.reduce((sum, value) => sum + value, 0)
+  if (Math.abs(total - qty) > MOCK_QTY_TOLERANCE) {
+    throw new ApiError(42200, `splitQuantities 之和必须等于源任务 qty（合计 ${total} / qty ${qty}）`)
+  }
+  const start = Date.parse(bar.startTime)
+  const end = Date.parse(bar.endTime)
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    throw new ApiError(42200, '源任务时间窗非法，无法按比例切分')
+  }
+  const segments: Array<{ start: number; end: number }> = []
+  let accumulated = 0
+  let cursor = start
+  quantities.forEach((value, index) => {
+    accumulated += value
+    const segEnd =
+      index === quantities.length - 1
+        ? end
+        : start + Math.round((end - start) * (accumulated / total))
+    if (segEnd <= cursor) {
+      throw new ApiError(42200, '按数量切分后出现零长度子任务，请调整 splitQuantities')
+    }
+    segments.push({ start: cursor, end: segEnd })
+    cursor = segEnd
+  })
+
+  if (payload.dryRun) {
+    return {
+      adjustmentId: null,
+      applied: true,
+      dryRun: true,
+      task: toMockTask(bar, {
+        qty: quantities[0],
+        startTime: new Date(segments[0].start).toISOString(),
+        endTime: new Date(segments[0].end).toISOString(),
+        status: 'PLANNED',
+        version: bar.version
+      }),
+      conflicts: [],
+      createdTaskIds: [],
+      removedTaskIds: []
+    }
+  }
+
+  const baseSequence = bar.sequenceInResource ?? 0
+  row.bars.forEach((item) => {
+    if ((item.sequenceInResource ?? 0) > baseSequence) {
+      item.sequenceInResource = (item.sequenceInResource ?? 0) + quantities.length - 1
+    }
+  })
+  const createdTaskIds: number[] = []
+  const firstNewId = nextMockTaskId(dataset)
+  quantities.slice(1).forEach((value, index) => {
+    const segment = segments[index + 1]
+    const created: GanttBarModel = {
+      taskId: firstNewId + index,
+      orderNo: bar.orderNo,
+      label: `${bar.operationName ?? `工序 ${bar.operationIndex ?? 0}`} · 分批 ${index + 2}`,
+      startTime: new Date(segment.start).toISOString(),
+      endTime: new Date(segment.end).toISOString(),
+      status: 'PLANNED',
+      frozen: false,
+      version: 1,
+      operationIndex: bar.operationIndex,
+      operationName: bar.operationName ?? null,
+      resourceCode: payload.resourceCode ?? bar.resourceCode ?? null,
+      secondaryResourceCodes: bar.secondaryResourceCodes ?? [],
+      qty: value,
+      sequenceInResource: baseSequence + index + 1,
+      lockType: 'NONE',
+      late: false
+    }
+    createdTaskIds.push(created.taskId)
+    row.bars.push(created)
+  })
+
+  bar.qty = quantities[0]
+  bar.startTime = new Date(segments[0].start).toISOString()
+  bar.endTime = new Date(segments[0].end).toISOString()
+  bar.setupEndTime = bar.startTime
+  bar.status = 'PLANNED'
+  bar.frozen = false
+  bar.lockType = 'NONE'
+  bar.version += 1
+  row.bars.sort(
+    (left, right) =>
+      (left.sequenceInResource ?? 0) - (right.sequenceInResource ?? 0) ||
+      Date.parse(left.startTime) - Date.parse(right.startTime)
+  )
+  return {
+    adjustmentId: (mockAdjustmentSequence += 1),
+    applied: true,
+    dryRun: false,
+    task: toMockTask(bar),
+    conflicts: [],
+    createdTaskIds,
+    removedTaskIds: []
+  }
+}
+
+function applyMockMerge(
+  row: GanttRowModel,
+  bar: GanttBarModel,
+  payload: TaskAdjustRequest
+): TaskAdjustResult {
+  if (!payload.reason?.trim()) {
+    throw new ApiError(40000, 'MERGE 必须提供 reason')
+  }
+  const ids = payload.mergeTaskIds
+  if (!ids || ids.length === 0) {
+    throw new ApiError(40000, 'MERGE 必须提供 mergeTaskIds')
+  }
+  if (ids.length < MOCK_MIN_ADJUST_ITEMS || ids.length > MOCK_MAX_ADJUST_ITEMS) {
+    throw new ApiError(42201, `mergeTaskIds 需为 2–10 项: 实际 ${ids.length} 项`)
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw new ApiError(42201, 'mergeTaskIds 不允许重复')
+  }
+  if (!ids.includes(bar.taskId)) {
+    throw new ApiError(42201, `mergeTaskIds 必须包含路径任务 id: ${bar.taskId}`)
+  }
+  const participants = ids.map((id) => row.bars.find((item) => item.taskId === id) ?? null)
+  if (participants.some((item) => item === null)) {
+    throw new ApiError(40400, '合并任务不存在或不在当前窗口')
+  }
+  const bars = participants as GanttBarModel[]
+  if (
+    bars.some(
+      (item) =>
+        item.orderNo !== bar.orderNo ||
+        item.operationIndex !== bar.operationIndex ||
+        (item.resourceCode ?? null) !== (bar.resourceCode ?? null)
+    )
+  ) {
+    throw new ApiError(42201, 'MERGE 要求同订单、同工序、同资源')
+  }
+  if (
+    bars.some(
+      (item) => item.status === 'FROZEN' || item.frozen || item.lockType === 'FROZEN'
+    )
+  ) {
+    throw new ApiError(42201, 'MERGE 不允许包含冻结任务')
+  }
+  if (bars.some((item) => item.status === 'IN_PROGRESS' || item.status === 'COMPLETED')) {
+    throw new ApiError(40903, 'MERGE 不允许包含进行中/已完成任务')
+  }
+  if (bars.some((item) => item.qty === null || item.qty === undefined || item.qty <= 0)) {
+    throw new ApiError(42200, 'MERGE 要求所有参与任务 qty 非空且 > 0')
+  }
+  const group = row.bars
+    .filter(
+      (item) =>
+        item.operationIndex === bar.operationIndex &&
+        (item.resourceCode ?? null) === (bar.resourceCode ?? null)
+    )
+    .sort(
+      (left, right) =>
+        (left.sequenceInResource ?? Number.MAX_SAFE_INTEGER) -
+          (right.sequenceInResource ?? Number.MAX_SAFE_INTEGER) ||
+        Date.parse(left.startTime) - Date.parse(right.startTime)
+    )
+  const positions = bars.map((item) => group.findIndex((entry) => entry.taskId === item.taskId))
+  positions.sort((left, right) => left - right)
+  if (positions.some((value, index) => index > 0 && value !== positions[index - 1] + 1)) {
+    throw new ApiError(42201, 'MERGE 要求参与任务在资源内连续相邻')
+  }
+
+  const qty = bars.reduce((sum, item) => sum + (item.qty ?? 0), 0)
+  const startTime = bars
+    .map((item) => item.startTime)
+    .reduce((earliest, value) => (Date.parse(value) < Date.parse(earliest) ? value : earliest))
+  const endTime = bars
+    .map((item) => item.endTime)
+    .reduce((latest, value) => (Date.parse(value) > Date.parse(latest) ? value : latest))
+  const earliest = bars.reduce((left, right) =>
+    Date.parse(left.startTime) <= Date.parse(right.startTime) ? left : right
+  )
+  const mergedTask = toMockTask(bar, {
+    qty,
+    startTime,
+    endTime,
+    setupStartTime: earliest.setupStartTime,
+    setupEndTime: earliest.setupEndTime,
+    version: bar.version + 1
+  })
+
+  if (payload.dryRun) {
+    return {
+      adjustmentId: null,
+      applied: true,
+      dryRun: true,
+      task: mergedTask,
+      conflicts: [],
+      createdTaskIds: [],
+      removedTaskIds: []
+    }
+  }
+
+  bar.qty = qty
+  bar.startTime = startTime
+  bar.endTime = endTime
+  bar.setupStartTime = earliest.setupStartTime
+  bar.setupEndTime = earliest.setupEndTime
+  bar.version += 1
+  const removedTaskIds = bars
+    .filter((item) => item.taskId !== bar.taskId)
+    .map((item) => item.taskId)
+  const removed = new Set(removedTaskIds)
+  row.bars = row.bars.filter((item) => !removed.has(item.taskId))
+  return {
+    adjustmentId: (mockAdjustmentSequence += 1),
+    applied: true,
+    dryRun: false,
+    task: mergedTask,
+    conflicts: [],
+    createdTaskIds: [],
+    removedTaskIds
+  }
+}
+
 function applyMockAdjust(
   dataset: GanttDataset,
   taskId: number,
   payload: TaskAdjustRequest
 ): TaskAdjustResult {
-  if (payload.operation === 'SPLIT' || payload.operation === 'MERGE') {
-    throw new ApiError(50100, 'SPLIT/MERGE 在 M2 未实现')
-  }
   const row = dataset.rows.find((item) => item.bars.some((bar) => bar.taskId === taskId))
   const bar = row?.bars.find((item) => item.taskId === taskId)
   if (!row || !bar) {
@@ -291,17 +591,12 @@ function applyMockAdjust(
   if (payload.version !== bar.version) {
     throw new ApiError(40901, '任务版本已过期，请刷新后重试')
   }
-  if (bar.status === 'IN_PROGRESS' || bar.status === 'COMPLETED') {
-    throw new ApiError(40903, '进行中/已完成任务不可调整')
+  assertAdjustable(row, bar, payload.operation)
+  if (payload.operation === 'SPLIT') {
+    return applyMockSplit(dataset, row, bar, payload)
   }
-  const relaxing =
-    payload.operation === 'MOVE' || payload.operation === 'LOCK' || payload.operation === 'UNFREEZE'
-  if (relaxing && row.freezeStatus === 'FROZEN') {
-    throw new ApiError(42201, '订单级已冻结，任务级不可放宽')
-  }
-  const taskLocked = bar.status === 'FROZEN' || bar.lockType === 'FROZEN' || bar.frozen
-  if (relaxing && taskLocked) {
-    throw new ApiError(42201, '任务已冻结，请先解冻（订单级冻结不可放宽）')
+  if (payload.operation === 'MERGE') {
+    return applyMockMerge(row, bar, payload)
   }
 
   let nextStatus = bar.status
@@ -337,6 +632,9 @@ function applyMockAdjust(
     nextLock = 'TIME_WINDOW'
   }
   if (payload.operation === 'FREEZE') {
+    if (!payload.reason?.trim()) {
+      throw new ApiError(40000, 'FREEZE 必须提供 reason')
+    }
     nextStatus = 'FROZEN'
     nextLock = 'FROZEN'
   }
@@ -346,24 +644,13 @@ function applyMockAdjust(
   }
 
   const nextVersion = payload.dryRun ? bar.version : bar.version + 1
-  const task = {
-    id: bar.taskId,
-    orderNo: bar.orderNo,
-    operationIndex: bar.operationIndex ?? 0,
-    operationName: bar.operationName ?? null,
-    resourceCode: bar.resourceCode ?? null,
-    secondaryResourceCodes: bar.secondaryResourceCodes ?? [],
-    setupStartTime: bar.setupStartTime,
-    setupEndTime: bar.setupEndTime,
+  const task = toMockTask(bar, {
     startTime: nextStart,
     endTime: nextEnd,
-    qty: bar.qty ?? null,
     status: nextStatus,
-    sequenceInResource: bar.sequenceInResource ?? null,
     version: nextVersion,
-    lockType: nextLock,
-    late: bar.late ?? false
-  }
+    lockType: nextLock
+  })
   if (!payload.dryRun) {
     bar.startTime = nextStart
     bar.endTime = nextEnd
@@ -373,7 +660,7 @@ function applyMockAdjust(
     bar.version = nextVersion
   }
   return {
-    adjustmentId: payload.dryRun ? null : `mock-${taskId}-${Date.now()}`,
+    adjustmentId: payload.dryRun ? null : (mockAdjustmentSequence += 1),
     applied: true,
     dryRun: Boolean(payload.dryRun),
     task,

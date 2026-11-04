@@ -7,7 +7,7 @@ info:
     materials / boms / resources / calendars / operationTemplates / routings / orders / strategies / suppliers。
     注意：C26 拟定名单写 customers 而未写 strategies，与实现不一致，最终名单待用户点名（见 contract-freeze §24.12）。
     兼容别名（用于绕开 M1 遗留的 /materials/import 占位映射）：GET /import/{entity}/template、POST /import/{entity}、GET /export/{entity}，
-    不重复登记为独立 path。统一约定见 ../../docs/api/conventions.md。
+    不重复登记为独立 path。异步导入任务端点 GET/POST /{entity}/import/jobs/{jobId}[/cancel] 返回裸 ImportJobView（不包 Result）。统一约定见 ../../docs/api/conventions.md。
 servers:
   - url: /api/v1
 tags:
@@ -47,8 +47,10 @@ paths:
       tags: [导入导出]
       summary: 导入 Excel
       description: |
-        状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。
-        mode=preview 只校验并返回规范化样例；mode=execute 全部行通过后落库。
+        状态：代码已落地（C26，W9；ImportExportController#importFile，
+        aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:108-136）；
+        未做制品级 HTTP 验收，故标 partial。
+        mode=preview 只校验并返回规范化样例；mode=execute 全部行通过后落库；mode=async 受理后返回 202 + ImportJobView（裸对象，不包 Result）。
         X-Import-Token 幂等：执行模式下重复提交同一令牌返回首次结果（replayed=true）。
       x-implementation-status: partial
       parameters:
@@ -56,10 +58,10 @@ paths:
         - name: mode
           in: query
           required: false
-          description: preview（默认）/ execute
+          description: preview（默认）/ execute / async
           schema:
             type: string
-            enum: [preview, execute]
+            enum: [preview, execute, async]
             default: preview
         - name: X-Import-Token
           in: header
@@ -85,10 +87,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfImportResult'
+        '202':
+          description: 异步受理（裸 ImportJobView，不包 Result）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
         '400':
           $ref: '#/components/responses/BadRequest'
         '422':
           $ref: '#/components/responses/Unprocessable'
+  /{entity}/import/jobs/{jobId}:
+    x-milestone: M3
+    get:
+      operationId: getImportJob
+      tags: [导入导出]
+      summary: 查询异步导入任务
+      description: |
+        状态：代码已落地（ImportExportController#importJob，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:146-151）；
+        未做制品级 HTTP 验收，故标 partial。**响应是裸 ImportJobView，不包 Result**。
+        跨实体查询（job 不属于该 entity）按 40400 处理。字段取自 ImportJobView，形状未经制品级验收。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/ImportEntity'
+        - name: jobId
+          in: path
+          required: true
+          description: 任务 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 任务视图（裸对象）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /{entity}/import/jobs/{jobId}/cancel:
+    x-milestone: M3
+    post:
+      operationId: cancelImportJob
+      tags: [导入导出]
+      summary: 取消异步导入任务
+      description: |
+        状态：代码已落地（ImportExportController#cancelImportJob，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:162-168）；
+        未做制品级 HTTP 验收，故标 partial。**响应为 202 + 裸 ImportJobView，不包 Result**。
+        仅 PENDING/RUNNING 可取消，其他状态 40901。字段取自 ImportJobView，形状未经制品级验收。
+      x-implementation-status: partial
+      parameters:
+        - $ref: '#/components/parameters/ImportEntity'
+        - name: jobId
+          in: path
+          required: true
+          description: 任务 UUID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: 取消后的任务视图（裸对象）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /{entity}/export:
     x-milestone: M2
     get:
@@ -143,6 +211,61 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/ImportResult'
+    ImportJobStatus:
+      type: string
+      description: 异步导入任务状态机（C39）：PENDING → RUNNING → SUCCEEDED | FAILED | CANCELLED
+      enum: [PENDING, RUNNING, SUCCEEDED, FAILED, CANCELLED]
+    ImportJob:
+      type: object
+      description: |
+        异步导入任务视图（ImportJobView）；字段取自 aps-service/.../service/importexport/ImportJobView.java，
+        形状未经制品级验收。注意任务端点直接返回本对象，不包 Result 外壳。
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        entity:
+          type: string
+        mode:
+          type: string
+          description: 固定为 async
+          example: async
+        status:
+          $ref: '#/components/schemas/ImportJobStatus'
+        totalRows:
+          type: integer
+          description: 数据行总数（受理时为 0，执行后回填）
+        processedRows:
+          type: integer
+        inserted:
+          type: integer
+        updated:
+          type: integer
+        skipped:
+          type: integer
+        invalidRows:
+          type: integer
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImportError'
+        committed:
+          type: boolean
+          description: 是否已提交落库；FAILED 必为 false
+        contentHash:
+          type: string
+          description: '内容摘要，形如 sha256:<hex>'
+        createdAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
     ImportError:
       type: object
       required: [row, field, code, message]
@@ -198,6 +321,18 @@ components:
             $ref: '#/components/schemas/Result'
     Unprocessable:
       description: 业务校验失败（42200）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    NotFound:
+      description: 资源不存在（40400）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Result'
+    Conflict:
+      description: 状态冲突（40901）
       content:
         application/json:
           schema:

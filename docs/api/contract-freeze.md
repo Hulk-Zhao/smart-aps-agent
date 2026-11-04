@@ -1430,6 +1430,12 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 
 - 全局 `default-property-inclusion: non_null` **不得**作用于 `metrics` 映射内部；`metrics` 的值若为 `null`，**必须原样输出为 `null`**（不得丢弃、不得替换成默认值）。原因：`null` 表示「确实没有该值」，与「没算/不知道」不同。
 
+**`stepCount` / `unimprovedStepCount` 输出口径（2026-11-04 冻结）**：
+
+- `stepCount` / `unimprovedStepCount` 自 M3 起**不再对外输出**。
+- 原因：Timefold 2.8.0 社区版 `SolverJob` 无 `getStepCount()`；实现里三处构造恒写 `0L`（占位未接线），恒 0 会被读成「0 步」，属失真输出；且本键集合按本节本就「不冻结」。
+- 若后续要暴露求解进度类指标，**必须为真实计数并新增独立键名**（如 `moveEvaluationCount`，来源 `SolverJob#getMoveEvaluationCount()`），不得复用 `stepCount` 这一名字，也不得用任何估算/推算值。
+
 **已知限制：单进程求解并发度恒为 1（M2，W4 取证；不是 bug）**：
 
 - `SoftConstraintWeights` 是**进程级静态 `AtomicReference`**；互斥由 `TimefoldSolverAdapter` 的 `private static final ReentrantLock SOLVER_LOCK` 保证，临界区覆盖 `activate → create/buildSolver/solve → disable`；权重在 `SolverFactory.create(...)` 时被约束流读取一次并固化。因此**同一进程内同一时刻只能有一个求解会话，并发度恒为 1**。
@@ -1899,3 +1905,586 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 | `GET /mrp/suggestions` | `M3` | 采购建议优化属 M3/v0.5（`m2-plan.md` 范围表）；M2 只做齐套状态（C25） |
 
 边界：本节只点名，不冻结请求/响应形状；实现这些端点前须走 §0.1 契约变更流程。
+
+---
+
+## 25. M3 契约冻结（D0，2026-11-04）
+
+> 状态：**冻结**（C30–C41、V8–V13 号段）。
+> 唯一写者：W1（`dev-CONTRACT`）。本节只冻结形状与语义，**不实现业务逻辑**。
+> 事实来源优先级：本节 > §24 > `docs/api/openapi/*.yaml`（yaml 仍为占位的地方，以本节为准；yaml 同步由 S0 后续单独提交）。
+> 编号纪律：**只增不改**。C1–C29 正文一字不动；本节与旧条目冲突时，以本节为准并在旧条目处仅做「以 C30+ 为准」补注（D0 未做任何旧文改写）。
+
+### 25.0 编号/范围核对结论（先读）
+
+| 项 | 派工单/提案写法 | 实际核对结果 | D0 处理 |
+|---|---|---|---|
+| `C33` | 派工单把 **SPLIT/MERGE** 标为 C33 | 本文件 §1.1 中 **C33=计划下发与通知**，**C36=SPLIT/MERGE** | **不重编号**：SPLIT/MERGE 按 **C36** 冻结（本批放行）；C33 形状也在本节冻结，但**放行顺序排第二批**（等 W5 的 Sandbox 主链）。W4 以 C36 开工 |
+| E 条目数 | §24.13 标「M3=10」 | 实点 10 条（E1 + E2–E5 + E6–E8 + E9 + E10） | 一致，无冲突 |
+| C30 权限点 | 提案 `MASTERDATA_WRITE/AUDIT_READ` | V1 已落地 `MD_WRITE/SYS_AUDIT` 等 18 个 `permission.code` | **以 V1 为准**，不新造权限码 |
+| C34 建议日期 | 提案 `suggestedOrderDate` | 现有 `MrpSuggestion`/`MrpShortage` 为 `suggestedPurchaseDate` + `suggestedQty` | **用现有字段名**；`suggestedOrderDate` 不启用 |
+| C38 实体 slug | 提案 `customer` | `ImportEntity` 现有 slug 全为复数（materials/boms/...） | 冻结 **`customers`**（与现有约定一致），`customer` 别名待拍板 |
+| 迁移号段 | V8=RBAC、V9=审计、V10=Sandbox、V12=customers | **V1 已含** users/role/permission/role_permission/user_role 及种子、audit_log+3 索引、sandbox（BASELINE 种子 + 唯一索引）、customer 表 | V8/V9/V10/V13 **不建文件**（详见 25.13），仅 V11/V12 需 DDL |
+| 错误码 | 提案 40301/40302、40904、42202 | `ErrorCode` 现只有 40300/40901/42200 等，无上述码 | **D0 不新增错误码**，一律用既有码 + 具体 message；是否细分见 25.14 |
+
+### 25.1 C30 RBAC / 认证（W1，唯一写者）
+
+**现状**：RBAC 表与种子已在 V1 全部落地（5 角色、18 权限点、admin 账号）；`ApiSecurityFilter` 已支持 off/dev/prod 三模式、API Key 与 HS256 JWT 校验（`requiredRole` 默认 `APS_USER`）；**尚无** 登录、用户/角色管理、权限校验实现。`ErrorCode.FORBIDDEN=40300`、`UNAUTHORIZED=40100` 可直接复用。
+
+#### 25.1.1 权限码（即 `PermissionCode`，闭集）
+
+取值**只能**是 V1 `permission.code` 的 18 个值，不得新增/改名：
+
+`MD_READ`、`MD_WRITE`、`PR_READ`、`PR_WRITE`、`OM_READ`、`OM_WRITE`、`OM_ATP`、`ORDER_FREEZE`、`SS_READ`、`SS_WRITE`、`SE_SOLVE`、`SCHEDULE_ADJUST`、`SCHEDULE_PUBLISH`、`SYS_USER`、`SYS_ROLE`、`SYS_AUDIT`、`AGENT_EVENT`、`AGENT_CONFIRM`。
+
+角色码闭集（V1 种子，不可删除、不可改码）：`ADMIN`、`PLANNER`、`PROCESS_ENGINEER`、`SALES`、`VIEWER`。
+
+#### 25.1.2 端点与权限映射
+
+| 端点 | 方法 | 权限 | 状态 |
+|---|---|---|---|
+| `/api/v1/auth/login` | POST | 公开（仅限流/锁定） | 待实现 |
+| `/api/v1/me` | GET | 已认证 | 待实现（yaml 待补） |
+| `/api/v1/users` | GET | `SYS_USER` | 待实现 |
+| `/api/v1/users` | POST | `SYS_USER` | 待实现 |
+| `/api/v1/users/{userId}` | PATCH | `SYS_USER` | 待实现（yaml 待补） |
+| `/api/v1/roles` | GET | `SYS_USER` | 待实现（yaml 待补） |
+| `/api/v1/roles` | POST | `SYS_ROLE` | 待实现（yaml 待补） |
+| `/api/v1/roles/{roleId}/permissions` | PUT | `SYS_ROLE` | 待实现（yaml 待补） |
+| `/api/v1/permissions` | GET | 已认证 | 待实现（yaml 待补） |
+
+- 判定顺序**固定**：先认证（失败 `401/40100`），再授权（失败 `403/40300`）。不得把未认证报成 403。
+- 认证分支保持现状：`prod` **只认 `Authorization: Bearer <JWT>`**（`X-API-Key` 在 prod 被忽略）；`dev` 先看 `X-API-Key`（读写密钥），再无 key 时看 Bearer；两者同时存在时以 API Key 为准（C27）。M3 不给 API Key 分配权限码。
+- `dev` 模式的 API Key 视为服务凭证，**等价 ADMIN 权限**；审计 `user_id=null`（不伪造操作人）。这是 M3 明确让步，见 25.14。
+- `prod` 模式必须把 JWT `sub` 写入 `AuditContext`（当前留空，M3 必补）；`off` 模式行为不变（本地 demo/回归零改造）；`dev` 模式保留 `X-User-Id` 注入审计操作人。
+
+#### 25.1.3 登录
+
+`POST /api/v1/auth/login`，请求 `LoginRequest{username, password}`（两字段必填，`password` 不回显）。
+
+响应 `LoginResult`（沿用 yaml，不新增字段）：
+
+```json
+{ "accessToken": "<jwt>", "tokenType": "Bearer", "expiresIn": 28800, "userId": "..." }
+```
+
+- JWT：HS256，`sub=userId`、`tenantId`、`roles[]`、`iat`、`exp`。**`roles` 必须包含 `APS_USER`**（满足现有 `requiredRole` 默认值），业务角色码一并写入。
+- TTL：`aps.security.jwt.ttl-seconds`，默认 `28800`（8h）。**M3 不签发 refresh token**；过期后前端重新登录（`expiresIn` 即刷新/重登窗口，见 25.14）。
+- 失败统一 `401/40100`，message 固定「用户名或密码错误」（**不得**区分“用户不存在/密码错误”）。
+- 锁定：同一 `tenant+username` 连续 5 次失败 → `users.status=LOCKED`、`locked_until=now+15min`；锁定期内即使密码正确也 `401/40100`；成功后清零计数。计数落 `users.ext_attrs`（不新增表/列）。
+- 限流沿用 `RateLimitFilter`（默认 100 req/min/租户+调用方），超限 `429/42900`。
+- `ApiSecurityFilter` 必须把 `POST /api/v1/auth/login` 加入放行白名单（`prod` 下当前会先被 401 拦住，M3 必改；仅该路径与 `OPTIONS`）。
+- `Idempotency-Key` 对该端点**可选且无业务意义**（不因缺失报错）。
+
+#### 25.1.4 用户/角色
+
+- `User` 响应字段沿用 yaml：`id, username, displayName, email, phone, status, lastLoginAt, version`，**新增非空 `roleCodes[]`**；**永不返回 `password_hash`**。
+- `POST /users`：`UserCreateRequest{username*, displayName, email, phone, password*, roleCodes[]}`；`password` 在 M3 **必填**（本地 bcrypt；LDAP/SSO 不在 M3，DB 列可空是为后续接入预留）；`username` 租户内唯一，重复 → `42200`（不用 40903，40903 专门表示“已发布不可覆盖”）；`roleCodes` 含未知角色 → `42200`；密码 bcrypt（cost ≥ 10）落库。
+- `PATCH /users/{userId}`：body `{displayName?, email?, phone?, status?, roleCodes?, password?, version*}`；`version` 缺省或≠当前 → `40901`；`roleCodes` 为**全量替换**；禁止把最后一个 `ADMIN` 置为 `DISABLED/LOCKED`（`42200`）；禁止操作人停用自己（`40300`）。
+- `GET /roles`：`{items:[{id,code,name,description,permissionCodes[],version}]}`；`POST /roles`：`{code*,name*,description,permissionCodes[]}`，`code` 正则 `^[A-Z][A-Z0-9_]{1,31}$`、租户内唯一（`42200`）。
+- `PUT /roles/{roleId}/permissions`：body `{permissionCodes*[]}`，**全量替换**、空数组合法；未知权限码 → `42200`；`roleId` 不存在 → `40400`。
+- `GET /me`：复用 `User` + `permissions[]`（当前用户的权限码集合），供前端菜单/按钮控制；权限来源为用户所有角色的并集。
+- 权限变更生效上限 **60s**（进程内缓存 TTL）；测试需等待或重启后断言。
+
+### 25.2 C31 审计事件（W1）
+
+**现状**：`audit_log`（BIGSERIAL，追加只读，无 `updated_at/deleted`）与 3 个索引已在 V1；`AuditLogRepository.insert` 已存在；仅订单冻结/优先级/下发 3 个动作写审计，计划发布/回滚/调整**未写**，无查询端点。
+
+#### 25.2.1 事件类型（`AuditEventType`，闭集）
+
+| action | 触发点 | resourceType | 必填 before/after |
+|---|---|---|---|
+| `ORDER_FROZEN` | 已有（不得改名） | `ORDER` | after |
+| `ORDER_PRIORITY_CHANGED` | 已有（不得改名） | `ORDER` | before+after |
+| `ORDER_RELEASED` | 已有（不得改名） | `ORDER` | after |
+| `AUTH_LOGIN` | 登录成功 | `USER` | — |
+| `AUTH_LOGIN_FAILED` | 登录失败（独立事务） | `USER` | — |
+| `USER_CREATED` | 创建用户 | `USER` | after |
+| `USER_UPDATED` | 修改用户/角色分配 | `USER` | before+after |
+| `ROLE_CREATED` | 创建角色 | `ROLE` | after |
+| `ROLE_PERMISSION_CHANGED` | 角色权限替换 | `ROLE` | before+after |
+| `PLAN_PUBLISHED` | `POST /plans/{id}/publish` | `PLAN` | after |
+| `PLAN_ROLLBACK` | `POST /plans/{id}/rollback` | `PLAN` | before+after |
+| `PLAN_DISPATCHED` | `POST /plans/{id}/dispatch` | `PLAN` | after |
+| `SANDBOX_CREATED` | 创建 WHAT_IF | `SANDBOX` | after |
+| `SANDBOX_APPLIED` | apply 成功 | `SANDBOX` | after |
+| `IMPORT_EXECUTED` | `mode=execute` 落库成功 | `IMPORT` | after（含统计） |
+| `TASK_ADJUSTED` | 调整（含 SPLIT/MERGE） | `TASK` | before+after |
+
+- 新增动作**只对 M3 新行为**启用；不追溯补写 M1/M2 历史动作。
+- `resourceType` 闭集：`USER/ROLE/ORDER/PLAN/SANDBOX/TASK/IMPORT`。`resourceId` 为业务键字符串（task 用 BIGSERIAL 十进制、plan 用 planId UUID）。
+
+#### 25.2.2 写入约束
+
+- 写入点是**服务层**（事务内、业务写成功之后），不是 Controller 切面；审计写失败必须回滚业务事务（不得静默吞掉）。`AUTH_LOGIN_FAILED` 例外：独立事务，不能影响 401 响应。
+- 必填：`tenant_id`、`action`、`resource_type`、`created_at`；`user_id` 允许空（API Key / off 模式），**不得伪造**默认用户。
+- `before_value/after_value` 必须是 JSON object；敏感键（`password/passwordHash/token/accessToken/secret/apiKey`）写入前剔除或置 `"[REDACTED]"`。
+- 只允许 INSERT；不提供 UPDATE/DELETE 端点，不做物理清理（M3 不做归档，见 25.14）。
+
+#### 25.2.3 查询端点
+
+`GET /api/v1/audit-logs`（权限 `SYS_AUDIT`）
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `page` / `size` | 否 | 默认 1 / 20，`size` 上限 200 |
+| `action` | 否 | 精确匹配 |
+| `resourceType` | 否 | 精确匹配 |
+| `resourceId` | 否 | 精确匹配（yaml 待补） |
+| `userId` | 否 | UUID 精确匹配（yaml 待补） |
+| `from` / `to` | 否 | ISO-8601 UTC，闭开区间 `[from, to)` |
+| `sort` | 否 | 仅 `createdAt,asc|desc`，默认 `desc`；其他字段 `40000` |
+
+响应项 `AuditLog`（**字段名沿用 yaml，但 `id` 类型修正**）：
+
+```json
+{
+  "id": 1024,
+  "traceId": "...",
+  "userId": "...",
+  "action": "PLAN_PUBLISHED",
+  "resourceType": "PLAN",
+  "resourceId": "...",
+  "beforeValue": null,
+  "afterValue": {"status":"PUBLISHED"},
+  "clientIp": "10.0.0.1",
+  "createdAt": "2026-11-04T10:00:00Z"
+}
+```
+
+- `id` 为 **int64**（对齐 `audit_log.id BIGSERIAL`）；yaml 现有 `uuid` 定义属占位错误，yaml 待 S0 修正。
+- 字段映射（DB → API）：`audit_log.ip → clientIp`、`trace_id → traceId`；`user_agent` 不进 API（M3 不展示）。现有 `AuditLogRepository.record` 只写 7 列，`ip/trace_id` 为空是允许的（M3 不强制补齐，见 25.14）。
+- 租户过滤隐式（来自认证上下文），请求不接受 `tenantId`。
+
+### 25.3 C32 Sandbox 生命周期（W5）
+
+**现状**：`sandbox` 表（`type` CHECK `BASELINE|WHAT_IF|ARCHIVED`、`parent_sandbox_id`、`snapshot`、`expires_at`、`version`、软删）与「每租户唯一 BASELINE」唯一索引已在 V1；BASELINE 种子 `...0401`（C5）。**无**任何 Sandbox 实体/Controller/Service。**本契约不新增列、不新增迁移**。
+
+#### 25.3.1 列表/创建
+
+`GET /api/v1/sandboxes?type=&page=&size=&sort=`（权限 `SS_READ`）
+
+- 默认按 `createdAt DESC`；`sort` 仅允许 `createdAt`。
+- 响应 `SandboxSummary`（**列表不返回 `snapshot`**，避免大对象；yaml 的 `Sandbox.snapshot` 不得出现在列表）：`{id,name,type,parentSandboxId,expiresAt,version,createdAt}`。
+- `ARCHIVED` 默认**不返回**；`type=ARCHIVED` 显式查询才返回。
+
+`POST /api/v1/sandboxes`（权限 `SS_WRITE`，`Idempotency-Key` 可选）
+
+```json
+{ "name": "11月产能方案", "type": "WHAT_IF", "parentSandboxId": "...0401", "expiresAt": null }
+```
+
+- `name` 1–128 必填；`type` **只允许 `WHAT_IF`**（缺省即 `WHAT_IF`）；传 `BASELINE`/`ARCHIVED` → `42200`（每租户唯一 BASELINE，由 apply 产生，不允许直接建）。
+- `parentSandboxId` 缺省为当前 BASELINE；父场景不存在或已 `ARCHIVED` → `42200`。
+- 创建即深拷贝父场景 `snapshot`，`parentSandboxId` 固化，`version=1`；响应 `SandboxSummary`。
+- 无名称唯一约束（V1 未建），重名允许。
+
+#### 25.3.2 应用 `POST /sandboxes/{id}/apply`
+
+权限 `SCHEDULE_PUBLISH`；`Idempotency-Key` **必填**（缺失 `40000`）。
+
+请求体可为空，或 `{ "reason": "可选说明" }`。响应 `SandboxApplyResult`：
+
+```json
+{ "sandbox": { "id": "...", "name": "...", "type": "BASELINE", "parentSandboxId": "...", "expiresAt": null, "version": 2, "createdAt": "..." },
+  "plan": { "planId": "...", "planNo": "PLAN-20261104-001", "version": 12, "targetVersionNo": null,
+            "status": "PUBLISHED", "publishedAt": "...", "affectedTaskCount": 120,
+            "sandboxId": "...", "taskCount": 120, "approver": null, "reason": null, "rollbackOf": null } }
+```
+
+`plan` 复用 C24 `PlanActionView`（字段名一字不改）。
+
+**原子步骤（单事务，顺序固定）**：
+
+1. 取 `id` 场景 FOR UPDATE；不存在 → `40400`；`type != WHAT_IF` → `40901`；
+2. 该场景已经是 `BASELINE`（即已应用过）→ `40901`，message 含「已应用」；`ARCHIVED` → `40901`；
+3. 场景 `snapshot`/`task` 无任务（`taskCount=0`）→ `42200`；
+4. 生成新的 `plan_version`（`version = 该 sandbox 现有最大版本+1`，先 `DRAFT`）并**在同一事务内**按 C24 `publish` 固化快照、回填 `task.plan_version_id`；等价于「发布 + 提升场景」一次完成；
+5. 旧 BASELINE → `ARCHIVED`（不删除其任务、不改其历史 `plan_version.sandbox_id`）；
+6. 目标 WHAT_IF → `BASELINE`（**沿用同一 id**，`version+1`）；
+7. 写审计 `SANDBOX_APPLIED`，`resourceId=目标场景 id`，`afterValue` 含新 planId/版本。
+
+**与 `plan_version` 的关系（冻结）**：
+
+- `sandbox 1 : N plan_version`，`plan_version.sandbox_id` 只指向产生它的场景；apply **不**改历史版本的 `sandbox_id`。
+- 一个场景可有多条 `PUBLISHED` 版本（多次 apply 会产生）；「当前主计划」= **当前 BASELINE 场景上的最新 `PUBLISHED` 版本**，不是全局最新版本。
+- apply 归档旧 BASELINE 时，**旧场景上的历史 `PUBLISHED` 版本保持 PUBLISHED 只读**（不改状态为 ARCHIVED，避免与 C24 回滚语义混淆）；查询列表按 `sandbox_id` 过滤即可。
+- 回退：对旧 `ARCHIVED` 场景的版本执行 C24 `POST /plans/{id}/rollback` **允许**（回滚只重指向 `task.plan_version_id`，不改场景快照/类型），但仍受 C24 的 `40903` 场景级在制检查；回滚**不会**把场景类型改回 BASELINE（BASELINE 唯一性只由 apply 变更）。
+
+#### 25.3.3 对比 `GET /sandboxes/{id}/compare?targetId=`
+
+权限 `SS_READ`。
+
+- `id` 为**被比较方**（通常是 WHAT_IF），`targetId` 为**基线方**（通常是 BASELINE）；`targetId` 必填，缺失/非法 UUID → `40000`；任一不存在 → `40400`；`id == targetId` → `40000`。
+- 差异方向：`XxxDelta = id 的值 − targetId 的值`（正=被比较方更高/更晚/更多）。
+- 响应以 yaml `SandboxCompare` 为底，**新增 3 个计数字段与 `changeType`（D0 授权的新增，yaml 待同步）**：
+
+```json
+{
+  "sandboxId": "...", "targetId": "...",
+  "dueDateDeltaMinutes": -120,
+  "utilizationDelta": 0.03,
+  "setupCountDelta": 4,
+  "addedTaskCount": 2, "removedTaskCount": 1, "movedTaskCount": 7,
+  "changedTasks": [
+    { "taskId": 1001, "orderNo": "SO-001", "resourceCode": "R-001", "changeType": "MOVED" }
+  ]
+}
+```
+
+- `changeType` 闭集 `ADDED|REMOVED|MOVED`：以 `(orderNo, operationIndex)` 为业务键匹配两侧任务；业务键只在一侧存在 → ADDED/REMOVED；两侧都在但 `startTime/endTime/resourceCode` 任一不同 → MOVED。`taskId` 为**被比较方**任务 id（ADDED 为被比较方新任务，REMOVED 为基线方旧任务）。
+- `changedTasks` 上限 200，超出截断并在 `truncated=true`（新增布尔字段）标记；计数字段**始终为全量真实值**。
+- `dueDateDeltaMinutes`（单位**分钟**，方向 `id − targetId`，正=被比较方更晚）：
+  - 逐任务 `late = endTime − cutoff(dueDate)`，`cutoff = dueDate 次日的 00:00`，按**业务时区**（配置 `aps.business.time-zone`，默认 `Asia/Shanghai`）计算；只统计 `deleted=false` 且属于该场景的任务。
+  - 一侧取所有合格任务的 `maxLate`，无合格任务记 `0`；差值 = `id 侧 maxLate − target 侧 maxLate`。
+  - `endTime` 或 `dueDate` 为 `null` 的整条**跳过**；恰在截止点完成记 `0`；跨日按实际分钟累计。
+  - **不得**用「UTC 偏移贴本地日期零点」的写法（会导致 `Asia/Shanghai` 下截止点漂到本地次日 08:00）。
+- `utilizationDelta`（0–1 小数，保留 3 位，方向同上 `id − targetId`）：
+  - 窗口 = `[min(startTime), max(endTime)]`（仅统计 `startTime/endTime` 非空的行），`windowMinutes = 窗口分钟数`。
+  - 每资源 `busy_r = Σ(task 占用分钟)`（`resourceCode` 为 `null` 的行不计），`u_r = min(1.0, busy_r / windowMinutes)`——**封顶只发生在单资源比率**。
+  - 一侧 = 有 busy 记录资源的 `u_r` 均值；`busy` 为空或 `windowMinutes <= 0` 记 `0.0`；差值按 **3 位四舍五入**。
+- `setupCountDelta`：换型次数差。
+
+### 25.4 C36 `SPLIT/MERGE` 调整语义（W4，本批冻结）
+
+**现状**：`POST /tasks/{id}/adjust` 已实现 MOVE/LOCK/FREEZE/UNFREEZE（C22），`SPLIT/MERGE` 返回 `50100`；`task_adjustment.adjust_type` CHECK 已含 `SPLIT/MERGE`，`before/after` 为 JSONB，**无需新列**。
+
+#### 25.4.1 请求扩展（`TaskAdjustRequest` 追加可选字段）
+
+| 字段 | 类型 | 适用 | 约束 |
+|---|---|---|---|
+| `splitQuantities` | number[] | SPLIT | 2–10 项，每项 > 0，和 = 源 `task.qty`（容差 1e-4）；否则 `42200` |
+| `mergeTaskIds` | int64[] | MERGE | 2–10 项，含路径 `id` 自身；同 `tenant/sandbox/order/operation_index`，否则 `42201` |
+| `reason` | string | SPLIT/MERGE | **必填**，≤512；缺失 `40000`（FREEZE 既有规则不变） |
+
+- `operation` 仍取 `SPLIT|MERGE`；`version` 仍为乐观锁（≠当前 `task.version` → `40901`）。
+- `task.qty` 在 V1 允许 NULL：**SPLIT 要求源任务 `qty` 非空且 > 0**；**MERGE 要求所有参与任务 `qty` 非空且 > 0**；否则 `42200`（不得把 NULL 当 0）。
+- `dryRun=true`：只计算返回，不落库、不写审计、不产生 adjustmentId。
+
+#### 25.4.2 语义
+
+**SPLIT**（路径 `id` 为源任务）：
+
+- 源任务 `qty` 拆为 N 个子任务，**同一 `order_id/operation_index/sandbox_id`**，资源默认继承源任务（可用 `resourceCode` 覆盖全部子任务）。
+- 子任务时间：按 `splitQuantities` 比例切分源任务 `[start,end]`，保持连续、不重叠；`setup` 只在第一个子任务保留（`setup_start/end` 置空其余）。
+- 源任务：`qty` 置为第一段？**否** —— 源任务保留为第 1 段，其余 N−1 段为**新建任务**（`status=PLANNED`，`sequence_in_resource` 顺延）；这样撤销只需删除新建任务并恢复源 `qty`。
+- 父子关系**不新增列**：以 `task_adjustment.after_value` 记录 `createdTaskIds[]` 与 `parentTaskId`，审计可追溯；查询父子关系走调整历史（`GET /tasks/{id}/adjustments`）。
+- 子任务 `version=1`，`lockType` 不继承（新任务默认无锁）。
+
+**MERGE**（路径 `id` + `mergeTaskIds`）：
+
+- 前置：全部任务同租户、同 sandbox、同 order、同 `operation_index`、同 `resource_id`；在 `sequence_in_resource` 上**连续相邻**；均非 `FROZEN`（`42201`），`IN_PROGRESS/COMPLETED` 按 `40903`（见 25.4.4）；否则 `42201`。
+- 合并后保留 `id`（路径任务）为目标，`qty=Σ qty`，`start=min(start)`、`end=max(end)`，资源取目标任务；其余任务**软删**（`deleted=true`），不物理删除。
+- MERGE 后 `setup` 取最早任务；`version+1`。
+
+#### 25.4.3 响应
+
+沿用 `TaskAdjustResult`，追加两个可选数组（`dryRun=true` 时为空）：
+
+```json
+{ "adjustmentId": 2048, "applied": true, "dryRun": false,
+  "task": { "...": "GanttTask" }, "conflicts": [],
+  "createdTaskIds": [1002, 1003], "removedTaskIds": [1004, 1005] }
+```
+
+- `adjustmentId` 为 **int64**（对齐 `task_adjustment.id BIGSERIAL` 与现有 `TaskAdjustResult(Long)`）；yaml 的 `uuid` 为占位错误（见 25.14）。
+- `task` 为操作后的**主任务**（SPLIT=源任务第 1 段，MERGE=目标任务）。
+
+#### 25.4.4 守卫/幂等/审计
+
+- 源或目标任务 `IN_PROGRESS/COMPLETED` → `409/40903`（沿用 C22 任务级语义）；`FROZEN` 源 → `42201`。
+- `Idempotency-Key` **必填**（缺失 `40000`）；同键重复 → `409/40900`（沿用拦截器）。
+- 撤销走既有 `POST /tasks/adjustments/{adjustmentId}/undo`：SPLIT 撤销删除 `createdTaskIds` 并恢复源 qty；MERGE 撤销恢复 `removedTaskIds` 软删标记与 qty；仍受「每任务最多 50 步」限制。
+- 审计 `TASK_ADJUSTED`：`beforeValue={qty,taskIds}`、`afterValue={qty,taskIds,operation}`。
+
+### 25.5 C33 计划下发与通知（W5，第二批）
+
+**现状**：无任何 dispatch/notification 类或表；不接真实 MES/邮件/短信网关。M3 只做 **outbox 落库 + 通道抽象**。
+
+#### 25.5.1 下发 `POST /plans/{id}/dispatch`
+
+权限 `SCHEDULE_PUBLISH`；`Idempotency-Key` **必填**（缺失 `40000`）。
+
+```json
+{ "targets": [
+    { "channel": "EMAIL", "address": "planner@example.com" },
+    { "channel": "FEISHU", "address": "ou_xxx" }
+  ],
+  "message": "可选附加说明" }
+```
+
+- `targets` 1–50 项，同一 `(channel,address)` 不得重复（`42200`）；`channel` 闭集 `EMAIL|SMS|FEISHU`；`address` 非空 ≤256。
+- 计划必须存在（`40400`）且为 `PUBLISHED` 状态（否则 `40901`）。
+- 响应 `200`：
+
+```json
+{ "dispatchId": "...uuid...", "planId": "...", "status": "QUEUED",
+  "targetCount": 2, "queuedAt": "2026-11-04T10:00:00Z" }
+```
+
+- 语义：**只入 outbox**，不在此请求内真实发送；`status=QUEUED` 恒定。重复 `Idempotency-Key` 返回首次的 `dispatchId` 与原状态（不重复入队）。
+- 写审计 `PLAN_DISPATCHED`；`afterValue={dispatchId,channels,targetCount}`。
+
+#### 25.5.2 通知状态
+
+`GET /plans/{id}/dispatches?page&size`（权限 `SCHEDULE_PUBLISH`，yaml 待补）：
+
+```json
+{ "items": [ { "dispatchId": "...", "planId": "...", "status": "SENT",
+               "targetCount": 2, "sentCount": 2, "failedCount": 0,
+               "createdAt": "..." } ] }
+```
+
+- **分页口径**：示例只给 `{items:[...]}`，未规定分页外壳；实际返回 `PageResult{items,page,size,total,totalPages}` 属示例的**超集**，**不构成冲突**；`items` 元素形状必须与示例一致（不得增删字段）。
+- 聚合状态闭集：`QUEUED|SENT|PARTIAL|FAILED`（有失败且无成功=FAILED，部分成功=PARTIAL）。
+- **不使用 `GET /plans/{id}` 承载通知状态**：`PlanDetailView` 冻结为 `{action,tasks}`，加字段即破坏 C24；改为上述专用端点（与 m3-plan 原文的偏差，见 25.14）。
+- 单通道状态可在后续 `GET /dispatches/{dispatchId}/targets` 提供；**M3 不冻结**该端点。
+
+#### 25.5.3 重试与 outbox
+
+- 每目标最多 **2 次尝试**（首次 + 1 次重试），失败退避 **30s**，仍失败 → `FAILED` 终态（`EXHAUSTED` 仅作内部计数，不对外暴露）。
+- 幂等键：DB 唯一 `(tenant_id, dispatch_id, channel, address)`，重试不得产生重复行。
+- 不做真实短信/邮件发送；通道实现留给 `service/notification` 的 SPI，M3 提供 `NOOP`/`FILE` 两种落盘实现用于验收。
+
+### 25.6 C34 采购建议（W6，第二批）
+
+`GET /api/v1/mrp/suggestions`（权限 `MD_READ`；现状 `50100`）
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `sandboxId` | **是** | 场景 UUID；缺省不兜底 BASELINE（避免误读），缺失 `40000` |
+| `orderNos` | 否 | 逗号分隔；空=该场景全部可排产订单 |
+| `horizonDays` | 否 | 1–365，默认 30；只保留 `earliestRequiredAt <= now+horizonDays` 的建议（新增参数，实现待补） |
+| `page` / `size` | 否 | 默认 1 / 20，上限 200 |
+
+响应项 `MrpSuggestionView`（**字段与现有 `MrpAnalysisResponse.MrpShortage` 完全一致**，不新增库存明细字段）：
+
+```json
+{ "materialCode": "RM-0001", "materialName": "铝板",
+  "requiredQty": 120, "availableQty": -30, "shortageQty": 120,
+  "earliestRequiredAt": "...", "affectedOrderNos": ["SO-001"],
+  "suggestedPurchaseDate": "...", "suggestedQty": 120, "supplierCode": null }
+```
+
+- **字段名以现有实现为准**：`suggestedPurchaseDate`/`suggestedQty`（不是 `suggestedOrderDate`）；`materialName` 实现已有，yaml 待补。
+- 口径（对齐 `MrpAnalysisService#buildShortages`）：`availableQty = onHand + transit − safetyStock`（**可为负**，负值表示低于安全库存）；`shortageQty = requiredQty − max(availableQty, 0)`，`<= 0` 的物料不输出建议。
+- `suggestedPurchaseDate = earliestRequiredAt − material.leadTimeDays`（`leadTimeDays` 缺省 0）；`suggestedQty = shortageQty`；`supplierCode` 固定 `null`（M3 未接供应商主数据）。
+- 排序固定 **`materialCode ASC`**（与现有实现一致）；`sort` 参数不开放（传任何值 `40000`）。
+- 空结果 `200` + `items: []`（不是 404）。
+- `horizonDays` 仅过滤 `earliestRequiredAt`，不影响 `shortageQty` 计算。
+- 行业特例（SMT 飞达/储能分选）**不在 M3**。
+
+### 25.7 C35 多策略择优（W2，第二批）
+
+**现状**：`/strategies` 有列表/CRUD；`POST /solve-tasks` 单策略；无批量入口、无对比视图。
+
+#### 25.7.1 批量求解（不新增批量端点）
+
+- 前端/编排层对 N 个策略**串行**调用既有 `POST /solve-tasks`（每策略一个 `solveTaskId`），**不**新增 `/solve-tasks/batch`。
+- N 上限 **3**（M3）；超限由编排层拒绝（`42200`）。`W3 提供批量入口` 的表述降级为「客户端编排」，避免新增契约面。
+- 每策略可使用相同 `sandboxId` 与不同 `strategyId`；`randomSeed` 必须固定，保证可复现。
+
+#### 25.7.2 对比 `POST /plans/compare`（yaml 已补：`gantt.yaml`，2026-11-04）
+
+权限 `SS_READ`；body：
+
+```json
+{ "planIds": ["...", "..."] }
+```
+
+- `planIds` 2–3 个 UUID，去重；任一不存在或其版本无快照 → `42200`；缺失 `40000`。
+
+响应：
+
+```json
+{ "items": [
+    { "planId": "...", "planNo": "PLAN-20261104-001", "version": 12,
+      "scoreHard": -40, "scoreSoft": 120, "taskCount": 120,
+      "metrics": { "...": "solve_task.metrics 原样透传" } }
+  ],
+  "recommendedPlanId": "...",
+  "tieBreak": "SCORE_HARD_DESC,SCORE_SOFT_DESC,PLAN_ID_ASC" }
+```
+
+- 选优规则（**确定性、可复现**）：`scoreHard` 降序（越大越优，0 为无硬违约）→ `scoreSoft` 降序 → `planId` 字符串升序。并列时 `recommendedPlanId` 取上述排序第一，**不得**“随机选”或“取最新”。
+- `metrics` 为 `solve_task.metrics` **原样 map**（不重命名、不裁剪键）；不新增 `StrategyCompareView` 专用指标，避免与 C28 指标清单二次维护。
+- 不落库、不产生新计划版本；纯读。
+
+#### 25.7.3 评分来源（`plan_version` 无评分列）
+
+`plan_version` **没有评分列**；对比项的 `scoreHard` / `scoreSoft` / `metrics` 不是计划版本自身字段，而是**关联求解记录**的投影。该口径属于契约，**不得只写在实现类注释里**：
+
+- 关联规则：取「**同租户 + 同 `sandbox_id`（取该计划版本自身的场景）+ `published_at` 之前（含）最后一次 `SOLVED`**」的 `solve_task`。
+- 唯一定位：`status = 'SOLVED'`、`finished_at IS NOT NULL`、`deleted = false`，按 `finished_at DESC, id DESC` 取第一条；`id` 为主键，保证并列时仍有确定性裁决。
+- **必须可复现**：同一计划版本在同一数据状态下多次比对，必须命中同一条求解记录并返回同一 `scoreHard/scoreSoft/metrics`；不得依赖数据库返回顺序、缓存或并发时序。
+- 找不到唯一命中（发布时刻前无 `SOLVED` 记录，或并列时无法给出确定性裁决）→ **`422 / 42200`**；**不得**猜测、**不得**退化为「取最新」或「取第一条」。
+- 本契约优先于实现注释：二者冲突时以本节为准。
+
+**与实现的偏差（如实登记，2026-11-04）**：
+
+1. `metrics` 非逐键原样：实现先按 §24.2 剔除 `stepCount` / `unimprovedStepCount`，其余键不重命名、不裁剪。属已冻结口径，不计为对比逻辑裁剪。
+2. `published_at` 为空时，实现把上界取为「当前时刻（UTC）」再按同一排序取记录。本节只定义「`published_at` 之前」；空值属未定义边缘，按实现执行并在此登记（正常发布版本恒有 `published_at`）。
+3. `scoreHard` / `scoreSoft` 可空；实现排序把空值置于最后（`nullsLast`）。本节未定义空分排序，按实现登记。
+4. `planIds` 去重后不足 2 个或超过 3 个：**契约规定 `400 / 40000`**；实现曾偏差为 `42200`，已于 2026-11-04 修回，以本节为准。
+
+### 25.8 C37 `PARTIAL` 降级与重试（W3，第二批）
+
+**现状**：`SolveTaskStatus` 闭集 `PENDING/RUNNING/SOLVED/FAILED/CANCELLED/TIMEOUT`；`metrics.fallbackMode` 已冻结 `HARD_ONLY|PARTIAL`（C28），M2 只产出 `HARD_ONLY`。**不新增状态值**。
+
+#### 25.8.1 重试编排
+
+- 触发：`ENGINE_ERROR` / `TIMEOUT` / `SOLVER_UNAVAILABLE`（`engineFallbackReason` 三类）。
+- **不触发**：DSL/参数校验失败（`42200`）、重叠守卫、覆盖不完整（属业务结果，不重试）。
+- 次数：**最多 2 次尝试**（首次 + 1 次重试）；间隔固定 **30s**。
+- 每次尝试写 `metrics.attemptCount`、`metrics.retryReasons[]`（字符串数组）、`metrics.retryAt[]`（ISO-8601 UTC）。
+- 重试仍失败 → 终态 `FAILED`（若最后一次为超时则 `TIMEOUT`），`errorCode ∈ {ENGINE_ERROR, TIMEOUT, SOLVER_UNAVAILABLE}`（沿用现有取值，**不用 HTTP 码当 errorCode**），并保留 `engineFallback*`。
+
+#### 25.8.2 PARTIAL
+
+- `fallbackMode=PARTIAL` **仅当**引擎产出了部分任务（`metrics.partialAssignedTaskCount > 0` 且 `< expectedTaskCount`）时写；无任何任务 → `HARD_ONLY`。
+- `expectedTaskCount`、`partialAssignedTaskCount`、`unassignedTaskCount` 为 **D0 新增 metrics 键**（yaml/C28 指标清单待补注）；不改 C28 已有键名。
+- 终态**必须** `status=FAILED`（不得 `SOLVED`，C28 §24.2 第 6/7 条）；`metrics.discardedBestSolution=true`、`persistedTaskCount=0`、`partialAssignedTaskCount=<已排位数>`、`unassignedTaskCount=<未排位数>`。
+- `GET /solve-tasks/{id}` 的 `tasks` 仍为 `[]`（C20：非 SOLVED 空数组）；未排任务清单只在 `metrics` 与 `errorMessage` 中给出，**不新增顶层字段**。
+- `degraded=true`、`engineFallback*` 与 `fallbackMode=PARTIAL` 可同时存在；`status` 与降级标记正交（C28）。
+- 不新增 `solve_task.status` 取值，**V13 不因此建 CHECK 迁移**。
+
+### 25.9 C38 `customers` 导入导出（W9，第二批）
+
+**现状**：`customer` 表（`code/name/priority/lead_time_days/payment_terms/blacklisted/ext_attrs`，唯一 `(tenant_id,code)`）已在 V1；`ImportEntity` 现有 9 类**不含客户**；通用端点 `/{entity}/import|export|import/template` 已实现。
+
+- `ImportEntity` 增加 **`CUSTOMERS("customers","客户", ...)`**（slug **复数**，与既有约定一致）。
+- 模板列（顺序即模板列顺序，列键为 camelCase）：
+
+| 列键 | 表头 | 必填 | 规则 |
+|---|---|---|---|
+| `code` | 客户编码 | 是 | ≤64，租户内唯一（存在则更新） |
+| `name` | 客户名称 | 是 | ≤256 |
+| `priority` | 优先级 | 否 | `VIP/NORMAL/LOW`，默认 `NORMAL` |
+| `leadTimeDays` | 交付提前期(天) | 否 | 非负整数 |
+| `paymentTerms` | 付款条件 | 否 | ≤128 |
+| `blacklisted` | 是否黑名单 | 否 | `true/false`，默认 `false` |
+
+- 导入语义沿用 C26：`preview` 只校验、`execute` 全量通过才落库；按 `code` upsert；`blacklisted` 不阻断订单确认（C8 仍跳过黑名单校验）。
+- 导出列同模板；客户作为 BOM/订单的引用目标**不新增外键约束**（`orders.customer_id` 既有可空引用）。
+- **无需迁移**（表已在 V1）。
+
+### 25.10 C39 异步大文件导入（W9，第二批）
+
+**现状**：`POST /{entity}/import?mode=preview|execute&token=`（同步、multipart xlsx）；`ImportResult` 已含 `mode/committed/replayed/errors/preview`；`ImportLimits` = 10MB / 5000 行 / 200 错误 / 20 预览。
+
+#### 25.10.1 异步提交
+
+`POST /{entity}/import?mode=async&token=`（multipart `file`；`token` 为既有幂等令牌）
+
+- **成功受理** `202`：
+
+```json
+{ "jobId": "...uuid...", "entity": "customers", "mode": "async", "status": "PENDING",
+  "totalRows": 0, "processedRows": 0, "inserted": 0, "updated": 0, "skipped": 0,
+  "invalidRows": 0, "errors": [], "committed": false,
+  "contentHash": "sha256:...", "createdAt": "...", "startedAt": null, "finishedAt": null }
+```
+
+- `mode` 取值扩展为 `preview|execute|async`（**不修改**既有两值语义）。
+- 校验在受理时同步完成：实体未知 `40400`；文件缺失/非 xlsx `42200`；**超过 C26 上限（≤5MB、≤5000 行）→ `42200`**。
+- 幂等：`token` 与 `contentHash(tenant+entity+文件字节)` 双键；同键存在非终态 → 返回**同一** `jobId`（`202`），不重复建任务。
+
+#### 25.10.2 状态/取消
+
+`GET /{entity}/import/jobs/{jobId}`（yaml 待补）
+
+- 返回同一 `ImportJobView`；跨 entity 查询 → `40400`；终态保留 **24h**（超时清理，见 25.14）。
+- `status` 闭集 `PENDING|RUNNING|SUCCEEDED|FAILED|CANCELLED`；`SUCCEEDED` 时 `committed=true`、`processedRows=totalRows`；`FAILED` 时 `errors` ≤200、`committed=false`（**全量回滚，不留半批**）。
+- `POST /{entity}/import/jobs/{jobId}/cancel`：仅 `PENDING|RUNNING` 可取消（`202` → `CANCELLED`），其他状态 `40901`。
+- 异步任务失败重试**不做**；用户重新提交（新 token）即可，避免重复落库。
+
+#### 25.10.3 与同步模式的边界
+
+- `preview`/`execute` 的行为、响应 `ImportResult` **一字不改**；`mode=async` 是**新增分支**，不复用 `ImportResult` 的 200 响应。
+- 异步执行线程并发上限 **2**（单实例）；超出排队（`PENDING`），不做拒绝。
+- 文件字节上限的**存量偏差**：C26 冻结 `≤5MB`，当前实现 `ImportLimits.MAX_FILE_BYTES=10MB`。D0 **不改契约**，异步按 C26 的 5MB 校验；实现收紧与存量放宽的处置见 25.14。
+
+### 25.11 C40 Agent 四端点（W10，条件冻结）
+
+**门禁未过 → 不冻结形状、不开卡**。仅登记端点与硬边界：
+
+| 端点 | 方法 | 现状 |
+|---|---|---|
+| `/agent/events` | POST | `50100` |
+| `/agent/nl-to-dsl` | POST | `50100` |
+| `/agent/explain/{taskId}` | GET | `50100` |
+| `/agent/whatif` | POST | `50100` |
+
+- 启动条件（全部满足）：用户确认把 PRD v0.5 的 Agent 能力前移到 M3；LLM 服务可用性与数据出境合规确认；C19 DSL 白名单可复用。
+- 已冻结的硬边界：事件 `eventId` 幂等（同 id 重复上报不得重复处理）；NL→DSL **只能**生成 C19 白名单内的结构，校验不过 `42200`；`explain` 必须引用真实 `constraint_justification`，不得编造；`whatif` 不得写入 `PUBLISHED` 计划。
+- 请求/响应 DTO **延期冻结**；未冻结前任何流不得按“猜测形状”写前端。
+
+### 25.12 C41 ATP（W6，条件冻结）
+
+**现状**：`POST /api/v1/orders/atp` 为 yaml 占位（`50100`），无实现。
+
+- 沿用 yaml 形状**冻结**（不再扩展）：
+
+```json
+// 请求
+{ "materialCode": "FG-0001", "qty": 100, "requestedDate": "2026-11-20", "customerId": null }
+// 响应
+{ "feasible": true, "earliestDate": "2026-11-22", "leadTimeDays": 3, "bottleneckResourceCode": "R-001" }
+```
+
+- `feasible=false` 时 `earliestDate` 仍给出**最早可承诺日**；`bottleneckResourceCode` 可空；`leadTimeDays` 为整数日历天。
+- 不引入「置信度/概率」字段（m3-plan 原文提到置信度，但 yaml/实现均无，且条件项，不新造）。
+- 条件门禁同 C40：用户确认 M3 承接后才开工；否则保持 `50100`。
+
+### 25.13 迁移号段台账 V8–V13（D0 发号，只分配不写 DDL）
+
+| 号段 | 归属流 | 表/字段意图 | 约束边界 | D0 结论 |
+|---|---|---|---|---|
+| **V8** | W1 | RBAC：`users/role/permission/role_permission/user_role` + 18 权限点/5 角色/admin 种子 | 不改 V1 语义；权限码不新增 | **空号，不建文件**：V1 已全量覆盖（`V1__init.sql#L51-L962`） |
+| **V9** | W1 | `audit_log` 事件类型/索引 `(tenant_id, created_at, action)` | 追加只读；不删旧列 | **空号，不建文件**：V1 已建表 + 3 索引（`#L836-L853`） |
+| **V10** | W5 | Sandbox 生命周期：`parent_sandbox_id/type/expires_at/version` + 「每租户唯一 BASELINE」 | 不新增 `applied_at/applied_by`（由 `plan_version.published_at/published_by` 与审计回溯） | **空号，不建文件**：V1 已建（`#L603-L627`），BASELINE 种子 `...0401` |
+| **V11** | W5 | 新表 `notification_outbox`：`id BIGSERIAL, tenant_id, dispatch_id UUID, plan_id UUID, channel, address, message, status, attempts, next_attempt_at, last_error, created_at, updated_at` | 唯一 `(tenant_id, dispatch_id, channel, address)`；索引 `(tenant_id, status, next_attempt_at)`；CHECK status/channel；不碰 `plan_version` | **建 V11**（D1 后由 W5 提交，唯一写者） |
+| **V12** | W9 | 新表 `import_job`：`id UUID, tenant_id, entity, status, content_hash, file_name, file_bytes, total_rows, processed_rows, inserted, updated, skipped, invalid_rows, errors JSONB, committed, created_by, created_at, started_at, finished_at` | 唯一 `(tenant_id, entity, content_hash) WHERE status IN ('PENDING','RUNNING')`（防重复在途；终态后允许同内容重提）；CHECK status；错误 ≤200 行 | **建 V12**（D1 后由 W9 提交） |
+| **V13** | W3/W4 | `task_adjustment`（SPLIT/MERGE）与 `solve_task.status`（PARTIAL）扩展 | 仅在现有 CHECK 不足时启用；C36/C37 已证不新增列/状态 | **空号，不建文件**：V1 `adjust_type` CHECK 已含 SPLIT/MERGE（`#L807-L826`）；C37 不新增 `status` 值 |
+
+**发号硬规则**：V8–V13 每段唯一写者；**空号不得被后续流挪用**（如 V13 条件流 Agent 另起 V14，需 D0 追加发号）；已应用 V1–V7 连注释都不许改。
+
+### 25.14 待拍板 / D0 明确不做
+
+| # | 事项 | 现状/风险 | 建议 |
+|---|---|---|---|
+| 1 | 派工单把 `SPLIT/MERGE` 标为 C33 | 本文件 C33=下发、C36=SPLIT/MERGE | 保持 C36；如坚持 C33，需整体重编号（不推荐） |
+| 2 | `suggestedOrderDate` vs `suggestedPurchaseDate` | 计划与实现字段名不同 | 用 `suggestedPurchaseDate`（已冻结），计划文字不改 |
+| 3 | `customer` vs `customers` slug | 计划用单数，实现约定用复数 | 用 `customers`；若要单数需新增别名分支 |
+| 4 | 错误码细分 40301/40302、40904、42202 | 会扩大 4xxxx 面并需登记 `ErrorCode` | M3 不新增；一律 40300/40901/42200 + message |
+| 5 | `dev` 模式 API Key 等价 ADMIN、且审计无操作人 | 违背最小权限 | M3 让步；M4 建议按 key 绑角色 |
+| 6 | 无 refresh token | 前端“令牌刷新”落空 | 8h 重登；若必须刷新需新增 `/auth/refresh` + `refreshToken` 字段（破坏 LoginResult） |
+| 7 | 文件上限 5MB（C26）vs 实现 10MB | 存量不一致 | 二选一：收紧实现到 5MB，或走变更单改 C26；D0 不静默改 |
+| 8 | `audit_log.id` yaml=uuid vs DB=BIGSERIAL | yaml 占位错误 | 契约取 int64；yaml 由 S0 修正 |
+| 9 | `TaskAdjustResult.adjustmentId` yaml=uuid vs DB=BIGSERIAL | C22 存量不一致 | 不在 D0 修正，单开缺陷卡 |
+| 10 | 下发状态查询端点 | 计划原文说走 `GET /plans/{id}` | 改为 `GET /plans/{id}/dispatches`（避免破坏 `PlanDetailView`） |
+| 11 | 审计保留期/归档 | M3 无清理任务，表会持续增长 | M3 不清理；M4 加归档/分区 |
+| 12 | Agent/ATP 条件门禁 | PRD 归 v0.5 | 未确认不开卡；C40 形状延期冻结 |
+| 13 | 22 卡落库 | 看板 API 只读（POST 404），无法建卡 | 见 `docs/plan/m3-d0-cards.json`，需看板写权限后导入 |
+| 14 | C37 未排任务清单放哪 | W3 验收要“响应含未排任务清单”，但 C20/C28 冻结 `FAILED` 时 `tasks=[]` 且无顶层清单字段 | M3 放在 `metrics.unassignedTaskCount` + `errorMessage`；若要顶层数组需变更单（会破坏 C20） |
+
+### 25.15 与 yaml / 实现偏差登记（不改 yaml，待 S0 后续同步）
+
+| 偏差 | 位置 | 处置 |
+|---|---|---|
+| `audit_log.id` uuid → int64 | `system.yaml#L378` | yaml 待改类型 |
+| `/users`、`/audit-logs` 标 M1 但未实现 | `system.yaml` | M3 落地；`x-milestone` 待改 `M3` |
+| 新增 `/me`、`PATCH /users/{id}`、`/roles`、`/roles/{id}/permissions`、`/permissions` | 无 yaml path | yaml 待补 |
+| `UserCreateRequest.password` 可选 | `system.yaml#L357` | M3 只有本地账号，创建时 `password` **必填**（LDAP/SSO 不在 M3） |
+| `Sandbox` 列表含 `snapshot` | `orders.yaml#L1134` | 列表改 `SandboxSummary` |
+| `SandboxCreateRequest.type` 允许 BASELINE 且 `required:[name,type]` | `orders.yaml#L1159` | 只允许 WHAT_IF；`type` 改可选、默认 WHAT_IF |
+| `SandboxCompare` 缺计数字段 | `orders.yaml#L1177` | 追加 counts + `changeType` + `truncated` |
+| `apply` 返回 `ResultOfSandbox` | `orders.yaml#L589` | 改 `SandboxApplyResult` |
+| `TaskAdjustRequest` 无 SPLIT/MERGE 字段 | `gantt.yaml#L584` | 追加 3 字段 + 响应 2 数组 |
+| `MrpSuggestion` 含 `onHandQty/transitQty/safetyStock`、缺 `materialName/suggestedQty` | `materials.yaml#L2315` | 按实现改为 `MrpShortage` 9 字段（去掉 3 个库存字段，补 2 个） |
+| `mrp/suggestions` 无业务参数 | `materials.yaml#L1225` | 追加 `sandboxId/orderNos/horizonDays` |
+| 无 `/plans/compare`、`/plans/{id}/dispatch(es)` | `gantt.yaml`/无 | yaml 待补 |
+| `/agent/*` 条件端点 | `solve.yaml#L318-L400` | 维持 50100 |
+| `POST /orders/atp` 条件端点 | `orders.yaml#L311` | 维持 50100 |
+
+**落地纪律**：以上 yaml 修正由 S0 在 D1 统一提交；业务流**不得**先改 yaml 或先写与本节不一致的 DTO。

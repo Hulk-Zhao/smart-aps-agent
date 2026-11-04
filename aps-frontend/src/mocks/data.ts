@@ -10,7 +10,7 @@ import type { OperationTemplate, Routing } from '@/types/routings'
 import type { Order, Sandbox, Strategy } from '@/types/orders'
 import type { SolveTaskDetail } from '@/types/solve'
 import type { GanttOrderRow, GanttResourceRow, GanttTask } from '@/types/gantt'
-import type { AuditLog, SystemConfig, User } from '@/types/system'
+import type { AuditLog, PermissionView, RoleView, SystemConfig, User } from '@/types/system'
 
 const NOW = '2026-11-04T08:00:00Z'
 
@@ -1462,7 +1462,8 @@ export const users: User[] = [
     phone: '13800000000',
     status: 'ACTIVE',
     lastLoginAt: NOW,
-    version: 1
+    version: 1,
+    roleCodes: ['ADMIN']
   },
   {
     id: 'ffffffff-ffff-4fff-8fff-fffffffffff1',
@@ -1472,7 +1473,8 @@ export const users: User[] = [
     phone: null,
     status: 'ACTIVE',
     lastLoginAt: '2026-11-03T09:00:00Z',
-    version: 1
+    version: 1,
+    roleCodes: ['PLANNER']
   },
   {
     id: 'ffffffff-ffff-4fff-8fff-fffffffffff2',
@@ -1482,46 +1484,185 @@ export const users: User[] = [
     phone: null,
     status: 'DISABLED',
     lastLoginAt: null,
+    version: 1,
+    roleCodes: ['VIEWER']
+  }
+]
+
+/** C30 权限点：`GET /permissions` 返回的就是这个裸数组。 */
+export const permissions: PermissionView[] = [
+  { id: 'p01', code: 'MD_READ', name: '主数据查看', module: 'MD' },
+  { id: 'p02', code: 'MD_WRITE', name: '主数据维护', module: 'MD' },
+  { id: 'p03', code: 'PR_READ', name: '工艺查看', module: 'PR' },
+  { id: 'p04', code: 'PR_WRITE', name: '工艺维护', module: 'PR' },
+  { id: 'p05', code: 'OM_READ', name: '订单查看', module: 'OM' },
+  { id: 'p06', code: 'OM_WRITE', name: '订单维护', module: 'OM' },
+  { id: 'p07', code: 'OM_ATP', name: 'ATP 试算', module: 'OM' },
+  { id: 'p08', code: 'ORDER_FREEZE', name: '订单冻结', module: 'OM' },
+  { id: 'p09', code: 'SS_READ', name: '策略查看', module: 'SS' },
+  { id: 'p10', code: 'SS_WRITE', name: '策略维护', module: 'SS' },
+  { id: 'p11', code: 'SE_SOLVE', name: '发起求解', module: 'SE' },
+  { id: 'p12', code: 'SCHEDULE_ADJUST', name: '排程调整', module: 'SCHEDULE' },
+  { id: 'p13', code: 'SCHEDULE_PUBLISH', name: '计划发布', module: 'SCHEDULE' },
+  { id: 'p14', code: 'SYS_USER', name: '用户管理', module: 'SYS' },
+  { id: 'p15', code: 'SYS_ROLE', name: '角色管理', module: 'SYS' },
+  { id: 'p16', code: 'SYS_AUDIT', name: '审计查看', module: 'SYS' },
+  { id: 'p17', code: 'AGENT_EVENT', name: 'Agent 事件订阅', module: 'AGENT' },
+  { id: 'p18', code: 'AGENT_CONFIRM', name: 'Agent 确认', module: 'AGENT' }
+]
+
+/** C30 角色：`GET /roles` 返回 `{items}`，不是裸数组。 */
+export const roles: RoleView[] = [
+  {
+    id: 'r01',
+    code: 'ADMIN',
+    name: '管理员',
+    description: '全部权限',
+    permissionCodes: permissions.map((item) => item.code),
+    version: 1
+  },
+  {
+    id: 'r02',
+    code: 'PLANNER',
+    name: '计划员',
+    description: '订单、策略、求解与排程',
+    permissionCodes: [
+      'MD_READ',
+      'PR_READ',
+      'OM_READ',
+      'OM_WRITE',
+      'OM_ATP',
+      'SS_READ',
+      'SS_WRITE',
+      'SE_SOLVE',
+      'SCHEDULE_ADJUST',
+      'SCHEDULE_PUBLISH',
+      'AGENT_CONFIRM'
+    ],
+    version: 1
+  },
+  {
+    id: 'r03',
+    code: 'PROCESS_ENGINEER',
+    name: '工艺工程师',
+    description: '主数据与工艺维护',
+    permissionCodes: ['MD_READ', 'MD_WRITE', 'PR_READ', 'PR_WRITE'],
+    version: 1
+  },
+  {
+    id: 'r04',
+    code: 'SALES',
+    name: '销售',
+    description: '订单录入与交期试算',
+    permissionCodes: ['OM_READ', 'OM_WRITE', 'OM_ATP'],
+    version: 1
+  },
+  {
+    id: 'r05',
+    code: 'VIEWER',
+    name: '只读用户',
+    description: '只读',
+    permissionCodes: ['MD_READ', 'PR_READ', 'OM_READ', 'SS_READ'],
     version: 1
   }
 ]
 
 export const auditLogs: AuditLog[] = [
   {
-    id: '16161616-1616-4161-8161-161616161616',
+    id: '1024',
     traceId: '56a8a6223cc647898dc11403037d8477',
     userId: ID.user1,
-    action: 'UPDATE',
-    resourceType: 'MATERIAL',
-    resourceId: 'MAT-FG-001',
-    beforeValue: { safetyStock: 40 },
-    afterValue: { safetyStock: 50 },
+    action: 'AUTH_LOGIN',
+    resourceType: 'USER',
+    resourceId: ID.user1,
+    beforeValue: null,
+    afterValue: { username: 'admin', result: 'SUCCESS' },
     clientIp: '10.0.0.12',
-    createdAt: NOW
+    createdAt: '2026-11-04T07:55:00Z'
   },
   {
-    id: '17171717-1717-4171-8171-171717171717',
+    id: '1025',
     traceId: '8f2c1d4b6a7e4c0d9b3e5f7a1c2d3e4f',
     userId: ID.user1,
-    action: 'PUBLISH',
+    action: 'PLAN_PUBLISHED',
     resourceType: 'PLAN',
     resourceId: ID.sandboxBaseline,
-    beforeValue: null,
-    afterValue: { planVersion: 2 },
+    beforeValue: { versionNo: 1 },
+    afterValue: { versionNo: 2, planNo: 'PLAN-20261104-0002' },
     clientIp: '10.0.0.12',
-    createdAt: '2026-11-03T02:00:16Z'
+    createdAt: '2026-11-04T06:30:00Z'
   },
   {
-    id: '18181818-1818-4181-8181-181818181818',
+    id: '1026',
     traceId: '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d',
-    userId: null,
-    action: 'SYNC',
+    userId: ID.user1,
+    action: 'ORDER_FROZEN',
     resourceType: 'ORDER',
     resourceId: 'SO-20261104-0008',
-    beforeValue: null,
-    afterValue: { status: 'CONFIRMED' },
+    beforeValue: { frozen: false },
+    afterValue: { frozen: true, reason: '客户确认插单' },
     clientIp: '10.0.0.20',
-    createdAt: NOW
+    createdAt: '2026-11-04T05:10:00Z'
+  },
+  {
+    id: '1027',
+    traceId: '2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e',
+    userId: ID.user1,
+    action: 'ORDER_RELEASED',
+    resourceType: 'ORDER',
+    resourceId: 'SO-20261103-0004',
+    beforeValue: { status: 'HOLD' },
+    afterValue: { status: 'RELEASED' },
+    clientIp: '10.0.0.20',
+    createdAt: '2026-11-03T09:40:00Z'
+  },
+  {
+    id: '1028',
+    traceId: '3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f',
+    userId: ID.user1,
+    action: 'SANDBOX_APPLIED',
+    resourceType: 'SANDBOX',
+    resourceId: ID.sandboxWhatIf,
+    beforeValue: { type: 'WHAT_IF' },
+    afterValue: { type: 'BASELINE' },
+    clientIp: '10.0.0.12',
+    createdAt: '2026-11-03T03:15:00Z'
+  },
+  {
+    id: '1029',
+    traceId: '4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a',
+    userId: ID.user1,
+    action: 'USER_UPDATED',
+    resourceType: 'USER',
+    resourceId: 'ffffffff-ffff-4fff-8fff-fffffffffff1',
+    beforeValue: { roleCodes: ['VIEWER'] },
+    afterValue: { roleCodes: ['PLANNER'] },
+    clientIp: '10.0.0.12',
+    createdAt: '2026-11-02T08:20:00Z'
+  },
+  {
+    id: '1030',
+    traceId: '5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b',
+    userId: null,
+    action: 'AUTH_LOGIN_FAILED',
+    resourceType: 'USER',
+    resourceId: 'unknown',
+    beforeValue: null,
+    afterValue: { username: 'admin', reason: 'BAD_CREDENTIALS' },
+    clientIp: '10.0.0.34',
+    createdAt: '2026-11-01T23:59:00Z'
+  },
+  {
+    id: '1031',
+    traceId: '6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c',
+    userId: ID.user1,
+    action: 'TASK_ADJUSTED',
+    resourceType: 'TASK',
+    resourceId: '2101',
+    beforeValue: { startTime: '2026-11-05T00:00:00Z' },
+    afterValue: { startTime: '2026-11-05T01:00:00Z' },
+    clientIp: '10.0.0.12',
+    createdAt: '2026-11-01T10:05:00Z'
   }
 ]
 

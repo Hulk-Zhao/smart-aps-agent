@@ -124,7 +124,7 @@ class SolveEnvelopeMapperTest {
                 new ScoreFact(BigDecimal.ZERO, BigDecimal.ONE, "0hard/1soft"),
                 List.of(assignment),
                 List.of(),
-                new SolveMetrics(100L, 10L, 0, "TIME_LIMIT", List.of(), 1, Map.of()),
+                new SolveMetrics(100L, "TIME_LIMIT", List.of(), 1, Map.of()),
                 "ok");
         SolveRequest request = new SolveRequest("T-5", null, null, null, List.of(), Map.of());
 
@@ -149,7 +149,7 @@ class SolveEnvelopeMapperTest {
                 null,
                 List.of(),
                 List.of(),
-                new SolveMetrics(0L, 0L, 0, "TIME_LIMIT", List.of(), 0, Map.of()),
+                new SolveMetrics(0L, "TIME_LIMIT", List.of(), 0, Map.of()),
                 "timeout");
 
         SolveResult result = SolveEnvelopeMapper.toResult(request, solution);

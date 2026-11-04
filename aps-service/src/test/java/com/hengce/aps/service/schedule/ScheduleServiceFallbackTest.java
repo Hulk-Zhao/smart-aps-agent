@@ -6,7 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.hengce.aps.common.exception.BizException;
@@ -17,14 +20,18 @@ import com.hengce.aps.service.strategy.StrategyService;
 import com.hengce.aps.service.strategy.StrategyView;
 import com.hengce.aps.solver.api.ScheduleProblem;
 import com.hengce.aps.solver.api.ScheduleSolution;
+import com.hengce.aps.solver.api.SchedulingOperation;
+import com.hengce.aps.solver.api.SchedulingOrder;
 import com.hengce.aps.solver.api.ScoreFact;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.SolveMetrics;
 import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.SolverAdapter;
 import com.hengce.aps.solver.api.SolverEngine;
+import com.hengce.aps.solver.api.TaskAssignment;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -101,6 +108,8 @@ class ScheduleServiceFallbackTest {
 
         assertEquals(SolveTaskStatus.TIMEOUT, outcome.status());
         assertEquals("TIMEOUT", outcome.metrics().get("engineFallbackReason"));
+        assertEquals("HARD_ONLY", outcome.metrics().get("fallbackMode"),
+                "一个任务都没排出来时仍是 HARD_ONLY，不能误标 PARTIAL");
         assertEquals(0, outcome.metrics().get("persistedTaskCount"),
                 "TIMEOUT 不落库，persistedTaskCount 必须恒为 0");
         assertEquals(0, outcome.metrics().get("assignedTaskCount"),
@@ -203,6 +212,47 @@ class ScheduleServiceFallbackTest {
     }
 
     @Test
+    void partialAssignmentsShouldMarkPartialWithoutPersisting() {
+        UUID orderId = UUID.randomUUID();
+        TaskAssignment partial = new TaskAssignment(null, orderId, "SO-1", 1, "工序1", null, null,
+                "R-1", List.of(), null, null, null, null, BigDecimal.ONE, 1, "PLANNED", false, 1);
+        ScheduleSolution partialSolution = new ScheduleSolution("FAILED", null, List.of(partial),
+                List.of(), metrics(), "引擎异常，仅产出部分解");
+        SolverAdapter adapter = new SolverAdapter() {
+            @Override
+            public SolverEngine engine() {
+                return SolverEngine.TIMEFOLD;
+            }
+
+            @Override
+            public ScheduleSolution solve(ScheduleProblem problem, SolveConfig config) {
+                return partialSolution;
+            }
+        };
+        ScheduleService service = new ScheduleService(List.of(adapter), assembler, resultWriter,
+                solveTaskRepository, strategyService, true, false);
+        when(assembler.assemble(any(), any())).thenReturn(assembledWithOperations(orderId, 2));
+
+        ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
+                adapter, () -> false, (phase, progress, bestScore) -> { });
+
+        assertEquals(SolveTaskStatus.FAILED, outcome.status(), "PARTIAL 终态仍是 FAILED，不新增状态值");
+        assertEquals("PARTIAL", outcome.metrics().get("fallbackMode"),
+                "只有“部分排位”才写 PARTIAL");
+        assertEquals(2, outcome.metrics().get("expectedTaskCount"));
+        assertEquals(1, outcome.metrics().get("assignedTaskCount"));
+        assertEquals(1, outcome.metrics().get("partialAssignedTaskCount"));
+        assertEquals(1, outcome.metrics().get("unassignedTaskCount"),
+                "未排任务数只出现在 metrics.unassignedTaskCount + errorMessage");
+        assertEquals(Boolean.TRUE, outcome.metrics().get("discardedBestSolution"));
+        assertEquals(0, outcome.metrics().get("persistedTaskCount"));
+        assertTrue(outcome.tasks().isEmpty(), "PARTIAL 返回体 tasks 必须为空，未排任务不得以任务形式出现");
+        assertTrue(outcome.message().contains("期望 2"), outcome.message());
+        assertTrue(outcome.message().contains("未排位 1"), outcome.message());
+        verify(resultWriter, never()).persist(any(), any(), anyLong());
+    }
+
+    @Test
     void solvedShouldPersistWithSolveTaskIdAndBestScore() {
         ScheduleSolution solution = new ScheduleSolution("SOLVED",
                 new ScoreFact(BigDecimal.ZERO, new BigDecimal("-10"), "0hard/-10soft"),
@@ -233,6 +283,12 @@ class ScheduleServiceFallbackTest {
         assertEquals("0hard/-10soft", outcome.metrics().get("bestScore"));
         assertEquals(2, outcome.metrics().get("persistedTaskCount"));
         assertEquals(1, outcome.metrics().get("justificationCount"));
+        // 对外 metrics 不再输出恒 0 的步数键（Timefold 2.8.0 社区版无步数口径）。
+        assertFalse(outcome.metrics().containsKey("stepCount"), "不得输出 stepCount");
+        assertFalse(outcome.metrics().containsKey("unimprovedStepCount"),
+                "不得输出 unimprovedStepCount");
+        assertEquals("TIME_LIMIT", outcome.metrics().get("terminationReason"),
+                "terminationReason 等其余键行为不变");
     }
 
     @Test
@@ -298,8 +354,22 @@ class ScheduleServiceFallbackTest {
         return new ScheduleProblemAssembler.AssembledProblem(TENANT_ID, SANDBOX_ID, problem, List.of());
     }
 
+    private static ScheduleProblemAssembler.AssembledProblem assembledWithOperations(UUID orderId,
+                                                                                     int operationCount) {
+        List<SchedulingOperation> operations = new ArrayList<>();
+        for (int index = 1; index <= operationCount; index++) {
+            operations.add(new SchedulingOperation(index, "OP-" + index, "工序" + index, null,
+                    BigDecimal.TEN, BigDecimal.ZERO, null, null, List.of(), false, List.of()));
+        }
+        SchedulingOrder order = new SchedulingOrder(orderId, "SO-1", "FG-1", BigDecimal.TEN,
+                LocalDate.of(2030, 1, 1), "NORMAL", "UNFROZEN", null, operations);
+        ScheduleProblem problem = new ScheduleProblem(TENANT_ID.toString(), SANDBOX_ID, null,
+                null, "FORWARD", List.of(order), List.of(), List.of(), List.of(), List.of());
+        return new ScheduleProblemAssembler.AssembledProblem(TENANT_ID, SANDBOX_ID, problem, List.of(orderId));
+    }
+
     private static SolveMetrics metrics() {
-        return new SolveMetrics(10L, 5L, 1, "TIME_LIMIT", List.of(), 0, Map.of());
+        return new SolveMetrics(10L, "TIME_LIMIT", List.of(), 0, Map.of());
     }
 
     /**

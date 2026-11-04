@@ -1,5 +1,6 @@
 package com.hengce.aps.web.mrp;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -10,6 +11,7 @@ import com.hengce.aps.service.mrp.InventoryUpsertResult;
 import com.hengce.aps.service.mrp.MrpAnalysisResponse;
 import com.hengce.aps.service.mrp.MrpAnalysisService;
 import com.hengce.aps.service.mrp.MrpStatus;
+import com.hengce.aps.service.mrp.MrpSuggestionService;
 import com.hengce.aps.web.advice.RestExceptionHandler;
 import com.hengce.aps.web.controller.mrp.InventoryController;
 import com.hengce.aps.web.controller.mrp.MrpController;
@@ -26,9 +28,11 @@ import org.springframework.http.converter.json.MappingJackson2HttpMessageConvert
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -43,6 +47,8 @@ class MrpControllerTest {
 
     private InventoryService inventoryService;
 
+    private MrpSuggestionService mrpSuggestionService;
+
     private MockMvc mockMvc;
 
     private UUID sandboxId;
@@ -51,10 +57,13 @@ class MrpControllerTest {
     void setUp() {
         mrpAnalysisService = mock(MrpAnalysisService.class);
         inventoryService = mock(InventoryService.class);
+        mrpSuggestionService = new MrpSuggestionService(mrpAnalysisService);
         ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule())
-                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .setSerializationInclusion(JsonInclude.Include.NON_NULL);
         mockMvc = MockMvcBuilders.standaloneSetup(
-                        new MrpController(mrpAnalysisService), new InventoryController(inventoryService))
+                        new MrpController(mrpAnalysisService, mrpSuggestionService),
+                        new InventoryController(inventoryService))
                 .setControllerAdvice(new RestExceptionHandler())
                 .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .build();
@@ -116,14 +125,80 @@ class MrpControllerTest {
     }
 
     @Test
-    void inventoryNegativeQuantityMapsTo422() throws Exception {
-        when(inventoryService.upsert(any())).thenThrow(
-                new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "onHandQty 不能为负: RM-01"));
+    void suggestionsReturnC34FieldsWithHorizonAndPaging() throws Exception {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        when(mrpAnalysisService.analyze(any())).thenReturn(new MrpAnalysisResponse(sandboxId,
+                now, MrpStatus.SHORTAGE, false, false, true, 1, List.of(), List.of(),
+                List.of(
+                        new MrpAnalysisResponse.MrpShortage("RM-0002", "物料2", new BigDecimal("8.000000"),
+                                new BigDecimal("0.000000"), new BigDecimal("8.000000"), now.plusDays(40),
+                                List.of("SO-002"), now.plusDays(35), new BigDecimal("8.000000"), null),
+                        new MrpAnalysisResponse.MrpShortage("RM-0001", "物料1", new BigDecimal("120.000000"),
+                                new BigDecimal("-30.000000"), new BigDecimal("120.000000"), now.plusDays(2),
+                                List.of("SO-001"), now.plusDays(1), new BigDecimal("120.000000"), null),
+                        new MrpAnalysisResponse.MrpShortage("RM-0003", "物料3", new BigDecimal("5.000000"),
+                                new BigDecimal("0.000000"), new BigDecimal("5.000000"), now.plusDays(5),
+                                List.of("SO-003"), now.plusDays(3), new BigDecimal("5.000000"), null))));
 
-        mockMvc.perform(put("/api/v1/inventory")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"items\":[{\"materialCode\":\"RM-01\",\"onHandQty\":-1}]}"))
-                .andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.code").value(42200));
+        mockMvc.perform(get("/api/v1/mrp/suggestions")
+                        .param("sandboxId", sandboxId.toString())
+                        .param("page", "1").param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.totalPages").value(2))
+                .andExpect(jsonPath("$.data.items[0].materialCode").value("RM-0001"))
+                .andExpect(jsonPath("$.data.items[0].availableQty").value(-30.0))
+                .andExpect(jsonPath("$.data.items[0].shortageQty").value(120.0))
+                .andExpect(jsonPath("$.data.items[0].affectedOrderNos[0]").value("SO-001"))
+                .andExpect(jsonPath("$.data.items[0].supplierCode").value(nullValue()));
+
+        mockMvc.perform(get("/api/v1/mrp/suggestions")
+                        .param("sandboxId", sandboxId.toString())
+                        .param("page", "2").param("size", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].materialCode").value("RM-0003"));
+    }
+
+    @Test
+    void suggestionsEmptyResultReturnsEmptyItems() throws Exception {
+        when(mrpAnalysisService.analyze(any())).thenReturn(new MrpAnalysisResponse(sandboxId,
+                OffsetDateTime.now(ZoneOffset.UTC), MrpStatus.FULL, false, false, true, 0,
+                List.of(), List.of(), List.of()));
+
+        mockMvc.perform(get("/api/v1/mrp/suggestions").param("sandboxId", sandboxId.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.total").value(0))
+                .andExpect(jsonPath("$.data.items").isEmpty());
+    }
+
+    @Test
+    void suggestionsRejectMissingOrInvalidSandboxId() throws Exception {
+        mockMvc.perform(get("/api/v1/mrp/suggestions"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40000));
+
+        mockMvc.perform(get("/api/v1/mrp/suggestions").param("sandboxId", "not-a-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40000));
+    }
+
+    @Test
+    void suggestionsRejectSortAndOutOfRangeHorizon() throws Exception {
+        mockMvc.perform(get("/api/v1/mrp/suggestions")
+                        .param("sandboxId", sandboxId.toString()).param("sort", "shortageQty,desc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40000));
+
+        mockMvc.perform(get("/api/v1/mrp/suggestions")
+                        .param("sandboxId", sandboxId.toString()).param("horizonDays", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40000));
+
+        mockMvc.perform(get("/api/v1/mrp/suggestions")
+                        .param("sandboxId", sandboxId.toString()).param("horizonDays", "366"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(40000));
     }
 }

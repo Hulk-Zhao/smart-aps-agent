@@ -8,6 +8,7 @@ import com.hengce.aps.service.masterdata.calendar.CalendarService;
 import com.hengce.aps.service.masterdata.calendar.dto.CalendarCreateRequest;
 import com.hengce.aps.service.masterdata.calendar.dto.CalendarResponse;
 import com.hengce.aps.service.masterdata.calendar.dto.CalendarUpdateRequest;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -70,7 +71,8 @@ public class CalendarController {
      * @param id 日历主键
      * @return 日历详情
      */
-    @GetMapping("/{id}")
+    // 排除通用导出/导入保留段，避免 GET /calendars/export 被本方法抢先匹配（C38）
+    @GetMapping("/{id:^(?!export$)(?!import$).+}")
     @Operation(summary = "查询工作日历详情")
     public Result<CalendarResponse> get(@PathVariable UUID id) {
         return Result.success(calendarService.get(id));
@@ -84,6 +86,7 @@ public class CalendarController {
      */
     @PostMapping
     @Operation(summary = "新建工作日历")
+    @RequiresPermission("MD_WRITE")
     public Result<CalendarResponse> create(@Valid @RequestBody CalendarCreateRequest request) {
         return Result.success(calendarService.create(request));
     }
@@ -97,6 +100,7 @@ public class CalendarController {
      */
     @PutMapping("/{id}")
     @Operation(summary = "更新工作日历")
+    @RequiresPermission("MD_WRITE")
     public Result<CalendarResponse> update(@PathVariable UUID id,
                                            @Valid @RequestBody CalendarUpdateRequest request) {
         return Result.success(calendarService.update(id, request));
@@ -110,6 +114,7 @@ public class CalendarController {
      */
     @DeleteMapping("/{id}")
     @Operation(summary = "删除工作日历")
+    @RequiresPermission("MD_WRITE")
     public Result<Void> delete(@PathVariable UUID id) {
         calendarService.delete(id);
         return Result.success();

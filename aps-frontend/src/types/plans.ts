@@ -82,3 +82,22 @@ export interface PlanRollbackRequest {
   targetVersionNo: number
   reason?: string
 }
+
+/** C35 `POST /plans/compare` 单项；metrics 为 solve_task.metrics 原样透传。 */
+export interface PlanCompareItem {
+  planId: string
+  planNo: string
+  version: number
+  scoreHard: number | null
+  scoreSoft: number | null
+  taskCount: number
+  /** 不重命名、不裁剪键：页面原样展示，不做美化重排。 */
+  metrics: Record<string, unknown>
+}
+
+/** C35 择优响应：items 已按 SCORE_HARD_DESC,SCORE_SOFT_DESC,PLAN_ID_ASC 排序。 */
+export interface PlanCompareResult {
+  items: PlanCompareItem[]
+  recommendedPlanId: string | null
+  tieBreak: string
+}

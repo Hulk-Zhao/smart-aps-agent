@@ -102,9 +102,10 @@ public class StrategyService {
      * @param query 分页参数
      * @param name 名称关键字（模糊）
      * @param direction 排产方向（精确）
+     * @param effectiveOn 生效日期（闭区间命中 {@code effectiveFrom..effectiveTo}），可空
      * @return 分页结果
      */
-    public PageResult<StrategyView> list(PageQuery query, String name, String direction) {
+    public PageResult<StrategyView> list(PageQuery query, String name, String direction, LocalDate effectiveOn) {
         PageQuery normalized = query == null ? new PageQuery() : query;
         normalized.normalize();
         LambdaQueryWrapper<Strategy> wrapper = Wrappers.lambdaQuery(Strategy.class);
@@ -114,6 +115,7 @@ public class StrategyService {
         if (direction != null && !direction.isBlank()) {
             wrapper.eq(Strategy::getDirection, direction.trim());
         }
+        applyEffectiveOn(wrapper, effectiveOn);
         applySort(wrapper, normalized.getSort());
         Page<Strategy> page = new Page<>(normalized.getPage(), normalized.getSize());
         Page<Strategy> result = strategyMapper.selectPage(page, wrapper);
@@ -828,6 +830,10 @@ public class StrategyService {
                 throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
                         "[42203] 规则权重必须是 0..100: " + ruleCode.name());
             }
+            if (Boolean.FALSE.equals(command.enabled()) && weight.compareTo(BigDecimal.ZERO) > 0) {
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                        "[42203] 规则 " + ruleCode.name() + " 在 enabled=false 时权重必须为 0");
+            }
             if (command.params() != null) {
                 for (String key : command.params().keySet()) {
                     if (!ruleCode.getAllowedParams().contains(key)) {
@@ -885,6 +891,22 @@ public class StrategyService {
         if (to != null && from != null && to.isBefore(from)) {
             throw new BizException(ErrorCode.BAD_REQUEST, "失效日期不能早于生效日期");
         }
+    }
+
+    /**
+     * 生效路径过滤：{@code effectiveFrom <= on} 且 {@code effectiveTo 为空或 >= on}（闭区间，C19）。
+     *
+     * @param wrapper 查询条件
+     * @param effectiveOn 生效日期，可空
+     */
+    private static void applyEffectiveOn(LambdaQueryWrapper<Strategy> wrapper, LocalDate effectiveOn) {
+        if (effectiveOn == null) {
+            return;
+        }
+        wrapper.le(Strategy::getEffectiveFrom, effectiveOn)
+                .and(nested -> nested.isNull(Strategy::getEffectiveTo)
+                        .or()
+                        .ge(Strategy::getEffectiveTo, effectiveOn));
     }
 
     @SuppressWarnings("unchecked")

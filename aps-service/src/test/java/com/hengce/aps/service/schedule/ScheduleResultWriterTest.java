@@ -160,7 +160,7 @@ class ScheduleResultWriterTest {
                 new ScoreFact(BigDecimal.ZERO, BigDecimal.ZERO, "0hard/0soft"),
                 assignments,
                 justifications,
-                new SolveMetrics(0, 0, 0, "TIME_LIMIT", List.of(), assignments.size(), Map.of()),
+                new SolveMetrics(0, "TIME_LIMIT", List.of(), assignments.size(), Map.of()),
                 "ok");
     }
 

@@ -1,8 +1,11 @@
 package com.hengce.aps.web.controller.solve;
 
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.service.schedule.SolveTaskLifecycleService;
 import com.hengce.aps.solver.api.task.SolveProgress;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
+import com.hengce.aps.web.security.SolveProgressWebSocketAuthInterceptor;
+import com.hengce.aps.web.security.StompAuthPrincipal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
@@ -25,7 +28,7 @@ public class SolveProgressSubscriptionListener {
     /**
      * 求解进度主题前缀。
      */
-    private static final String TOPIC_PREFIX = "/topic/solve-tasks/";
+    private static final String TOPIC_PREFIX = SolveProgressWebSocketAuthInterceptor.TOPIC_PREFIX;
 
     /**
      * 消息发送模板。
@@ -61,6 +64,13 @@ public class SolveProgressSubscriptionListener {
         if (destination == null || !destination.startsWith(TOPIC_PREFIX)) {
             return;
         }
+        StompAuthPrincipal principal = SolveProgressWebSocketAuthInterceptor.principalOf(
+                accessor.getUser(), accessor.getSessionAttributes());
+        if (principal == null) {
+            // P1-4：无认证主体绝不落默认租户，也不读取任务详情
+            LOGGER.warn("忽略未认证的求解进度订阅: {}", destination);
+            return;
+        }
         long taskId;
         try {
             taskId = Long.parseLong(destination.substring(TOPIC_PREFIX.length()));
@@ -68,11 +78,17 @@ public class SolveProgressSubscriptionListener {
             LOGGER.debug("忽略非求解进度订阅: {}", destination);
             return;
         }
-        SolveTaskDetail detail = lifecycleService.detail(taskId);
-        SolveProgress snapshot = new SolveProgress(detail.taskId(), detail.status(), detail.progress(),
-                detail.phase(), detail.bestScore(), detail.elapsedMs(), detail.resultTaskId(),
-                detail.errorCode(), detail.errorMessage());
-        messagingTemplate.convertAndSend(destination, snapshot);
-        LOGGER.info("推送求解进度快照 taskId={} status={} progress={}", taskId, detail.status(), detail.progress());
+        TenantContext.setTenantId(principal.tenantId());
+        try {
+            SolveTaskDetail detail = lifecycleService.detail(taskId);
+            SolveProgress snapshot = new SolveProgress(detail.taskId(), detail.status(), detail.progress(),
+                    detail.phase(), detail.bestScore(), detail.elapsedMs(), detail.resultTaskId(),
+                    detail.errorCode(), detail.errorMessage());
+            messagingTemplate.convertAndSend(destination, snapshot);
+            LOGGER.info("推送求解进度快照 taskId={} tenantId={} status={} progress={}",
+                    taskId, principal.tenantId(), detail.status(), detail.progress());
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

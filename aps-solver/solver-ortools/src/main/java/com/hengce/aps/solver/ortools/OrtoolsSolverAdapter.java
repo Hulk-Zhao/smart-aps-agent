@@ -45,8 +45,6 @@ public class OrtoolsSolverAdapter implements SolverAdapter {
                 List.of(),
                 new SolveMetrics(
                         0L,
-                        0L,
-                        0,
                         "TERMINATED",
                         List.of(),
                         0,

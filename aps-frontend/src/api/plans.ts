@@ -1,6 +1,7 @@
 import http, { idempotencyHeaders } from './http'
 import type {
   PlanAction,
+  PlanCompareResult,
   PlanDetail,
   PlanListParams,
   PlanListItem,
@@ -77,5 +78,14 @@ export async function rollbackPlanVersion(
     body,
     { headers: idempotencyHeaders(idempotencyKey) }
   )
+  return response.data
+}
+
+/**
+ * C35 `POST /plans/compare`：2–3 个 planId，去重后再判个数。
+ * 响应 items 已按后端排序规则排好，recommendedPlanId + tieBreak 直接展示。
+ */
+export async function comparePlans(planIds: string[]): Promise<PlanCompareResult> {
+  const response = await http.post<PlanCompareResult>('/plans/compare', { planIds })
   return response.data
 }

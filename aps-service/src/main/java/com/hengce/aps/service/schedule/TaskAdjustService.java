@@ -7,8 +7,9 @@ import com.hengce.aps.common.constant.ApsConstants;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.common.tenant.TenantContext;
-import com.hengce.aps.infrastructure.persistence.calendar.Calendar;
 import com.hengce.aps.infrastructure.persistence.audit.AuditContext;
+import com.hengce.aps.infrastructure.persistence.audit.AuditLogRepository;
+import com.hengce.aps.infrastructure.persistence.calendar.Calendar;
 import com.hengce.aps.infrastructure.persistence.mapper.calendar.CalendarMapper;
 import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository;
 import com.hengce.aps.infrastructure.persistence.schedule.TaskAdjustmentRepository;
@@ -17,14 +18,19 @@ import com.hengce.aps.infrastructure.persistence.schedule.TaskAdjustmentReposito
 import com.hengce.aps.solver.api.AvailabilityWindow;
 import com.hengce.aps.service.masterdata.order.FreezeLock;
 import com.hengce.aps.service.masterdata.order.OrderView;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,7 +43,8 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>{@code MOVE}：平移加工窗口（保持时长），可换主资源；{@code FROZEN} 任务拒绝；</li>
  *   <li>{@code LOCK}：写 {@code lock_type/locked_from/locked_to/locked_resource_ids}（V5）；</li>
  *   <li>{@code FREEZE}/{@code UNFREEZE}：切 {@code status} 与锁类型；{@code FREEZE} 必须带 reason；</li>
- *   <li>{@code SPLIT}/{@code MERGE}：M2 枚举冻结，返回 50100。</li>
+ *   <li>{@code SPLIT}（C36）：源任务保留第 1 段，其余按 {@code splitQuantities} 新建，时间按比例连续切分；</li>
+ *   <li>{@code MERGE}（C36）：同资源/同工序/资源内连续，目标保留最早开始，数量求和，其余软删。</li>
  * </ul>
  *
  * <p>两层冻结取交集（C21 §24.3）：订单级 {@code freezeLock} 与任务级锁都是硬约束，
@@ -73,6 +80,22 @@ public class TaskAdjustService {
 
     private static final String ORDER_LOCKED_RESOURCE = "LOCKED_RESOURCE";
 
+    private static final String OPERATION_SPLIT = "SPLIT";
+
+    private static final String OPERATION_MERGE = "MERGE";
+
+    private static final int MIN_ADJUST_QUANTITY_ITEMS = 2;
+
+    private static final int MAX_ADJUST_QUANTITY_ITEMS = 10;
+
+    private static final int MAX_REASON_LENGTH = 512;
+
+    private static final BigDecimal QTY_TOLERANCE = new BigDecimal("0.0001");
+
+    private static final String AUDIT_TASK_ADJUSTED = "TASK_ADJUSTED";
+
+    private static final String AUDIT_RESOURCE_TASK = "TASK";
+
     private final TaskAdjustmentRepository adjustmentRepository;
 
     private final ScheduleRepository scheduleRepository;
@@ -81,6 +104,8 @@ public class TaskAdjustService {
 
     private final ScheduleProblemAssembler assembler;
 
+    private final AuditLogRepository auditLogRepository;
+
     /**
      * 构造服务。
      *
@@ -88,15 +113,18 @@ public class TaskAdjustService {
      * @param scheduleRepository 排产持久层（资源编码映射）
      * @param calendarMapper 日历 Mapper（可用时段校验）
      * @param assembler 问题装配器，复用其日历窗口展开逻辑
+     * @param auditLogRepository 审计日志追加写入
      */
     public TaskAdjustService(TaskAdjustmentRepository adjustmentRepository,
                              ScheduleRepository scheduleRepository,
                              CalendarMapper calendarMapper,
-                             ScheduleProblemAssembler assembler) {
+                             ScheduleProblemAssembler assembler,
+                             AuditLogRepository auditLogRepository) {
         this.adjustmentRepository = adjustmentRepository;
         this.scheduleRepository = scheduleRepository;
         this.calendarMapper = calendarMapper;
         this.assembler = assembler;
+        this.auditLogRepository = auditLogRepository;
     }
 
     /**
@@ -104,18 +132,16 @@ public class TaskAdjustService {
      *
      * @param taskId 任务主键
      * @param command 调整命令
+     * @param idempotencyKey 幂等键（必填，缺失 40000；重复键由全局拦截器返回 40900）
      * @return 调整结果
      */
     @Transactional(rollbackFor = Exception.class)
-    public TaskAdjustResult adjust(long taskId, TaskAdjustCommand command) {
+    public TaskAdjustResult adjust(long taskId, TaskAdjustCommand command, String idempotencyKey) {
         if (command == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "请求体不能为空");
         }
+        requireIdempotencyKey(idempotencyKey);
         String operation = normalizeOperation(command.getOperation());
-        if ("SPLIT".equals(operation) || "MERGE".equals(operation)) {
-            throw new BizException(ErrorCode.NOT_IMPLEMENTED,
-                    "M2 冻结 SPLIT/MERGE 枚举，暂未实现");
-        }
         if (command.getVersion() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "version 必填");
         }
@@ -127,27 +153,36 @@ public class TaskAdjustService {
                     "任务版本已变化（当前 " + row.version() + "，请求 " + command.getVersion() + "），请刷新后重试");
         }
         rejectExecuted(row);
+        boolean dryRun = Boolean.TRUE.equals(command.getDryRun());
+        if (OPERATION_SPLIT.equals(operation)) {
+            return applySplit(tenantId, row, command, dryRun);
+        }
+        if (OPERATION_MERGE.equals(operation)) {
+            return applyMerge(tenantId, row, command, dryRun);
+        }
 
         PlannedState planned = plan(tenantId, row, operation, command);
         validate(tenantId, row, operation, planned);
-        boolean dryRun = Boolean.TRUE.equals(command.getDryRun());
         Map<String, Object> before = snapshot(tenantId, row);
         Map<String, Object> after = snapshot(planned);
         if (dryRun) {
-            return new TaskAdjustResult(null, true, true, toView(tenantId, planned, row.version()), List.of());
+            return new TaskAdjustResult(null, true, true, toView(tenantId, planned, row.version()),
+                    List.of(), List.of(), List.of());
         }
         int updated = adjustmentRepository.updateTask(tenantId, taskId, row.version(),
                 planned.resourceId(), planned.startTime(), planned.endTime(),
                 planned.setupStartTime(), planned.setupEndTime(), planned.status(), planned.lockType(),
-                planned.lockedFrom(), planned.lockedTo(), toJson(planned.lockedResourceIds()));
+                planned.lockedFrom(), planned.lockedTo(), toJson(planned.lockedResourceIds()),
+                null, null);
         if (updated == 0) {
             throw new BizException(ErrorCode.STATE_CONFLICT, "任务版本已变化，请刷新后重试");
         }
         long adjustmentId = adjustmentRepository.insertAdjustment(tenantId, taskId, row.sandboxId(),
                 operation, toJson(before), toJson(after), trimToNull(command.getReason()),
                 AuditContext.getCurrentUserId());
+        writeAudit(tenantId, taskId, before, after);
         return new TaskAdjustResult(adjustmentId, true, false,
-                toView(tenantId, planned, row.version() + 1), List.of());
+                toView(tenantId, planned, row.version() + 1), List.of(), List.of(), List.of());
     }
 
     /**
@@ -169,17 +204,31 @@ public class TaskAdjustService {
             throw new BizException(ErrorCode.STATE_CONFLICT, "只能撤销最近一次调整（最近记录 " + latest.id() + "）");
         }
         AdjustTaskRow row = requireTask(tenantId, target.taskId());
-        PlannedState restored = fromSnapshot(tenantId, parseJson(target.beforeJson()));
+        Map<String, Object> before = parseJson(target.beforeJson());
+        Map<String, Object> after = parseJson(target.afterJson());
+        PlannedState restored = fromSnapshot(tenantId, before);
         int updated = adjustmentRepository.updateTask(tenantId, row.taskId(), row.version(),
                 restored.resourceId(), restored.startTime(), restored.endTime(),
                 restored.setupStartTime(), restored.setupEndTime(), restored.status(), restored.lockType(),
-                restored.lockedFrom(), restored.lockedTo(), toJson(restored.lockedResourceIds()));
+                restored.lockedFrom(), restored.lockedTo(), toJson(restored.lockedResourceIds()),
+                decimalValue(before.get("qty"), null), intValue(before.get("sequenceInResource")));
         if (updated == 0) {
             throw new BizException(ErrorCode.STATE_CONFLICT, "任务版本已变化，请刷新后重试");
         }
+        List<Long> removedTaskIds = List.of();
+        if (OPERATION_SPLIT.equals(target.adjustType())) {
+            removedTaskIds = longList(after.get("createdTaskIds"));
+            for (Long createdId : removedTaskIds) {
+                adjustmentRepository.softDeleteTask(tenantId, createdId);
+            }
+            shiftBackAfterSplit(tenantId, row, before, removedTaskIds.size());
+        }
+        if (OPERATION_MERGE.equals(target.adjustType())) {
+            restoreRemovedTasks(tenantId, before.get("removedTasks"));
+        }
         adjustmentRepository.markUndone(tenantId, adjustmentId, true);
         return new TaskAdjustResult(adjustmentId, true, false,
-                toView(tenantId, restored, row.version() + 1), List.of());
+                toView(tenantId, restored, row.version() + 1), List.of(), List.of(), removedTaskIds);
     }
 
     /**
@@ -199,17 +248,32 @@ public class TaskAdjustService {
             throw new BizException(ErrorCode.STATE_CONFLICT, "该调整之后已有新调整，不能重做");
         }
         AdjustTaskRow row = requireTask(tenantId, target.taskId());
-        PlannedState restored = fromSnapshot(tenantId, parseJson(target.afterJson()));
+        Map<String, Object> after = parseJson(target.afterJson());
+        PlannedState restored = fromSnapshot(tenantId, after);
         int updated = adjustmentRepository.updateTask(tenantId, row.taskId(), row.version(),
                 restored.resourceId(), restored.startTime(), restored.endTime(),
                 restored.setupStartTime(), restored.setupEndTime(), restored.status(), restored.lockType(),
-                restored.lockedFrom(), restored.lockedTo(), toJson(restored.lockedResourceIds()));
+                restored.lockedFrom(), restored.lockedTo(), toJson(restored.lockedResourceIds()),
+                decimalValue(after.get("qty"), null), intValue(after.get("sequenceInResource")));
         if (updated == 0) {
             throw new BizException(ErrorCode.STATE_CONFLICT, "任务版本已变化，请刷新后重试");
         }
+        List<Long> removedTaskIds = List.of();
+        if (OPERATION_SPLIT.equals(target.adjustType())) {
+            shiftForwardBeforeRedoSplit(tenantId, row, after);
+            for (Long createdId : longList(after.get("createdTaskIds"))) {
+                adjustmentRepository.undeleteTask(tenantId, createdId);
+            }
+        }
+        if (OPERATION_MERGE.equals(target.adjustType())) {
+            removedTaskIds = longList(after.get("removedTaskIds"));
+            for (Long removedId : removedTaskIds) {
+                adjustmentRepository.softDeleteTask(tenantId, removedId);
+            }
+        }
         adjustmentRepository.markUndone(tenantId, adjustmentId, false);
         return new TaskAdjustResult(adjustmentId, true, false,
-                toView(tenantId, restored, row.version() + 1), List.of());
+                toView(tenantId, restored, row.version() + 1), List.of(), List.of(), removedTaskIds);
     }
 
     /**
@@ -320,6 +384,363 @@ public class TaskAdjustService {
                 row.setupEndTime(), row.startTime(), row.endTime(),
                 STATUS_FROZEN.equals(row.status()) ? STATUS_PLANNED : row.status(),
                 LOCK_NONE, null, null, List.of(), row.operationIndex());
+    }
+
+    /**
+     * SPLIT（C36 §25.4.2）：源任务保留第 1 段，其余段新建任务；时间按数量比例连续切分。
+     */
+    private TaskAdjustResult applySplit(UUID tenantId, AdjustTaskRow row, TaskAdjustCommand command,
+                                        boolean dryRun) {
+        SplitPlan splitPlan = planSplit(tenantId, row, command);
+        Segment first = splitPlan.segments().get(0);
+        PlannedState source = new PlannedState(row.resourceId(), row.resourceCode(), row.setupStartTime(),
+                row.setupEndTime(), first.start(), first.end(), row.status(), row.lockType(),
+                row.lockedFrom(), row.lockedTo(), lockedIdsOf(row), row.operationIndex());
+        if (dryRun) {
+            return new TaskAdjustResult(null, true, true, toView(tenantId, source, row.version()),
+                    List.of(), List.of(), List.of());
+        }
+        int updated = adjustmentRepository.updateTask(tenantId, row.taskId(), row.version(),
+                source.resourceId(), source.startTime(), source.endTime(), source.setupStartTime(),
+                source.setupEndTime(), source.status(), source.lockType(), source.lockedFrom(),
+                source.lockedTo(), toJson(source.lockedResourceIds()),
+                splitPlan.quantities().get(0), null);
+        if (updated == 0) {
+            throw new BizException(ErrorCode.STATE_CONFLICT, "任务版本已变化，请刷新后重试");
+        }
+        int childCount = splitPlan.quantities().size() - 1;
+        Integer baseSequence = row.sequenceInResource();
+        if (baseSequence != null && row.resourceId() != null) {
+            adjustmentRepository.shiftSequence(tenantId, row.sandboxId(), row.resourceId(),
+                    baseSequence, childCount);
+        }
+        List<Long> createdTaskIds = new ArrayList<>(childCount);
+        for (int index = 1; index <= childCount; index++) {
+            Segment segment = splitPlan.segments().get(index);
+            Integer sequence = baseSequence == null ? null : baseSequence + index;
+            createdTaskIds.add(adjustmentRepository.insertSplitTask(tenantId,
+                    new TaskAdjustmentRepository.NewSplitTask(row.orderId(), row.sandboxId(),
+                            row.operationIndex(), row.operationTemplateId(), splitPlan.childResourceId(),
+                            row.secondaryJson(), segment.start(), segment.end(),
+                            splitPlan.quantities().get(index), sequence),
+                    AuditContext.getCurrentUserId()));
+        }
+        Map<String, Object> before = snapshot(tenantId, row);
+        before.put("taskIds", List.of(row.taskId()));
+        Map<String, Object> after = snapshot(source);
+        after.put("qty", splitPlan.quantities().get(0));
+        after.put("taskIds", taskIdsOf(row.taskId(), createdTaskIds));
+        after.put("operation", OPERATION_SPLIT);
+        after.put("parentTaskId", row.taskId());
+        after.put("createdTaskIds", createdTaskIds);
+        long adjustmentId = adjustmentRepository.insertAdjustment(tenantId, row.taskId(), row.sandboxId(),
+                OPERATION_SPLIT, toJson(before), toJson(after), trimToNull(command.getReason()),
+                AuditContext.getCurrentUserId());
+        writeAudit(tenantId, row.taskId(), auditBefore(before), auditAfter(after));
+        return new TaskAdjustResult(adjustmentId, true, false,
+                toView(tenantId, source, row.version() + 1), List.of(), createdTaskIds, List.of());
+    }
+
+    private SplitPlan planSplit(UUID tenantId, AdjustTaskRow row, TaskAdjustCommand command) {
+        requireReason(command, OPERATION_SPLIT);
+        if (STATUS_FROZEN.equals(row.status()) || LOCK_FROZEN.equals(row.lockType())) {
+            throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                    "任务处于 FROZEN，禁止 SPLIT: taskId=" + row.taskId());
+        }
+        List<BigDecimal> quantities = command.getSplitQuantities();
+        if (quantities == null || quantities.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "SPLIT 必须提供 splitQuantities");
+        }
+        if (quantities.size() < MIN_ADJUST_QUANTITY_ITEMS || quantities.size() > MAX_ADJUST_QUANTITY_ITEMS) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "splitQuantities 需为 2–10 项: 实际 " + quantities.size() + " 项");
+        }
+        BigDecimal sourceQty = row.qty();
+        if (sourceQty == null || sourceQty.signum() <= 0) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "SPLIT 要求源任务 qty 非空且 > 0: taskId=" + row.taskId() + ", qty=" + sourceQty);
+        }
+        BigDecimal total = BigDecimal.ZERO;
+        for (BigDecimal quantity : quantities) {
+            if (quantity == null || quantity.signum() <= 0) {
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                        "splitQuantities 每项必须 > 0: " + quantities);
+            }
+            total = total.add(quantity);
+        }
+        if (total.subtract(sourceQty).abs().compareTo(QTY_TOLERANCE) > 0) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "splitQuantities 之和必须等于源任务 qty（容差 1e-4）: 合计 " + total
+                            + ", 源 qty=" + sourceQty);
+        }
+        UUID childResourceId = row.resourceId();
+        if (command.getResourceCode() != null && !command.getResourceCode().isBlank()) {
+            childResourceId = requireResource(tenantId, command.getResourceCode()).resourceId();
+        }
+        return new SplitPlan(List.copyOf(quantities), splitSegments(row, quantities, total), childResourceId);
+    }
+
+    private List<Segment> splitSegments(AdjustTaskRow row, List<BigDecimal> quantities, BigDecimal total) {
+        List<Segment> segments = new ArrayList<>(quantities.size());
+        if (row.startTime() == null || row.endTime() == null) {
+            for (int index = 0; index < quantities.size(); index++) {
+                segments.add(new Segment(null, null));
+            }
+            return segments;
+        }
+        long totalNanos = Duration.between(row.startTime(), row.endTime()).toNanos();
+        BigDecimal cumulative = BigDecimal.ZERO;
+        OffsetDateTime from = row.startTime();
+        for (int index = 0; index < quantities.size(); index++) {
+            cumulative = cumulative.add(quantities.get(index));
+            OffsetDateTime to = index == quantities.size() - 1 ? row.endTime()
+                    : row.startTime().plusNanos(BigDecimal.valueOf(totalNanos)
+                    .multiply(cumulative.divide(total, 12, RoundingMode.HALF_UP))
+                    .setScale(0, RoundingMode.HALF_UP).longValue());
+            segments.add(new Segment(from, to));
+            from = to;
+        }
+        return segments;
+    }
+
+    /**
+     * MERGE（C36 §25.4.2）：同资源/同工序/资源内连续，保留路径任务为目标，数量求和、取其最早开始。
+     */
+    private TaskAdjustResult applyMerge(UUID tenantId, AdjustTaskRow row, TaskAdjustCommand command,
+                                        boolean dryRun) {
+        MergePlan mergePlan = planMerge(tenantId, row, command);
+        AdjustTaskRow target = mergePlan.target();
+        PlannedState merged = new PlannedState(target.resourceId(), target.resourceCode(),
+                mergePlan.setupStartTime(), mergePlan.setupEndTime(), mergePlan.startTime(),
+                mergePlan.endTime(), target.status(), target.lockType(), target.lockedFrom(),
+                target.lockedTo(), lockedIdsOf(target), target.operationIndex());
+        if (dryRun) {
+            return new TaskAdjustResult(null, true, true, toView(tenantId, merged, row.version()),
+                    List.of(), List.of(), List.of());
+        }
+        int updated = adjustmentRepository.updateTask(tenantId, target.taskId(), target.version(),
+                merged.resourceId(), merged.startTime(), merged.endTime(), merged.setupStartTime(),
+                merged.setupEndTime(), merged.status(), merged.lockType(), merged.lockedFrom(),
+                merged.lockedTo(), toJson(merged.lockedResourceIds()), mergePlan.mergedQty(), null);
+        if (updated == 0) {
+            throw new BizException(ErrorCode.STATE_CONFLICT, "任务版本已变化，请刷新后重试");
+        }
+        List<Long> removedTaskIds = new ArrayList<>();
+        List<Map<String, Object>> removedTasks = new ArrayList<>();
+        for (AdjustTaskRow participant : mergePlan.participants()) {
+            if (participant.taskId() == target.taskId()) {
+                continue;
+            }
+            adjustmentRepository.softDeleteTask(tenantId, participant.taskId());
+            removedTaskIds.add(participant.taskId());
+            removedTasks.add(taskSnapshot(participant));
+        }
+        Map<String, Object> before = snapshot(tenantId, target);
+        before.put("qty", target.qty());
+        before.put("taskIds", mergePlan.participants().stream().map(AdjustTaskRow::taskId).toList());
+        before.put("removedTasks", removedTasks);
+        Map<String, Object> after = snapshot(merged);
+        after.put("qty", mergePlan.mergedQty());
+        after.put("taskIds", List.of(target.taskId()));
+        after.put("operation", OPERATION_MERGE);
+        after.put("removedTaskIds", removedTaskIds);
+        long adjustmentId = adjustmentRepository.insertAdjustment(tenantId, target.taskId(),
+                target.sandboxId(), OPERATION_MERGE, toJson(before), toJson(after),
+                trimToNull(command.getReason()), AuditContext.getCurrentUserId());
+        writeAudit(tenantId, target.taskId(), auditBefore(before), auditAfter(after));
+        return new TaskAdjustResult(adjustmentId, true, false,
+                toView(tenantId, merged, target.version() + 1), List.of(), List.of(), removedTaskIds);
+    }
+
+    private MergePlan planMerge(UUID tenantId, AdjustTaskRow pathRow, TaskAdjustCommand command) {
+        requireReason(command, OPERATION_MERGE);
+        List<Long> mergeTaskIds = command.getMergeTaskIds();
+        if (mergeTaskIds == null || mergeTaskIds.isEmpty()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "MERGE 必须提供 mergeTaskIds");
+        }
+        if (mergeTaskIds.size() < MIN_ADJUST_QUANTITY_ITEMS
+                || mergeTaskIds.size() > MAX_ADJUST_QUANTITY_ITEMS) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "mergeTaskIds 需为 2–10 项: 实际 " + mergeTaskIds.size() + " 项");
+        }
+        if (mergeTaskIds.stream().anyMatch(Objects::isNull)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "mergeTaskIds 不允许包含空值");
+        }
+        if (new HashSet<>(mergeTaskIds).size() != mergeTaskIds.size()) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "mergeTaskIds 不允许重复: " + mergeTaskIds);
+        }
+        if (!mergeTaskIds.contains(pathRow.taskId())) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "mergeTaskIds 必须包含路径任务 id: " + pathRow.taskId());
+        }
+        List<AdjustTaskRow> participants = new ArrayList<>(mergeTaskIds.size());
+        for (Long taskId : mergeTaskIds) {
+            participants.add(adjustmentRepository.findTask(tenantId, taskId)
+                    .orElseThrow(() -> new BizException(ErrorCode.NOT_FOUND, "任务不存在: " + taskId)));
+        }
+        for (AdjustTaskRow participant : participants) {
+            if ("IN_PROGRESS".equals(participant.status()) || "COMPLETED".equals(participant.status())) {
+                throw new BizException(ErrorCode.PUBLISHED_CONFLICT,
+                        "任务已执行（" + participant.status() + "），禁止 MERGE: taskId="
+                                + participant.taskId());
+            }
+            if (STATUS_FROZEN.equals(participant.status()) || LOCK_FROZEN.equals(participant.lockType())) {
+                throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                        "任务处于 FROZEN，禁止 MERGE: taskId=" + participant.taskId());
+            }
+            if (participant.qty() == null || participant.qty().signum() <= 0) {
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                        "MERGE 要求所有参与任务 qty 非空且 > 0: taskId=" + participant.taskId()
+                                + ", qty=" + participant.qty());
+            }
+            if (!Objects.equals(participant.sandboxId(), pathRow.sandboxId())
+                    || !Objects.equals(participant.orderId(), pathRow.orderId())) {
+                throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                        "MERGE 要求同租户/同场景/同订单: taskId=" + participant.taskId()
+                                + ", sandboxId=" + participant.sandboxId() + ", orderId=" + participant.orderId());
+            }
+            if (participant.operationIndex() != pathRow.operationIndex()) {
+                throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                        "MERGE 要求同工序: taskId=" + participant.taskId()
+                                + ", operationIndex=" + participant.operationIndex());
+            }
+            if (!Objects.equals(participant.resourceId(), pathRow.resourceId())) {
+                throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                        "MERGE 要求同资源: taskId=" + participant.taskId()
+                                + ", resourceId=" + participant.resourceId());
+            }
+        }
+        participants.sort(Comparator.comparing(AdjustTaskRow::sequenceInResource,
+                        Comparator.nullsFirst(Comparator.naturalOrder()))
+                .thenComparingLong(AdjustTaskRow::taskId));
+        for (int index = 1; index < participants.size(); index++) {
+            AdjustTaskRow previous = participants.get(index - 1);
+            AdjustTaskRow current = participants.get(index);
+            if (previous.sequenceInResource() == null || current.sequenceInResource() == null
+                    || previous.sequenceInResource() + 1 != current.sequenceInResource()) {
+                throw new BizException(ErrorCode.ADJUSTMENT_INFEASIBLE,
+                        "MERGE 要求资源内连续相邻: taskIds=" + mergeTaskIds
+                                + ", sequences=" + participants.stream()
+                                .map(AdjustTaskRow::sequenceInResource).toList());
+            }
+        }
+        BigDecimal mergedQty = participants.stream().map(AdjustTaskRow::qty)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        OffsetDateTime start = participants.stream().map(AdjustTaskRow::startTime)
+                .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null);
+        OffsetDateTime end = participants.stream().map(AdjustTaskRow::endTime)
+                .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+        AdjustTaskRow earliest = participants.get(0);
+        for (AdjustTaskRow participant : participants) {
+            if (participant.startTime() != null
+                    && (earliest.startTime() == null || participant.startTime().isBefore(earliest.startTime()))) {
+                earliest = participant;
+            }
+        }
+        return new MergePlan(pathRow, participants, mergedQty, start, end,
+                earliest.setupStartTime(), earliest.setupEndTime());
+    }
+
+    private void requireReason(TaskAdjustCommand command, String operation) {
+        String reason = trimToNull(command.getReason());
+        if (reason == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST, operation + " 必须提供 reason");
+        }
+        if (reason.length() > MAX_REASON_LENGTH) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "reason 长度不能超过 " + MAX_REASON_LENGTH + "：" + reason.length());
+        }
+    }
+
+    private static void requireIdempotencyKey(String idempotencyKey) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "Idempotency-Key 必填");
+        }
+    }
+
+    private void writeAudit(UUID tenantId, long taskId, Map<String, Object> before,
+                            Map<String, Object> after) {
+        auditLogRepository.record(tenantId, AUDIT_TASK_ADJUSTED, AUDIT_RESOURCE_TASK,
+                String.valueOf(taskId), before, after);
+    }
+
+    private static Map<String, Object> auditBefore(Map<String, Object> snapshot) {
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("qty", snapshot.get("qty"));
+        audit.put("taskIds", snapshot.getOrDefault("taskIds", List.of()));
+        return audit;
+    }
+
+    private static Map<String, Object> auditAfter(Map<String, Object> snapshot) {
+        Map<String, Object> audit = new LinkedHashMap<>();
+        audit.put("qty", snapshot.get("qty"));
+        audit.put("taskIds", snapshot.getOrDefault("taskIds", List.of()));
+        audit.put("operation", snapshot.get("operation"));
+        return audit;
+    }
+
+    private static Map<String, Object> taskSnapshot(AdjustTaskRow row) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("taskId", row.taskId());
+        snapshot.put("qty", row.qty());
+        snapshot.put("startTime", text(row.startTime()));
+        snapshot.put("endTime", text(row.endTime()));
+        snapshot.put("setupStartTime", text(row.setupStartTime()));
+        snapshot.put("setupEndTime", text(row.setupEndTime()));
+        snapshot.put("sequenceInResource", row.sequenceInResource());
+        return snapshot;
+    }
+
+    private void restoreRemovedTasks(UUID tenantId, Object value) {
+        if (!(value instanceof List<?> list)) {
+            return;
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+            Long taskId = longValue(map.get("taskId"));
+            if (taskId == null) {
+                continue;
+            }
+            adjustmentRepository.restoreMergedTask(tenantId, taskId,
+                    decimalValue(map.get("qty"), null),
+                    timeValue(map.get("startTime")), timeValue(map.get("endTime")),
+                    timeValue(map.get("setupStartTime")), timeValue(map.get("setupEndTime")),
+                    intValue(map.get("sequenceInResource")));
+        }
+    }
+
+    private void shiftBackAfterSplit(UUID tenantId, AdjustTaskRow row, Map<String, Object> before,
+                                     int count) {
+        if (count <= 0) {
+            return;
+        }
+        Integer sequence = intValue(before.get("sequenceInResource"));
+        if (sequence == null || row.resourceId() == null) {
+            return;
+        }
+        adjustmentRepository.shiftSequence(tenantId, row.sandboxId(), row.resourceId(), sequence, -count);
+    }
+
+    private void shiftForwardBeforeRedoSplit(UUID tenantId, AdjustTaskRow row, Map<String, Object> after) {
+        Object created = after.get("createdTaskIds");
+        int count = created instanceof List<?> list ? list.size() : 0;
+        if (count <= 0) {
+            return;
+        }
+        Integer sequence = intValue(after.get("sequenceInResource"));
+        if (sequence == null || row.resourceId() == null) {
+            return;
+        }
+        adjustmentRepository.shiftSequence(tenantId, row.sandboxId(), row.resourceId(), sequence, count);
+    }
+
+    private static List<Long> taskIdsOf(long mainTaskId, List<Long> createdTaskIds) {
+        List<Long> ids = new ArrayList<>(createdTaskIds.size() + 1);
+        ids.add(mainTaskId);
+        ids.addAll(createdTaskIds);
+        return ids;
     }
 
     /**
@@ -548,6 +969,8 @@ public class TaskAdjustService {
         snapshot.put("lockFrom", text(row.lockedFrom()));
         snapshot.put("lockTo", text(row.lockedTo()));
         snapshot.put("lockedResourceCodes", codesOf(tenantId, lockedIdsOf(row)));
+        snapshot.put("qty", row.qty());
+        snapshot.put("sequenceInResource", row.sequenceInResource());
         snapshot.put("version", row.version());
         return snapshot;
     }
@@ -565,6 +988,7 @@ public class TaskAdjustService {
         snapshot.put("lockTo", text(planned.lockedTo()));
         snapshot.put("lockedResourceCodes", planned.lockedResourceIds() == null ? List.of()
                 : codesOf(TenantContext.getTenantId(), planned.lockedResourceIds()));
+        snapshot.put("sequenceInResource", null);
         return snapshot;
     }
 
@@ -665,6 +1089,91 @@ public class TaskAdjustService {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    private static Long longValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Long.valueOf(text);
+    }
+
+    private static BigDecimal decimalValue(Object value, BigDecimal fallback) {
+        if (value == null) {
+            return fallback;
+        }
+        if (value instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (value instanceof Number number) {
+            return new BigDecimal(number.toString());
+        }
+        String text = stringValue(value);
+        return text == null ? fallback : new BigDecimal(text);
+    }
+
+    private static Integer intValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        String text = stringValue(value);
+        return text == null ? null : Integer.valueOf(text);
+    }
+
+    private static List<Long> longList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>(list.size());
+        for (Object item : list) {
+            Long id = longValue(item);
+            if (id != null) {
+                ids.add(id);
+            }
+        }
+        return List.copyOf(ids);
+    }
+
+    /**
+     * 时间片段（SPLIT 切分结果）。
+     *
+     * @param start 片段开始，可空
+     * @param end 片段结束，可空
+     */
+    private record Segment(OffsetDateTime start, OffsetDateTime end) {
+    }
+
+    /**
+     * SPLIT 计划。
+     *
+     * @param quantities 各段数量
+     * @param segments 各段时间片段
+     * @param childResourceId 新建子任务资源主键
+     */
+    private record SplitPlan(List<BigDecimal> quantities, List<Segment> segments, UUID childResourceId) {
+    }
+
+    /**
+     * MERGE 计划。
+     *
+     * @param target 目标（路径）任务
+     * @param participants 参与任务，按资源内顺序升序
+     * @param mergedQty 合并后数量
+     * @param startTime 合并后开始
+     * @param endTime 合并后结束
+     * @param setupStartTime 换型开始（取最早任务）
+     * @param setupEndTime 换型结束（取最早任务）
+     */
+    private record MergePlan(AdjustTaskRow target, List<AdjustTaskRow> participants, BigDecimal mergedQty,
+                             OffsetDateTime startTime, OffsetDateTime endTime,
+                             OffsetDateTime setupStartTime, OffsetDateTime setupEndTime) {
+    }
+
     /**
      * 调整目标状态（写入前的完整字段集合）。
      */
@@ -702,6 +1211,10 @@ public class TaskAdjustService {
         private Integer version;
 
         private Boolean dryRun;
+
+        private List<BigDecimal> splitQuantities;
+
+        private List<Long> mergeTaskIds;
 
         /**
          * 无参构造，供 Jackson 反序列化。
@@ -788,19 +1301,38 @@ public class TaskAdjustService {
         public void setDryRun(Boolean dryRun) {
             this.dryRun = dryRun;
         }
+
+        public List<BigDecimal> getSplitQuantities() {
+            return splitQuantities;
+        }
+
+        public void setSplitQuantities(List<BigDecimal> splitQuantities) {
+            this.splitQuantities = splitQuantities;
+        }
+
+        public List<Long> getMergeTaskIds() {
+            return mergeTaskIds;
+        }
+
+        public void setMergeTaskIds(List<Long> mergeTaskIds) {
+            this.mergeTaskIds = mergeTaskIds;
+        }
     }
 
     /**
-     * 调整结果（C22 {@code TaskAdjustResult}）。
+     * 调整结果（C22 {@code TaskAdjustResult}，C36 追加 created/removed）。
      *
      * @param adjustmentId 调整记录主键；dryRun 为空
      * @param applied 是否已应用（dryRun 表示校验通过）
      * @param dryRun 是否仅校验
      * @param task 调整后的任务视图
      * @param conflicts 冲突列表，成功时为空
+     * @param createdTaskIds SPLIT 新建任务主键；dryRun 或非 SPLIT 为空
+     * @param removedTaskIds MERGE 软删任务主键；dryRun 或非 MERGE 为空
      */
     public record TaskAdjustResult(Long adjustmentId, boolean applied, boolean dryRun, TaskView task,
-                                   List<TaskConflict> conflicts) {
+                                   List<TaskConflict> conflicts, List<Long> createdTaskIds,
+                                   List<Long> removedTaskIds) {
     }
 
     /**

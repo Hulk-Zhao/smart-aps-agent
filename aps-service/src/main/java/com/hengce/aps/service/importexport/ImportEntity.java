@@ -3,10 +3,10 @@ package com.hengce.aps.service.importexport;
 import java.util.List;
 
 /**
- * 支持 Excel 导入导出的 9 类实体及其列定义。
+ * 支持 Excel 导入导出的实体及其列定义。
  *
  * <p>M2-BD-05 已定契约（C26）：materials / boms / resources / calendars /
- * operationTemplates / routings / orders / strategies / suppliers。</p>
+ * operationTemplates / routings / orders / strategies / suppliers；C38 追加 customers。</p>
  */
 public enum ImportEntity {
 
@@ -116,6 +116,15 @@ public enum ImportEntity {
             ImportColumn.number("leadTimeDays", "采购提前期(天)", false, ImportDataType.INTEGER, "7", "非负整数"),
             ImportColumn.number("moq", "最小起订量", false, ImportDataType.DECIMAL, "1", "非负数"),
             ImportColumn.enumOf("qualityGrade", "质量等级", false, "A", "质量等级", "A", "B", "C"),
+            ImportColumn.bool("blacklisted", "是否黑名单", false, "false", "true/false"))),
+
+    /** 客户（C38，slug 为复数，与既有约定一致）。 */
+    CUSTOMERS("customers", "客户", List.of(
+            ImportColumn.text("code", "客户编码", true, "CUS-0001", "唯一编码，最长 64；已存在则更新"),
+            ImportColumn.text("name", "客户名称", true, "衡策客户", "最长 256"),
+            ImportColumn.enumOf("priority", "优先级", false, "NORMAL", "优先级", "VIP", "NORMAL", "LOW"),
+            ImportColumn.number("leadTimeDays", "交付提前期(天)", false, ImportDataType.INTEGER, "7", "非负整数"),
+            ImportColumn.text("paymentTerms", "付款条件", false, "月结30天", "最长 128"),
             ImportColumn.bool("blacklisted", "是否黑名单", false, "false", "true/false")));
 
     private final String slug;

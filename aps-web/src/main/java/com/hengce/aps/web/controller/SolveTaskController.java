@@ -8,6 +8,7 @@ import com.hengce.aps.service.schedule.SolveTaskViewAssembler;
 import com.hengce.aps.solver.api.ConstraintJustification;
 import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
@@ -72,6 +73,7 @@ public class SolveTaskController {
     @Operation(summary = "增量重排",
             description = "复用基准解配置，写新 solve_task 与新 DRAFT plan_version；"
                     + "场景内含已执行任务 40903，齐套未通过 42200")
+    @RequiresPermission("SE_SOLVE")
     @PostMapping("/incremental")
     public Result<IncrementalSolveService.IncrementalSolveResult> incremental(
             @RequestBody IncrementalSolveService.IncrementalSolveRequest request,
@@ -91,6 +93,7 @@ public class SolveTaskController {
      */
     @Operation(summary = "提交求解任务",
             description = "一律返回 SolveTaskDetail（C20）；状态使用六值枚举，终态任务快照见 tasks")
+    @RequiresPermission("SE_SOLVE")
     @PostMapping
     public Result<SolveTaskDetail> submit(
             @RequestBody SolveRequest request,
@@ -117,6 +120,7 @@ public class SolveTaskController {
      * @return 取消后的任务详情
      */
     @Operation(summary = "取消求解任务", description = "已终态返回 40901；重复取消幂等")
+    @RequiresPermission("SE_SOLVE")
     @PostMapping("/{id}/cancel")
     public Result<SolveTaskDetail> cancel(@PathVariable long id) {
         return Result.success(lifecycleService.cancel(id));

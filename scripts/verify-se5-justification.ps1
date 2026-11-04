@@ -16,7 +16,9 @@
     运行中包含 M2-SE-05 代码的后端地址，默认 http://127.0.0.1:18085。
 
 .PARAMETER ApiKey
-    写端点 API Key（aps.security.mode=dev 时需要），默认 dev-write-key。
+    写端点 API Key（aps.security.mode=dev 时需要）。
+    目标实例必须显式开启 aps.security.dev.api-key-enabled=true（默认关闭）；
+    本仓库统一由 scripts/local-verify.ps1 以启动参数传入，默认密钥 aps-dev-write-key-local-only。
 
 .PARAMETER PgHost/PgPort/PgDatabase/PgUser/PgPassword
     共享库连接参数，默认 aps_local:55432。
@@ -29,7 +31,7 @@
 #>
 param(
     [string]$BaseUrl = 'http://127.0.0.1:18085',
-    [string]$ApiKey = 'dev-write-key',
+    [string]$ApiKey = $(if ($env:APS_DEV_API_KEY) { $env:APS_DEV_API_KEY } else { 'aps-dev-write-key-local-only' }),
     [string]$PgHost = '127.0.0.1',
     [int]$PgPort = 55432,
     [string]$PgDatabase = 'aps_local',

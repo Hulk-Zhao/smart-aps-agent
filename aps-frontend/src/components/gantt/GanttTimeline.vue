@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { getEnumLabel, getEnumTagType } from '@/constants/enums'
 import { heatLevelOf } from './analysis'
@@ -19,6 +19,10 @@ const props = withDefaults(
     rowHeight?: number
     labelWidth?: number
     height?: number
+    /** 纵向虚拟窗口上下缓冲区行数：仅多渲染视口上/下各 N 行（M3-FE-04）。 */
+    overscan?: number
+    /** 横向虚拟缓冲区像素：仅渲染可视水平窗口左右各 N px 内的任务条。 */
+    horizontalBuffer?: number
     /** 只读增强层分析结果；缺省时只渲染基础任务条。 */
     analysis?: GanttAnalysis | null
     /** 图层开关：日历停机（C14）/ 可插空档（推导）/ 依赖 / 热力 / 冲突 / 冻结。 */
@@ -30,6 +34,8 @@ const props = withDefaults(
     rowHeight: 34,
     labelWidth: 232,
     height: 460,
+    overscan: 6,
+    horizontalBuffer: 240,
     analysis: null,
     selectedTaskId: null,
     layers: () => ({
@@ -47,6 +53,8 @@ const emit = defineEmits<{ (event: 'select', taskId: number): void }>()
 const scrollRef = ref<HTMLElement | null>(null)
 const headsRef = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
+const scrollLeft = ref(0)
+const viewportWidth = ref(0)
 const hovered = ref<{ bar: GanttBarModel; x: number; y: number } | null>(null)
 
 const ZOOM_PX_PER_DAY: Record<GanttZoom, number> = {
@@ -61,7 +69,6 @@ const ZOOM_STEP_MS: Record<GanttZoom, number> = {
   week: 86_400_000,
   month: 7 * 86_400_000
 }
-const OVERSCAN_ROWS = 3
 
 const rangeStart = computed(() => Date.parse(props.dataset.range.from))
 const rangeEnd = computed(() => Date.parse(props.dataset.range.to))
@@ -70,15 +77,27 @@ const pxPerMs = computed(() => ZOOM_PX_PER_DAY[props.zoom] / 86_400_000)
 const timelineWidth = computed(() => Math.max(Math.round(totalMs.value * pxPerMs.value), 320))
 const rows = computed(() => props.dataset.rows)
 const totalHeight = computed(() => rows.value.length * props.rowHeight)
+/**
+ * 纵向虚拟窗口：视口高 460px ≈ 13 行（rowHeight=34px），上下各多渲染 overscan=6 行。
+ * 行节点绝对定位在 totalHeight 画布上，滚动只替换窗口内 25 行左右的 DOM，行数（5000）不进入 DOM 数量。
+ */
 const startIndex = computed(() =>
-  Math.max(0, Math.floor(scrollTop.value / props.rowHeight) - OVERSCAN_ROWS)
+  Math.max(0, Math.floor(scrollTop.value / props.rowHeight) - props.overscan)
 )
 const endIndex = computed(() =>
   Math.min(
     rows.value.length,
-    Math.ceil((scrollTop.value + props.height) / props.rowHeight) + OVERSCAN_ROWS
+    Math.ceil((scrollTop.value + props.height) / props.rowHeight) + props.overscan
   )
 )
+/** 横向虚拟窗口：只渲染 scrollLeft ± (clientWidth + horizontalBuffer) 内的条，避免 5000 条同时挂载。 */
+const windowLeft = computed(() => scrollLeft.value - props.horizontalBuffer)
+const windowRight = computed(
+  () => scrollLeft.value + (viewportWidth.value || timelineWidth.value) + props.horizontalBuffer
+)
+function inWindow(left: number, width: number): boolean {
+  return left + width >= windowLeft.value && left <= windowRight.value
+}
 
 const heatByRow = computed(() => {
   const map = new Map<string, GanttHeatCell[]>()
@@ -382,18 +401,23 @@ const renderRows = computed<RenderRow[]>(() => {
       }
       const left = Math.max((start - from) * px, 0)
       const width = Math.max((end - start) * px, 2)
-      bars.push({ bar, left, width: Math.min(width, timelineWidth.value - left) })
+      const clipped = Math.min(width, timelineWidth.value - left)
+      if (!inWindow(left, clipped)) {
+        return
+      }
+      bars.push({ bar, left, width: clipped })
       if (bar.setupStartTime && bar.setupEndTime) {
         const setupStart = Date.parse(bar.setupStartTime)
         const setupEnd = Date.parse(bar.setupEndTime)
         if (Number.isFinite(setupStart) && Number.isFinite(setupEnd) && setupEnd > setupStart) {
           const setupLeft = Math.max((setupStart - from) * px, 0)
           const setupWidth = Math.max((setupEnd - setupStart) * px, 1)
-          if (setupLeft < timelineWidth.value) {
+          const setupClipped = Math.min(setupWidth, timelineWidth.value - setupLeft)
+          if (setupLeft < timelineWidth.value && inWindow(setupLeft, setupClipped)) {
             setups.push({
               taskId: bar.taskId,
               left: setupLeft,
-              width: Math.min(setupWidth, timelineWidth.value - setupLeft)
+              width: setupClipped
             })
           }
         }
@@ -582,6 +606,7 @@ function formatTime(value?: string | null): string {
 function onScroll(event: Event): void {
   const target = event.currentTarget as HTMLElement
   scrollTop.value = target.scrollTop
+  scrollLeft.value = target.scrollLeft
   if (headsRef.value) {
     headsRef.value.scrollTop = target.scrollTop
   }
@@ -633,10 +658,27 @@ function selectBar(bar: GanttBarModel): void {
   emit('select', bar.taskId)
 }
 
+let resizeObserver: ResizeObserver | null = null
+
 onMounted(() => {
-  if (scrollRef.value) {
-    scrollTop.value = scrollRef.value.scrollTop
+  const element = scrollRef.value
+  if (!element) {
+    return
   }
+  scrollTop.value = element.scrollTop
+  scrollLeft.value = element.scrollLeft
+  viewportWidth.value = element.clientWidth
+  if (typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(() => {
+      viewportWidth.value = element.clientWidth
+    })
+    resizeObserver.observe(element)
+  }
+})
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 </script>
 

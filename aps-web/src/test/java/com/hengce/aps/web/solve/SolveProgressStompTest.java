@@ -1,15 +1,19 @@
 package com.hengce.aps.web.solve;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hengce.aps.common.exception.BizException;
+import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.service.schedule.SolveTaskLifecycleService;
 import com.hengce.aps.solver.api.task.SolveProgress;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
+import com.hengce.aps.web.security.JwtTokenService;
 import java.lang.reflect.Type;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -17,8 +21,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -35,12 +42,14 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.messaging.converter.MappingJackson2MessageConverter;
+import org.springframework.messaging.simp.stomp.StompCommand;
 import org.springframework.messaging.simp.stomp.StompFrameHandler;
 import org.springframework.messaging.simp.stomp.StompHeaders;
 import org.springframework.messaging.simp.stomp.StompSession;
 import org.springframework.messaging.simp.stomp.StompSessionHandlerAdapter;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
+import org.springframework.web.socket.WebSocketHttpHeaders;
 
 /**
  * STOMP 实测：连接 {@code /ws/solve-tasks/{id}}，订阅 {@code /topic/solve-tasks/{id}}，
@@ -54,12 +63,20 @@ import org.springframework.web.socket.messaging.WebSocketStompClient;
  * 并在测试开头断言该闸门确实生效，避免闸门失效后重新退化为抖动。</p>
  */
 @SpringBootTest(classes = {SolveProgressStompTestApplication.class, SolveProgressStompTest.InlineInboundChannelConfiguration.class},
-        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+            "aps.security.jwt.secret=test-only-jwt-secret-0123456789abcdef",
+            "aps.security.websocket.allowed-origins=http://localhost:5173,http://127.0.0.1:5173"
+        })
 class SolveProgressStompTest {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SolveProgressStompTest.class);
 
     private static final UUID SANDBOX_ID = UUID.randomUUID();
+
+    private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000303");
+
+    private static final UUID TENANT_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     /**
      * 等待单帧的上限，仅作为失败兜底；断言条件是“帧出现”，不是“等够多少毫秒”。
@@ -82,6 +99,9 @@ class SolveProgressStompTest {
 
     @Autowired
     private ApplicationContext applicationContext;
+
+    @Autowired
+    private JwtTokenService jwtTokenService;
 
     /**
      * 把 STOMP 入站派发改成同线程执行，作为测试闸门（不改生产代码，仅本测试上下文生效）。
@@ -112,6 +132,66 @@ class SolveProgressStompTest {
     }
 
     @Test
+    void anonymousConnectShouldBeRejected() throws Exception {
+        WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
+        client.setMessageConverter(new MappingJackson2MessageConverter());
+
+        AtomicReference<Throwable> rejection = new AtomicReference<>();
+        CountDownLatch rejected = new CountDownLatch(1);
+        StompSessionHandlerAdapter handler = rejectRecordingHandler(rejection, rejected);
+        StompSession session = null;
+        try {
+            session = client.connectAsync("ws://localhost:" + port + "/ws/solve-tasks/1",
+                    new WebSocketHttpHeaders(), new StompHeaders(), handler).get(5, TimeUnit.SECONDS);
+            assertTrue(rejected.await(5, TimeUnit.SECONDS), "匿名 CONNECT 应收到 ERROR 帧或断连");
+        } catch (ExecutionException exception) {
+            rejection.compareAndSet(null, exception.getCause());
+            rejected.countDown();
+        }
+        assertNotNull(rejection.get(), "匿名 CONNECT 必须被拒绝");
+        LOGGER.info("匿名 WS 连接被拒绝: {}", rejection.get().getMessage());
+        if (session != null) {
+            session.disconnect();
+        }
+    }
+
+    @Test
+    void crossTenantSubscribeShouldBeRejected() throws Exception {
+        when(lifecycleService.detail(2L)).thenThrow(new BizException(ErrorCode.NOT_FOUND));
+
+        WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
+        client.setMessageConverter(new MappingJackson2MessageConverter());
+        AtomicReference<Throwable> rejection = new AtomicReference<>();
+        CountDownLatch rejected = new CountDownLatch(1);
+        StompSession session = client.connectAsync("ws://localhost:" + port + "/ws/solve-tasks/2",
+                new WebSocketHttpHeaders(), bearerHeaders(USER_ID, TENANT_ID),
+                rejectRecordingHandler(rejection, rejected)).get(5, TimeUnit.SECONDS);
+        session.subscribe("/topic/solve-tasks/2", new StompSessionHandlerAdapter() { });
+        assertTrue(rejected.await(5, TimeUnit.SECONDS), "跨租户订阅应收到 ERROR 帧或断连");
+        assertNotNull(rejection.get(), "跨租户订阅必须被拒绝");
+        LOGGER.info("跨租户订阅被拒绝: {}", rejection.get().getMessage());
+        assertTrue(!session.isConnected(), "跨租户订阅后会话应已关闭");
+    }
+
+    private StompSessionHandlerAdapter rejectRecordingHandler(AtomicReference<Throwable> rejection,
+                                                             CountDownLatch rejected) {
+        return new StompSessionHandlerAdapter() {
+            @Override
+            public void handleException(StompSession session, StompCommand command, StompHeaders headers,
+                                        byte[] payload, Throwable exception) {
+                rejection.compareAndSet(null, exception);
+                rejected.countDown();
+            }
+
+            @Override
+            public void handleTransportError(StompSession session, Throwable exception) {
+                rejection.compareAndSet(null, exception);
+                rejected.countDown();
+            }
+        };
+    }
+
+    @Test
     void subscriptionShouldReceiveSnapshotAndBroadcastProgress() throws Exception {
         assertSame(INLINE_INBOUND_EXECUTOR,
                 applicationContext.getBean("clientInboundChannelExecutor", TaskExecutor.class),
@@ -126,6 +206,7 @@ class SolveProgressStompTest {
         WebSocketStompClient client = new WebSocketStompClient(new StandardWebSocketClient());
         client.setMessageConverter(new MappingJackson2MessageConverter());
         StompSession session = client.connectAsync("ws://localhost:" + port + "/ws/solve-tasks/1",
+                new WebSocketHttpHeaders(), bearerHeaders(USER_ID, TENANT_ID),
                 new StompSessionHandlerAdapter() { })
                 .get(5, TimeUnit.SECONDS);
 
@@ -166,6 +247,20 @@ class SolveProgressStompTest {
         assertEquals(2600L, ((Number) terminal.get("elapsedMs")).longValue());
 
         session.disconnect();
+    }
+
+    /**
+     * 生成带 Bearer 令牌的 STOMP CONNECT 头。
+     *
+     * @param userId 用户主键
+     * @param tenantId 租户
+     * @return STOMP 头
+     */
+    private StompHeaders bearerHeaders(UUID userId, UUID tenantId) {
+        StompHeaders headers = new StompHeaders();
+        headers.add("Authorization", "Bearer "
+                + jwtTokenService.issue(userId, tenantId, List.of("APS_USER")));
+        return headers;
     }
 
     /**

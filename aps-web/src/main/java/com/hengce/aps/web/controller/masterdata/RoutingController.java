@@ -22,6 +22,7 @@ import com.hengce.aps.web.controller.masterdata.dto.RoutingGraphView;
 import com.hengce.aps.web.controller.masterdata.dto.RoutingNodeRequest;
 import com.hengce.aps.web.controller.masterdata.dto.RoutingNodeView;
 import com.hengce.aps.web.controller.masterdata.dto.RoutingView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -96,7 +97,8 @@ public class RoutingController {
      * @return 路线（含完整节点/边）
      */
     @Operation(summary = "工艺路线详情", description = "已实现。路径参数为 routing UUID；不存在返回 40400。")
-    @GetMapping("/{id}")
+    // 排除通用导出/导入保留段，避免 GET /routings/export 被本方法抢先匹配（C38）
+    @GetMapping("/{id:^(?!export$)(?!import$).+}")
     public Result<RoutingView> detail(@PathVariable UUID id) {
         Routing routing = routingService.get(id);
         return Result.success(toRoutingView(routing, routingService.getGraph(id)));
@@ -109,6 +111,7 @@ public class RoutingController {
      * @return 新建后的路线
      */
     @Operation(summary = "新建工艺路线", description = "已实现。默认 DRAFT；支持空白图或通过 sourceRoutingId 复制现有版本。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping
     public Result<RoutingView> create(@Valid @RequestBody RoutingCreateRequest request) {
         Routing routing = routingService.create(toCommand(request));
@@ -136,6 +139,7 @@ public class RoutingController {
      * @return 保存后的图
      */
     @Operation(summary = "保存工艺路线 DAG", description = "已实现。整体替换 nodes/edges；version 不一致返回 40901；图非法返回 42200。")
+    @RequiresPermission("MD_WRITE")
     @PutMapping("/{id}/graph")
     public Result<RoutingGraphView> updateGraph(@PathVariable UUID id,
                                                 @Valid @RequestBody RoutingGraphUpdateRequest request) {
@@ -155,6 +159,7 @@ public class RoutingController {
      * @return 激活后的路线
      */
     @Operation(summary = "激活工艺路线", description = "已实现（契约外补充）。同产品其他 ACTIVE 自动收敛；并发冲突返回 40901。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping("/{id}/activate")
     public Result<RoutingView> activate(@PathVariable UUID id) {
         return Result.success(toRoutingView(routingService.activate(id), null));
@@ -167,6 +172,7 @@ public class RoutingController {
      * @return 空数据成功响应
      */
     @Operation(summary = "删除工艺路线", description = "已实现（契约外补充）。逻辑删除；被 orders/task 引用返回 42200。")
+    @RequiresPermission("MD_WRITE")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable UUID id) {
         routingService.delete(id);

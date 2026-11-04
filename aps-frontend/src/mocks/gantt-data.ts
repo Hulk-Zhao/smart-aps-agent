@@ -18,7 +18,7 @@ import type {
 } from '@/types/gantt'
 import type { ResourceType } from '@/types/materials'
 
-export type GanttDatasetKey = '48x8' | '500x50' | '100x10'
+export type GanttDatasetKey = '48x8' | '500x50' | '100x10' | '5000x50'
 
 export interface GanttDatasetProfile {
   key: GanttDatasetKey
@@ -37,7 +37,14 @@ export const GANTT_DATASET_PROFILES: readonly GanttDatasetProfile[] = [
     seed: 20261107
   },
   { key: '500x50', label: '500 任务 × 50 资源', taskCount: 500, resourceCount: 50, seed: 20261105 },
-  { key: '100x10', label: '100 任务 × 10 资源', taskCount: 100, resourceCount: 10, seed: 20261106 }
+  { key: '100x10', label: '100 任务 × 10 资源', taskCount: 100, resourceCount: 10, seed: 20261106 },
+  {
+    key: '5000x50',
+    label: '5000 任务 × 50 资源（M3-FE-04 容量档）',
+    taskCount: 5000,
+    resourceCount: 50,
+    seed: 20261108
+  }
 ]
 
 const RANGE_START = Date.UTC(2026, 10, 5, 0, 0, 0)

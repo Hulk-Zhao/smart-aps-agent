@@ -27,11 +27,11 @@ import org.yaml.snakeyaml.error.YAMLException;
  *   <li>8 条规则权重之和必须等于 {@link RuleCode#TOTAL_WEIGHT}。</li>
  * </ul>
  *
- * <p>单数 {@code constraint:} 别名的定位（结论 B）：仓库内不存在“每行一个
- * {@code constraint:}”的历史样例，所有真实样例（PRD BR-SE-005-01、C19 规范示例）
- * 都是 {@code constraints[]} 数组，因此别名仅作迁移期容错，<b>不承诺单条可激活</b>
- * （激活要求恰好 8 条）。重复的同名 {@code constraint:} 键不受支持，由
- * {@code allowDuplicateKeys(false)} 直接报 {@code 42201}。</p>
+ * <p>单数 {@code constraint:} 别名（M3-BE-06）：只保留“单对象”这一版语义，
+ * 等价于 {@code constraints} 的单元素数组；<b>不再接受</b> {@code constraint:} 下写数组。
+ * 别名仅作迁移期容错，<b>不承诺单条可激活</b>（激活要求恰好 8 条）。
+ * 重复的同名 {@code constraint:} 键不受支持，由 {@code allowDuplicateKeys(false)}
+ * 直接报 {@code 42201}。</p>
  */
 public final class ConstraintDslParser implements ConstraintDslLoader {
 
@@ -157,15 +157,17 @@ public final class ConstraintDslParser implements ConstraintDslLoader {
             return new Parsed(DslValidationReport.failed(issues), null);
         }
         List<Object> items = new ArrayList<>();
-        if (rawConstraints instanceof List<?> list) {
+        if (hasArray) {
+            if (!(rawConstraints instanceof List<?> list)) {
+                issues.add(new DslValidationIssue(DslErrorCodes.SYNTAX_ERROR, "constraints", "constraints 必须是数组"));
+                return new Parsed(DslValidationReport.failed(issues), null);
+            }
             items.addAll(list);
-        } else if (hasArray) {
-            issues.add(new DslValidationIssue(DslErrorCodes.SYNTAX_ERROR, "constraints", "constraints 必须是数组"));
-            return new Parsed(DslValidationReport.failed(issues), null);
         } else if (rawConstraints instanceof Map<?, ?>) {
             items.add(rawConstraints);
         } else {
-            issues.add(new DslValidationIssue(DslErrorCodes.SYNTAX_ERROR, "constraint", "constraint 必须是映射"));
+            issues.add(new DslValidationIssue(DslErrorCodes.SYNTAX_ERROR, "constraint",
+                    "constraint 只支持单个映射（M3 起不再接受数组）"));
             return new Parsed(DslValidationReport.failed(issues), null);
         }
 

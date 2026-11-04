@@ -216,9 +216,13 @@ services:
       APS_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-apsminio}
       APS_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required, copy .env.example to .env first}
       APS_MINIO_BUCKET: ${MINIO_BUCKET:-aps-attachments}
-      # JWT（变量名与 .env.example 一致，当前后端尚未读取）
-      APS_JWT_SECRET: ${APS_JWT_SECRET:?APS_JWT_SECRET is required, copy .env.example to .env first}
-      APS_JWT_EXPIRE_MINUTES: ${APS_JWT_EXPIRE_MINUTES:-120}
+      # 认证（变量名与后端 aps.security.* 对齐；mode 与密钥都必须显式提供）
+      APS_SECURITY_MODE: ${APS_SECURITY_MODE:?APS_SECURITY_MODE is required (prod/dev/off), copy .env.example to .env first}
+      APS_SECURITY_JWT_SECRET: ${APS_SECURITY_JWT_SECRET:?APS_SECURITY_JWT_SECRET is required (>=32 bytes), copy .env.example to .env first}
+      APS_SECURITY_JWT_TTL_SECONDS: ${APS_SECURITY_JWT_TTL_SECONDS:-28800}
+      APS_SECURITY_API_KEYS_WRITE: ${APS_SECURITY_API_KEYS_WRITE:-}
+      APS_SECURITY_API_KEYS_READ: ${APS_SECURITY_API_KEYS_READ:-}
+      APS_SECURITY_WS_ALLOWED_ORIGINS: ${APS_SECURITY_WS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     ports:
       - "${APS_BACKEND_PORT:-8080}:8080"
     networks:

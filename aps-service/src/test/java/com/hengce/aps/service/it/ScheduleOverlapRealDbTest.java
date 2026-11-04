@@ -50,11 +50,9 @@ class ScheduleOverlapRealDbTest {
     void setUp() {
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName("org.postgresql.Driver");
-        dataSource.setUrl(env("APS_TEST_DB_URL",
-                "jdbc:postgresql://" + env("APS_TEST_DB_HOST", "127.0.0.1") + ":"
-                        + env("APS_TEST_DB_PORT", "55432") + "/" + env("APS_TEST_DB_NAME", "aps_m2_se4")));
-        dataSource.setUsername(env("APS_TEST_DB_USER", "aps"));
-        dataSource.setPassword(env("APS_TEST_DB_PASSWORD", "aps_dev_pwd"));
+        dataSource.setUrl(RealDbEnvironment.jdbcUrl());
+        dataSource.setUsername(RealDbEnvironment.username());
+        dataSource.setPassword(RealDbEnvironment.password());
         jdbc = new JdbcTemplate(dataSource);
         repository = new ScheduleRepository(jdbc);
 
@@ -121,10 +119,5 @@ class ScheduleOverlapRealDbTest {
                 start, end, start, start);
         assertTrue(id != null, "任务必须插入成功");
         return id;
-    }
-
-    private static String env(String key, String fallback) {
-        String value = System.getenv(key);
-        return value == null || value.isBlank() ? fallback : value;
     }
 }

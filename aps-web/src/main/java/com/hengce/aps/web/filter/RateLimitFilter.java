@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <p>计数维度为 {@code tenantId + 调用方指纹}（API Key 哈希或 Bearer 哈希，缺失时用远端地址）。
  * 认证失败不消耗额度（本过滤器排在认证过滤器之后）。多实例部署需替换为 Redis 实现，接口语义不变。
- * 与认证默认一致：未显式配置 {@code aps.security.mode} 且非 {@code prod} 时按 {@code off} 处理，限流不生效。</p>
+ * 与认证默认一致：未显式配置 {@code aps.security.mode} 时按 {@code prod} 处理，限流生效。</p>
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
@@ -47,13 +47,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private final Map<String, Window> windows = new ConcurrentHashMap<>();
 
-    private final org.springframework.core.env.Environment environment;
-
-    public RateLimitFilter(ApiSecurityProperties properties, ObjectMapper objectMapper,
-                           org.springframework.core.env.Environment environment) {
+    public RateLimitFilter(ApiSecurityProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.environment = environment;
     }
 
     @Override
@@ -101,16 +97,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
      * @return {@code prod} / {@code dev} / {@code off}
      */
     private String resolveMode() {
-        String configured = properties.getMode();
-        if (configured != null && !configured.isBlank()) {
-            return configured.trim().toLowerCase();
-        }
-        for (String profile : environment.getActiveProfiles()) {
-            if ("prod".equalsIgnoreCase(profile)) {
-                return "prod";
-            }
-        }
-        return "off";
+        return properties.resolvedMode();
     }
 
     private String resolveKey(HttpServletRequest request) {

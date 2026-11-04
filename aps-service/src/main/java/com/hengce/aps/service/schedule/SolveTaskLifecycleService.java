@@ -15,12 +15,14 @@ import com.hengce.aps.solver.api.SolveHandle;
 import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.SolverEngine;
 import com.hengce.aps.solver.api.task.SolveProgress;
+import com.hengce.aps.solver.api.task.SolveRetryReasons;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -37,6 +39,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -128,6 +131,21 @@ public class SolveTaskLifecycleService {
     private final int timeoutGraceSeconds;
 
     /**
+     * C37 重试时钟（可注入，测试不真睡）。
+     */
+    private final SolveRetryClock retryClock;
+
+    /**
+     * C37 首次之外的最大重试次数。
+     */
+    private final int retryMaxRetries;
+
+    /**
+     * C37 固定重试间隔（秒）。
+     */
+    private final long retryDelaySeconds;
+
+    /**
      * 构造生命周期服务。
      *
      * @param solveTaskRepository 求解任务持久层
@@ -138,6 +156,9 @@ public class SolveTaskLifecycleService {
      * @param fallbackEnabled 是否写降级标记
      * @param queueCapacity 有界队列容量
      * @param timeoutGraceSeconds 超时宽限秒数
+     * @param retryClock 重试时钟
+     * @param retryMaxRetries 首次之外的最大重试次数
+     * @param retryDelaySeconds 固定重试间隔（秒）
      */
     public SolveTaskLifecycleService(SolveTaskRepository solveTaskRepository,
                                      ConstraintJustificationRepository justificationRepository,
@@ -146,7 +167,10 @@ public class SolveTaskLifecycleService {
                                      @Value("${aps.solve.async-enabled:true}") boolean asyncEnabled,
                                      @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled,
                                      @Value("${aps.solve.queue-capacity:32}") int queueCapacity,
-                                     @Value("${aps.solve.timeout-grace-seconds:5}") int timeoutGraceSeconds) {
+                                     @Value("${aps.solve.timeout-grace-seconds:5}") int timeoutGraceSeconds,
+                                     SolveRetryClock retryClock,
+                                     @Value("${aps.solve.retry.max-retries:1}") int retryMaxRetries,
+                                     @Value("${aps.solve.retry.delay-seconds:30}") long retryDelaySeconds) {
         this.solveTaskRepository = solveTaskRepository;
         this.justificationRepository = justificationRepository;
         this.scheduleService = scheduleService;
@@ -154,6 +178,9 @@ public class SolveTaskLifecycleService {
         this.asyncEnabled = asyncEnabled;
         this.fallbackEnabled = fallbackEnabled;
         this.timeoutGraceSeconds = Math.max(0, timeoutGraceSeconds);
+        this.retryClock = retryClock == null ? new SystemSolveRetryClock() : retryClock;
+        this.retryMaxRetries = Math.max(0, retryMaxRetries);
+        this.retryDelaySeconds = Math.max(0L, retryDelaySeconds);
         this.worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(Math.max(1, queueCapacity)),
                 runnable -> {
@@ -305,9 +332,7 @@ public class SolveTaskLifecycleService {
                 return;
             }
             run.startedNanos = System.nanoTime();
-            ScheduleService.ExecutionOutcome outcome = scheduleService.execute(request, run.taskId, run.config,
-                    scheduleService.adapter(run.route.effectiveEngine()), () -> false,
-                    (phase, progress, bestScore) -> publish(run, progress, phase, bestScore, phaseMessage(phase)));
+            ScheduleService.ExecutionOutcome outcome = executeWithRetry(run, request, false);
             finishOutcome(run, outcome);
             if (outcome.validationFailure()) {
                 throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, outcome.message());
@@ -334,11 +359,8 @@ public class SolveTaskLifecycleService {
                 return;
             }
             run.startedNanos = System.nanoTime();
-            scheduleWatchdog(run);
             scheduleTicker(run);
-            ScheduleService.ExecutionOutcome outcome = scheduleService.execute(request, run.taskId, run.config,
-                    scheduleService.adapter(run.route.effectiveEngine()), run::shouldStop,
-                    (phase, progress, bestScore) -> publish(run, progress, phase, bestScore, phaseMessage(phase)));
+            ScheduleService.ExecutionOutcome outcome = executeWithRetry(run, request, true);
             finishOutcome(run, outcome);
         } catch (RuntimeException exception) {
             LOGGER.warn("求解任务 {} 执行异常", run.taskId, exception);
@@ -350,6 +372,169 @@ public class SolveTaskLifecycleService {
             running.remove(run.taskId);
             TenantContext.clear();
         }
+    }
+
+    /**
+     * C37 §25.8.1 重试编排：仅 {@code ENGINE_ERROR/TIMEOUT/SOLVER_UNAVAILABLE} 可重试，
+     * 首次之外最多 {@link #retryMaxRetries} 次；间隔固定 {@link #retryDelaySeconds} 秒，
+     * 等待走 {@link SolveRetryClock}，测试可注入假时钟而不真实休眠。
+     *
+     * <p>每次尝试都重新武装看门狗：否则第二次尝试会被第一次尝试的超时闹钟误杀。
+     * 取消/超时（{@code run.shouldStop()}）优先于重试，不再发起新的尝试。</p>
+     *
+     * @param run 运行上下文
+     * @param request 求解请求
+     * @param async 是否异步执行（异步路径异常转降级结果，同步路径保留 BizException 抛出）
+     * @return 带 {@code attemptCount/retryReasons/retryAt} 的最终执行结果
+     */
+    private ScheduleService.ExecutionOutcome executeWithRetry(RunningTask run, SolveRequest request,
+                                                              boolean async) {
+        int maxAttempts = 1 + retryMaxRetries;
+        List<String> retryReasons = new ArrayList<>();
+        List<String> retryAt = new ArrayList<>();
+        ScheduleService.ExecutionOutcome outcome = null;
+        int attempts = 0;
+        while (attempts < maxAttempts) {
+            if (run.shouldStop()) {
+                break;
+            }
+            attempts++;
+            run.attempts.incrementAndGet();
+            cancelFuture(run.watchdogFuture);
+            if (async) {
+                scheduleWatchdog(run);
+            }
+            SolveAttempt attempt = executeAttempt(run, request, async, attempts);
+            outcome = attempt.outcome();
+            cancelFuture(run.watchdogFuture);
+            if (attempt.retryReason() == null || attempts >= maxAttempts || run.shouldStop()) {
+                break;
+            }
+            retryReasons.add(attempt.retryReason());
+            retryAt.add(retryClock.nowUtc().toString());
+            if (!awaitRetryDelay(run, attempts + 1, attempt.retryReason())) {
+                break;
+            }
+        }
+        if (outcome == null) {
+            outcome = failureOutcome(run, SolveRetryReasons.ENGINE_ERROR, "求解任务已终止，未执行");
+        }
+        return stampAttempts(outcome, attempts, retryReasons, retryAt);
+    }
+
+    /**
+     * 单次尝试：正常返回执行结果；异常按 {@code ENGINE_ERROR} 转降级结果（异步路径）。
+     *
+     * @param run 运行上下文
+     * @param request 求解请求
+     * @param async 是否异步
+     * @param attemptNo 当前尝试序号（从 1 开始）
+     * @return 单次尝试结果与可重试原因
+     */
+    private SolveAttempt executeAttempt(RunningTask run, SolveRequest request, boolean async, int attemptNo) {
+        ScheduleService.ExecutionOutcome outcome;
+        try {
+            outcome = scheduleService.execute(request, run.taskId, run.config,
+                    scheduleService.adapter(run.route.effectiveEngine()),
+                    async ? run::shouldStop : () -> false,
+                    (phase, progress, bestScore) -> publish(run, progress, phase, bestScore, phaseMessage(phase)));
+        } catch (BizException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            if (!async) {
+                throw exception;
+            }
+            LOGGER.warn("求解任务 {} 第 {} 次尝试异常", run.taskId, attemptNo, exception);
+            return new SolveAttempt(failureOutcome(run, SolveRetryReasons.ENGINE_ERROR,
+                    safeMessage(exception)), SolveRetryReasons.ENGINE_ERROR);
+        }
+        String reason = retryableReason(outcome);
+        return new SolveAttempt(outcome, reason);
+    }
+
+    /**
+     * 从执行结果提取可重试原因；校验失败、覆盖不完整、重叠守卫等业务结果不重试。
+     *
+     * @param outcome 执行结果
+     * @return 可重试原因；不可重试时为 null
+     */
+    private static String retryableReason(ScheduleService.ExecutionOutcome outcome) {
+        if (outcome == null || outcome.validationFailure()) {
+            return null;
+        }
+        Object raw = outcome.metrics() == null ? null : outcome.metrics().get("engineFallbackReason");
+        String reason = raw == null ? null : String.valueOf(raw);
+        return SolveRetryReasons.isRetryable(reason) ? reason : null;
+    }
+
+    /**
+     * 重试退避等待；期间取消/超时则不再发起新尝试。
+     *
+     * @param run 运行上下文
+     * @param nextAttempt 下一次尝试序号
+     * @param reason 触发重试的原因
+     * @return 允许继续重试时为 true
+     */
+    private boolean awaitRetryDelay(RunningTask run, int nextAttempt, String reason) {
+        publish(run, 0.10, run.lastPhase.get(), run.lastScore.get(), "求解失败（" + reason + "），"
+                + retryDelaySeconds + " 秒后进行第 " + nextAttempt + " 次尝试");
+        try {
+            retryClock.await(Duration.ofSeconds(retryDelaySeconds));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return !run.shouldStop();
+    }
+
+    /**
+     * 写入重试指标（C37：{@code attemptCount/retryReasons/retryAt}）。
+     *
+     * @param outcome 最终执行结果
+     * @param attempts 实际尝试次数
+     * @param retryReasons 触发重试的原因序列
+     * @param retryAt 触发重试的 UTC 时间序列
+     * @return 补全指标后的执行结果
+     */
+    private static ScheduleService.ExecutionOutcome stampAttempts(ScheduleService.ExecutionOutcome outcome,
+                                                                   int attempts, List<String> retryReasons,
+                                                                   List<String> retryAt) {
+        Map<String, Object> metrics = new LinkedHashMap<>(outcome.metrics());
+        metrics.put("attemptCount", attempts);
+        metrics.put("retryReasons", List.copyOf(retryReasons));
+        metrics.put("retryAt", List.copyOf(retryAt));
+        return new ScheduleService.ExecutionOutcome(outcome.status(), outcome.scoreHard(),
+                outcome.scoreSoft(), metrics, outcome.message(), outcome.validationFailure(), outcome.tasks());
+    }
+
+    /**
+     * 异常兜底结果：不落库、已排位数为 0，并保留降级标记。
+     *
+     * @param run 运行上下文
+     * @param reason 降级原因
+     * @param message 说明
+     * @return 失败执行结果
+     */
+    private ScheduleService.ExecutionOutcome failureOutcome(RunningTask run, String reason, String message) {
+        SolveTaskStatus status = SolveRetryReasons.TIMEOUT.equals(reason)
+                ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("engine", engineCode(run.route.effectiveEngine()));
+        metrics.put("phase", status.name());
+        metrics.put("progress", 1.0);
+        metrics.put("persistedTaskCount", 0);
+        metrics.put("assignedTaskCount", 0);
+        applyFallback(metrics, reason);
+        return new ScheduleService.ExecutionOutcome(status, null, null, metrics, message, false, List.of());
+    }
+
+    /**
+     * 单次尝试结果。
+     *
+     * @param outcome 执行结果
+     * @param retryReason 可重试原因；不可重试时为 null
+     */
+    private record SolveAttempt(ScheduleService.ExecutionOutcome outcome, String retryReason) {
     }
 
     private void scheduleTicker(RunningTask run) {
@@ -390,6 +575,7 @@ public class SolveTaskLifecycleService {
         metrics.put("persistedTaskCount", 0);
         // 没有返回任何任务，已排位数同样是确定值 0（返回体 tasks 恒为空数组）。
         metrics.put("assignedTaskCount", 0);
+        metrics.put("attemptCount", Math.max(1, run.attempts.get()));
         applyFallback(metrics, "TIMEOUT");
         run.route.applyFallback(metrics);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId,
@@ -665,6 +851,11 @@ public class SolveTaskLifecycleService {
          * 是否已超时。
          */
         private final AtomicBoolean timedOut = new AtomicBoolean(false);
+
+        /**
+         * 已发起的尝试次数（看门狗超时直接落库时也要能写 attemptCount）。
+         */
+        private final AtomicInteger attempts = new AtomicInteger();
 
         /**
          * 是否仍活跃。

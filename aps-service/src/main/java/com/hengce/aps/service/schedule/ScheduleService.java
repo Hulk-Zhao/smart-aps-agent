@@ -63,6 +63,11 @@ public class ScheduleService {
     private static final String FALLBACK_MODE = "HARD_ONLY";
 
     /**
+     * C37 §25.8.2 部分排位降级模式：引擎产出部分任务时写入。
+     */
+    private static final String PARTIAL_FALLBACK_MODE = "PARTIAL";
+
+    /**
      * 求解锁争用失败消息前缀；与 {@code TimefoldSolverAdapter} 的等待锁失败文案保持一致，
      * 仅用于把“容量问题”与“引擎异常”区分开，不改变既有失败语义。
      */
@@ -448,22 +453,52 @@ public class ScheduleService {
         SolveTaskStatus status = "TIMEOUT".equals(reason) ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
         metrics.put("phase", status.name());
         metrics.put("progress", 1.0);
+        String finalMessage = message;
+        String fallbackMode = FALLBACK_MODE;
         if (solution == null) {
             // 没有结果对象时返回体 tasks 必为空数组，已排位数也是确定值 0（不是“没算”）；
             // persistedTaskCount 已由 baseMetrics 恒写 0，这里只补这一个与“返回了什么”相关的键。
             metrics.putIfAbsent("assignedTaskCount", 0);
+        } else {
+            int assignedTaskCount = solution.assignments().size();
+            metrics.put("assignedTaskCount", assignedTaskCount);
+            metrics.put("partialAssignedTaskCount", assignedTaskCount);
+            int expectedTaskCount = intMetric(metrics.get("expectedTaskCount"));
+            if (expectedTaskCount > 0) {
+                int unassignedTaskCount = Math.max(0, expectedTaskCount - assignedTaskCount);
+                metrics.put("unassignedTaskCount", unassignedTaskCount);
+                if (assignedTaskCount > 0 && assignedTaskCount < expectedTaskCount) {
+                    // C37 §25.8.2：仅“部分排位”才写 PARTIAL；终态仍是 FAILED，部分解不落库。
+                    fallbackMode = PARTIAL_FALLBACK_MODE;
+                    metrics.put("discardedBestSolution", true);
+                    finalMessage = (message == null ? "求解未得到完整结果" : message)
+                            + "；部分排位结果已丢弃、未落库：期望 " + expectedTaskCount
+                            + " 个任务，已排位 " + assignedTaskCount
+                            + " 个，未排位 " + unassignedTaskCount + " 个";
+                }
+            }
         }
         if (fallbackEnabled) {
             metrics.put("engineFallback", true);
             metrics.put("engineFallbackReason", reason);
             metrics.put("engineFallbackDetail", fallbackDetail(reason, message));
-            metrics.put("fallbackMode", FALLBACK_MODE);
+            metrics.put("fallbackMode", fallbackMode);
             metrics.put("fallbackAt", OffsetDateTime.now(ZoneOffset.UTC).toString());
         }
         return new ExecutionOutcome(status,
                 solution == null ? null : score(solution, true),
                 solution == null ? null : score(solution, false),
-                metrics, message, false, tasks);
+                metrics, finalMessage, false, tasks);
+    }
+
+    /**
+     * 读取整型指标；缺失或非数值时返回 0。
+     *
+     * @param value 指标值
+     * @return 整数值
+     */
+    private static int intMetric(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
     }
 
     /**
@@ -584,12 +619,10 @@ public class ScheduleService {
                 metrics.put(key, extra.get(key));
             }
         }
-        if (solution != null && solution.metrics() != null) {
-            metrics.put("stepCount", solution.metrics().stepCount());
-            if (solution.metrics().terminationReason() != null) {
-                metrics.put("terminationReason", solution.metrics().terminationReason());
-            }
-            metrics.put("unimprovedStepCount", solution.metrics().unimprovedStepCount());
+        if (solution != null && solution.metrics() != null
+                && solution.metrics().terminationReason() != null) {
+            // 不输出 stepCount/unimprovedStepCount：Timefold 2.8.0 社区版无步数口径，恒 0 会被读成“0 步”。
+            metrics.put("terminationReason", solution.metrics().terminationReason());
         }
         return metrics;
     }

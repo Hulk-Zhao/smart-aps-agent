@@ -171,23 +171,51 @@ export interface Sandbox {
 
 export interface SandboxCreateRequest {
   name: string
-  type: SandboxType
+  /** C32：创建只允许 WHAT_IF（缺省即 WHAT_IF），BASELINE/ARCHIVED 后端返回 42200。 */
+  type?: 'WHAT_IF'
   parentSandboxId?: string | null
   expiresAt?: string | null
-  snapshot?: Record<string, unknown>
 }
+
+export type SandboxChangeType = 'ADDED' | 'REMOVED' | 'MOVED'
 
 export interface SandboxChangedTask {
   taskId: number
   orderNo: string
   resourceCode: string
+  changeType: SandboxChangeType
 }
 
+/** C32 `GET /sandboxes/{id}/compare?targetId=`，方向固定 `id - targetId`。 */
 export interface SandboxCompare {
   sandboxId: string
   targetId: string
+  /** 交期超期分钟差，可为负（分钟，正=被比较方更晚）。 */
   dueDateDeltaMinutes: number
+  /** 0–1 小数，保留 3 位。 */
   utilizationDelta: number
   setupCountDelta: number
+  /** 明细被截断时计数字段仍是全量真实值。 */
+  addedTaskCount: number
+  removedTaskCount: number
+  movedTaskCount: number
   changedTasks: SandboxChangedTask[]
+  truncated: boolean
+}
+
+/** C32 apply 响应中的场景摘要（列表同样不返回 snapshot）。 */
+export interface SandboxSummary {
+  id: string
+  name: string
+  type: SandboxType
+  parentSandboxId?: string | null
+  expiresAt?: string | null
+  version: number
+  createdAt?: string
+}
+
+/** C32 `POST /sandboxes/{id}/apply`：单事务发布新版本并提升 BASELINE。 */
+export interface SandboxApplyResult {
+  sandbox: SandboxSummary
+  plan: import('./plans').PlanAction
 }

@@ -22,6 +22,14 @@ class RealDbTargetGuardTest {
     }
 
     @Test
+    void rejectsBaselineVariantBeforeClean() {
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> RealDbTargetGuard.requireCleanAllowed("aps_local_2"));
+        System.out.println("[guard] " + exception.getMessage());
+        assertTrue(exception.getMessage().contains("aps_local_2"), exception.getMessage());
+    }
+
+    @Test
     void rejectsBlankOrNullDatabaseName() {
         assertThrows(IllegalStateException.class,
                 () -> RealDbTargetGuard.requireCleanAllowed(null));

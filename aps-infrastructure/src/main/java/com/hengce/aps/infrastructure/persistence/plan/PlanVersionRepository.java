@@ -176,6 +176,26 @@ public class PlanVersionRepository {
     }
 
     /**
+     * 新建 DRAFT 计划版本（C32 apply 的步骤 4：先落 DRAFT，再在同一事务内走 C24 publish）。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 产生该版本的场景
+     * @param planNo 计划业务号
+     * @param versionNo 场景内版本号
+     * @param operator 操作人，可为空
+     * @return 新版本主键（对外 planId）
+     */
+    public UUID insertDraftVersion(UUID tenantId, UUID sandboxId, String planNo, int versionNo, UUID operator) {
+        UUID id = UUID.randomUUID();
+        jdbcTemplate.update("""
+                INSERT INTO plan_version (id, tenant_id, sandbox_id, plan_no, version_no, status,
+                                          created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?)
+                """, id, tenantId, sandboxId, planNo, String.valueOf(versionNo), operator, operator);
+        return id;
+    }
+
+    /**
      * 发布：仅在 DRAFT/REVIEW 状态可落 PUBLISHED，快照写一次。
      *
      * @param tenantId 租户标识

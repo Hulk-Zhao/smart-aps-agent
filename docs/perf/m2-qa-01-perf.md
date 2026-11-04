@@ -409,3 +409,161 @@ powershell -NoProfile -File scripts\run-m2-perf.ps1 -Orders 500 -Label orders-50
 - 未修改生产代码、未改契约、未 commit/push。
 - 压测期间同仓库其他会话的未提交改动均未触碰。
 - 本报告所有数字均来自上述 JSON/日志/SQL 实测；未使用推断值。
+
+---
+
+## 12. M3 W9 性能基线专项（2026-11-04）
+
+> 本节为**追加**，用于 M3 后续优化提供可复现容量刻画（非回归门禁）。**§1–§11 的已存档结论未改动、未重写**；与 §5A/§5B 的差异在 §12.5 单列说明。
+
+**一句话结论**：当前构建（V1–V7，端口 18093）的容量上限是 **≤50 单 / 300 任务**——60s 内 `SOLVED` 且 300/300 落库；**200 单 / 1200 任务**在 60s 与 300s 均 `TIMEOUT`（300s 仍有 50–75 个任务未排位）；**500 单 / 60s 实际排下 0 个任务**（`assignedTaskCount=0`，expected 3000），连构解第一阶段（3000 步）都未跑完。
+
+### 12.1 环境与隔离
+
+| 项 | 值 |
+|---|---|
+| 实例端口 | **18093**（PID 30252，独立实例；压测后已停止，端口已释放） |
+| 库 | **aps_m3_base**（自建，压测后已 DROP） |
+| 制品 | `aps-admin\target\aps-admin-0.1.0-SNAPSHOT.jar`（13:39 由其他会话构建，含 V1–V7；**未执行 mvn package**） |
+| 迁移 | 空库启动时 Flyway 应用 7 个迁移，`execution time 00:00.650s`；启动到 Ready 5.354s |
+| JVM | `-Xms512m -Xmx2g -Xlog:gc:file=...\gc-18093.log` |
+| 机器 | AMD Ryzen 7 9800X3D，8 逻辑核 |
+| 未触碰 | 18085（PID 30312，全程运行）、`aps_local` / `aps_local_2` |
+| 收尾 | 实例已停、`aps_m3_base` 已 DROP；`pg_database` 非模板库计数 **11**（本次前 10，期间其他会话新增 `aps_qa_w1`，本次库已移除） |
+
+### 12.2 基线矩阵（每档 2 次，实测值）
+
+`assigned` 取终态 `taskCount` metric（= 求解器 CH(1) step total 与 errorMessage “还剩 N 个未排位任务”反算一致）；`expected = 订单×6`。
+
+| 档位（订单/任务/timeout） | 运行 | status | bestScore | assigned/expected | persisted | engineMs | e2eMs | CH(0) | CH(1) | LS 步数 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1｜8 / 48 / 默认60s | r1 | SOLVED | 0hard/-7135soft | 48/48 | 48 | 48,027 | 49,398 | 109ms(48步) | 344ms累计(48步) | 78,734 |
+|  | r2 | SOLVED | 0hard/-7135soft | 48/48 | 48 | 47,302 | 48,269 | 29ms(48步) | 99ms累计(48步) | 78,594 |
+| 2｜50 / 300 / 60s | r1 | SOLVED | 0hard/-147115soft | 300/300 | 300 | 60,047 | 61,124 | 262ms(300步) | 5,292ms累计(300步) | 124,462 |
+|  | r2 | SOLVED | 0hard/-147200soft | 300/300 | 300 | 60,055 | 61,141 | 265ms(300步) | 5,327ms累计(300步) | 123,733 |
+| 3｜50 / 300 / 300s | r1 | SOLVED | 0hard/-132600soft | 300/300 | 300 | 300,043 | 301,000 | 233ms(300步) | 5,262ms累计(300步) | 484,717 |
+|  | r2 | SOLVED | 0hard/-132650soft | 300/300 | 300 | 300,034 | 300,876 | 234ms(300步) | 4,812ms累计(300步) | 482,737 |
+| 4｜200 / 1200 / 60s | r1 | **TIMEOUT** | -3481hard/-21186530soft | 644/1200 | 0 | 60,086 | 61,180 | 10,861ms(1200步) | 49,153ms(644步) | — |
+|  | r2 | **TIMEOUT** | -3350hard/-20565165soft | 626/1200 | 0 | 60,071 | 61,056 | 11,739ms(1200步) | 48,273ms(626步) | — |
+| 4｜200 / 1200 / 300s | r1 | **TIMEOUT** | -8311hard/-40722655soft | 1125/1200 | 0 | 300,086 | 300,932 | 11,903ms(1200步) | 288,118ms(1125步) | — |
+|  | r2 | **TIMEOUT** | -8658hard/-42395590soft | 1150/1200 | 0 | 300,100 | 301,494 | 12,439ms(1200步) | 287,586ms(1150步) | — |
+| 5｜300 / 1800 / 60s | r1 | **TIMEOUT** | -3147hard/-20094080soft | 497/1800 | 0 | 60,076 | 61,004 | 35,114ms(1800步) | 24,898ms(497步) | — |
+|  | r2 | **TIMEOUT** | -3147hard/-20094080soft | 497/1800 | 0 | 60,074 | 61,128 | 34,949ms(1800步) | 25,061ms(497步) | — |
+| 5｜300 / 1800 / 300s | r1 | **TIMEOUT** | -8450hard/-44729140soft | 1086/1800 | 0 | 300,095 | 301,596 | 38,099ms(1800步) | 261,925ms(1086步) | — |
+|  | r2 | **TIMEOUT** | -8397hard/-44696615soft | 1080/1800 | 0 | 300,118 | 301,071 | 37,175ms(1800步) | 262,871ms(1080步) | — |
+| 6｜500 / 3000 / 60s | r1 | **TIMEOUT** | -3000hard/0soft | **0/3000** | 0 | 60,083 | 61,609 | 60,011ms（2064/3000 步，未完成） | 未进入 | — |
+|  | r2 | **TIMEOUT** | -3000hard/0soft | **0/3000** | 0 | 60,109 | 62,205 | 60,015ms（2052/3000 步，未完成） | 未进入 | — |
+| 6｜500 / 3000 / 300s | r1 | **TIMEOUT** | -6060hard/-34767560soft | 743/3000 | 0 | 300,130 | 301,384 | 205,725ms(3000步) | 94,309ms(743步) | — |
+|  | r2 | **TIMEOUT** | -6496hard/-37239440soft | 793/3000 | 0 | 300,108 | 301,971 | 198,550ms(3000步) | 101,467ms(793步) | — |
+
+说明：`metrics.stepCount` 在本构建恒返回 0，上表 CH 步数/耗时全部取自 **求解器原始日志**（`Construction Heuristic phase (N) ended: time spent (...), step total (...)`），非反推。
+
+### 12.3 两次差异（稳定 vs 抖动）
+
+| 指标 | 表现 | 判定 |
+|---|---|---|
+| status / terminationReason | 每档两次完全一致（50 档 `SOLVED`，200/300/500 档 `TIMEOUT`） | **稳定** |
+| persistedTaskCount | 一致（48 / 300 / 0） | **稳定** |
+| e2eMs | 全部档位两次差 ≤2.7%（最大 8 单档 49.4s vs 48.3s） | **稳定** |
+| engineMs | 差 ≤1.5%（各档基本贴着 60.0s / 300.0s 时限） | **稳定** |
+| CH(0) 耗时 | 50 单 ±1%；200 单 ±8%；300 单 ±2.4%；500/300 ±3.5% | 基本稳定（200 单 60s 档偏差最大） |
+| assigned | 50 单、300/60（497/497）、500/60（0/0）完全一致；200/60 (644 vs 626, −2.8%)、200/300 (1125 vs 1150, +2.2%)、300/300 (1086 vs 1080, −0.6%)、**500/300 (743 vs 793, +6.7%)** | 小规模稳定，**500/300 抖动明显** |
+| bestScore（hard） | 50 单固定 0hard；其余档差异：200/60 −2.0%（−3481 vs −3350）、200/300 −4.0%、300/300 −0.6%、**500/300 −7.2%（−6060 vs −6496）** | 小规模稳定，500/300 抖动 |
+| bestScore（soft） | 50/60 差 0.06%、50/300 差 0.04%；8 单完全一致 | **稳定** |
+| CH(1) 耗时 | 50 档 4.8–5.3s；300/60 差 0.6%；**500/300 差 7.6%（94.3s vs 101.5s）** | 小规模稳定，500/300 抖动 |
+
+### 12.4 瓶颈归因（只写实测支持的部分）
+
+- **瓶颈在构解（CH），不在局部搜索**：除 8 单与 50 单外，所有档位的 60s/300s 预算都被 CH(0)+CH(1) 吃满，**LS 阶段从未启动**（日志无 `Local Search phase` 行）。
+- **CH(1) 是主要成本中心**：按日志 step total 计算单步耗时——
+  - 200 单：60s 档 76–77ms/步；300s 档 250–256ms/步
+  - 300 单：60s 档 50ms/步；300s 档 241–243ms/步
+  - 500 单：300s 档 127–128ms/步
+  - 对照 CH(0) 单步：200 单 9.0–9.9ms；300 单 19.5ms；500 单 68.6ms
+- **约束评估成本集中在 CH(1)**：日志 `move evaluation speed` 显示 CH(1) 为 659–3,380 次/s（单次评估 0.45–1.52ms），而 CH(0) 为 22,598 次/s（44µs），相差约 **17 倍**；即同等步数下 CH(1) 的评估代价高一个数量级。
+- **500 单 60s 实际排产能力 = 0 个任务**（`assignedTaskCount=0`、`persistedTaskCount=0`，errorMessage：到达时限仍有 3000 个未排位任务）；CH(0) 60s 只走到 **2064 步 / 2052 步**（共 3000 步）。
+- 500 单 300s：CH(0) 用 198.6–205.7s 完成 3000 步（22,598–23,417 次 move 评估/s），余下 94–101s 只让 CH(1) 前进了 743–793 步（约 7.8–7.9 步/s），硬分仍有 −6060/−6496。
+- 50 单是唯一能进入 LS 并收敛的档位：CH 合计约 5.0–5.3s，60s 档 LS 12.3–12.4 万步达 0hard，300s 档 LS 48.2–48.5 万步把 soft 从 −147115 改善到 −132600。
+
+### 12.5 异常与已知干扰项
+
+1. **`run-m2-perf.ps1` 库内核对失效**：脚本内 `psql -c "…remark = '高负载推演数据集'…"` 仍触发 PowerShell 5.1 GBK 传参 → `错误: 无效的 "UTF8" 编码字节顺序: 0xb8`，`dbRows` 恒为 `-1`。本次落库行数改用 API `persistedTaskCount`，并在 500 档终态直接 SQL 复核：`task=0`、`solve_task=4`、`plan_version=0`。**2026-11-04 追记：已按临时 `.sql` + `psql -f` 修复，实测见 §12.7.1。**
+2. **`metrics.stepCount` 字段恒 0**：该构建未回填 stepCount，无法用 API 取步数，已改用求解器日志原始 step total。**追记：定位与结论见 §12.7.3（选 b）。**
+3. **`seed-m2-perf.ps1` 不能同库重复造数**：清理顺序先删 `routing` 再删 `orders`，触发 `fk_orders_routing`（`键值对(id)=(e9000000-...-1f5) 仍然是从表 orders 引用的`）。为不修改仓库脚本，本次在切换订单规模前先用一条按依赖顺序（orders 先于 routing）的临时预清理 SQL，再调用原脚本。**追记：已在脚本内调整清理顺序修复，实测见 §12.7.2。**
+4. **8 单档耗时与 §5B 存档不同**：本次 48.3–49.4s（§5B 记录 10.8–12.1s，来源为修复专线另一实例）。差异原因未取证；但**本次测量期间 CPU 负载 83% 且并行存在三条 maven 构建流（另有 18085 实例在跑），绝对耗时不可用作回归判定，不得写成性能退化**，标注**待空闲复测**。**不回写 §5B**，环境干扰项见 §12.5 第 5 条。
+5. **机器负载**：压测结束时 CPU 负载 83%（实测采样），期间 18085 实例（PID 30312）持续运行、仓库内另有会话构建 fat jar（13:39）与新建 `aps_qa_w1` 库；e2e/engine 贴着 60.0s/300.0s 时限，实际计算窗口受外部负载影响。
+6. **无单档超 8 分钟**：硬上限按 480s 设置，全部运行在 62.2s 或 302.0s 内返回终态，未出现需要记为 `TIMEOUT(超时未返回)` 的档位。
+7. **制品来源**：使用 `target/` 内既有 fat jar（含 V1–V7），未自行打包；先前用 `fix-backend.jar`（仅 V1 迁移、无 `plan_version`）试启动失败，已弃用并未计入任何数据。
+
+### 12.6 原始材料位置
+
+- 结果 JSON：`D:\tools\_aps-localdata\m3-w9\raw\*.json`（18 个，label 见 12.2）
+- 应用日志：`D:\tools\_aps-localdata\m3-w9\logs\app-18093.out`；GC 日志：`...\logs\gc-18093.log`
+- 求解器阶段日志摘录：`...\logs\solver-lines.txt`
+
+### 12.7 口径缺陷复核与影响范围（2026-11-04 追记；未重跑压测）
+
+> 本节只修传输层与造数幂等，并复核 `stepCount` 口径；**不重跑任何压测**（场上并行三条 maven 构建流，测出的绝对耗时没有意义）。
+
+#### 12.7.1 `dbRows` 恒 −1：传输层已修（临时库实测）
+
+**缺陷**：`run-m2-perf.ps1` 的库内落库核对把含中文的 SQL 经 `-c` 传给 psql，PS 5.1 按 GBK 传参、服务端按 UTF-8 解析失败。旧写法实测原文：
+
+```
+错误:  无效的 "UTF8" 编码字节顺序: 0xb8
+LEGACY exit=1 raw=[]
+```
+
+**修法**（与 `seed-m2-perf.ps1` 同法，只改传输层，不改 SQL 文本/判据/阈值）：SQL 写临时 `.sql` 文件（`UTF8Encoding($false)` 无 BOM）→ `psql -v ON_ERROR_STOP=1 -f` → `finally` 删除；psql 非 0 退出时打印 `[WARN]` 并保持 `dbRows=-1`（失败可见，不静默）。
+
+**实测（临时库 `aps_w9_fix`，造 300 行 tasks，未启动任何实例）**：
+
+| 用例 | 条件 | 实测输出 |
+|---|---|---|
+| A｜已知行数 | 300 行，`createdAt` = 1 小时前 | `dbName=aps_w9_fix createdAt=2026-11-04T06:14:58.890Z dbRows=300` |
+| B｜行数不符 | 同库，`createdAt` = 未来 1 小时 | `dbName=aps_w9_fix createdAt=2026-11-04T08:15:09.557Z dbRows=0`（返回真实 0，不是 −1） |
+| C｜核对失败 | 库不存在 | `[WARN] 库内落库行数核对失败（psql exit=2），dbRows 记为 -1` |
+| D｜旧写法对照 | `-c` 传中文 | `错误: 无效的 "UTF8" 编码字节顺序: 0xb8`，`exit=1` |
+
+临时 `.sql` 残留检查：`aps-perf-verify-*.sql` 计数 0。两个脚本语法解析均为 0 错误。
+
+#### 12.7.2 `seed-m2-perf.ps1` 幂等已修（同库连跑两次）
+
+**缺陷**：清理语句先删 `routing` 再删 `orders`，而 `orders.routing_id → routing`（`fk_orders_routing`）使同库二次造数失败。
+
+**修法**：只调整既有清理 SQL 的语句顺序（把 `DELETE FROM orders …` 提到 `routing` 相关删除之前），复用原 `-Clean` 同一段逻辑，未新增第二套清理。
+
+**实测（同一临时库 `aps_w9_fix`，两次 `-OrderCount 50`）**：
+
+```
+第 1 次尾部： [OK] Seed ready: 50 orders, sandbox e9000000-...401, seed elapsed 305 ms   SEED1_EXIT=0
+第 2 次尾部： [OK] Seed ready: 50 orders, sandbox e9000000-...401, seed elapsed 295 ms   SEED2_EXIT=0
+```
+
+二次运行后实际行数（SQL 直查，未变）：`orders=50`、`routings=10`、`routing_nodes=60`、`routing_edges=50`、`resources=50`、`materials=10`、`calendars=6`。
+
+#### 12.7.3 `metrics.stepCount` 恒 0：定位与结论 = **(b)**
+
+**数据流**：
+
+1. `SolveMetrics` record 有 `stepCount` 字段（[contract-freeze §3.2](file:///d:/tools/smart-aps-agent/docs/api/contract-freeze.md#L303-L313) 内部 DTO）；
+2. 三处构造点全部**硬编码 `0L`**：[TimefoldModelBuilder.java#L204-L211](file:///d:/tools/smart-aps-agent/aps-solver/solver-timefold/src/main/java/com/hengce/aps/solver/timefold/TimefoldModelBuilder.java#L204-L211)、[TimefoldSolverAdapter.java#L386-L393](file:///d:/tools/smart-aps-agent/aps-solver/solver-timefold/src/main/java/com/hengce/aps/solver/timefold/TimefoldSolverAdapter.java#L386-L393)、[TimefoldSolverAdapter.java#L403-L410](file:///d:/tools/smart-aps-agent/aps-solver/solver-timefold/src/main/java/com/hengce/aps/solver/timefold/TimefoldSolverAdapter.java#L403-L410)（`unimprovedStepCount` 同为硬编码 0）；
+3. 对外映射 [ScheduleService.java#L587-L593](file:///d:/tools/smart-aps-agent/aps-service/src/main/java/com/hengce/aps/service/schedule/ScheduleService.java#L587-L593) 原样 `put`，所以响应里是「键存在、值恒 0」。
+
+**契约**：C20 §24.2 的 `metrics` 键清单（[contract-freeze.md#L1416-L1430](file:///d:/tools/smart-aps-agent/docs/api/contract-freeze.md#L1416-L1430)）列出 `expectedTaskCount / assignedTaskCount / persistedTaskCount / unassignedTaskCount / discardedBestSolution / moveThreadCount* / multiThreadedAvailable`，**不含 `stepCount` 与 `unimprovedStepCount`**；正文明确「`metrics` 仍为开放对象，键集合不冻结」。
+
+**引擎能力（javap timefold-solver-core-2.8.0 实测）**：`SolverJob` 只有 `getScoreCalculationCount()`、`getMoveEvaluationCount()`、`getMoveEvaluationSpeed()` 等，**没有 `getStepCount()`**；`Solver` 只有 `solve(Solution_)` 返回解本身；`DefaultSolverJob` / `SolverScope` 亦无步数字段。即：**当前引擎版本没有可读取的「step total」来源**，日志里的 `step total` 只存在于日志文本，不能当 API 数据源。
+
+**结论：选 (b)** —— 拿不到真实来源，且契约不要求。键存在但恒 0 会被读成「本次求解 0 步」，是错误信息，因此建议：
+
+- 从对外 `metrics` 移除 `stepCount` 与 `unimprovedStepCount`（`ScheduleService` 两处 `put`）；
+- 契约 §24.2 注记：「`stepCount` 不再输出（引擎无步数统计）；`moveEvaluationCount` 语义不同，不得替代」——本卡不改 `docs/api/**` 正文（边界），注记由契约 owner 落地；
+- 若求解流确实需要步数量，只能改用 `SolverManager` 拿 `SolverJob.getMoveEvaluationCount()`，且**必须改名**，不能复用 `stepCount`。
+
+**不采用的选项**：(a) 找不到真实来源，硬接线会变成另一个估算值；(c) 契约正文没有要求该键，按缺陷上报会失真。另：本次没有为了好看删键，也没有填估算值。
+
+#### 12.7.4 本次基线哪些结论不受这两处缺陷影响
+
+- **不受影响**：容量结论（50 单 60s 可解并落库、200/300/500 单 `TIMEOUT`、500/60 `assignedTaskCount=0`）——`status`/`assigned`/`persisted` 来自**响应体 + 直接 SQL 查库**（500 档终态 `task=0` 已直查复核），不依赖 `dbRows`。
+- **不受影响**：CH 阶段耗时/步数——取求解器日志原文（`time spent` / `step total`），与 `metrics.stepCount` 字段无关。
+- **受影响的只是表述**：§12.2 的步数列必须标注「日志口径」；在 `stepCount` 未修前，任何用该 API 字段做步数统计的结论都不成立。

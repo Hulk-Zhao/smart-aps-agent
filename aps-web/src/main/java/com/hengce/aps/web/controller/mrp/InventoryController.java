@@ -4,6 +4,7 @@ import com.hengce.aps.common.api.Result;
 import com.hengce.aps.service.mrp.InventoryItemCommand;
 import com.hengce.aps.service.mrp.InventoryService;
 import com.hengce.aps.service.mrp.InventoryUpsertResult;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -49,6 +50,7 @@ public class InventoryController {
      */
     @Operation(summary = "库存批量 upsert",
             description = "状态：已实现。幂等键 materialCode+warehouseCode；onHandQty/safetyStock 不允许为负。")
+    @RequiresPermission("MD_WRITE")
     @PutMapping("/inventory")
     public Result<InventoryUpsertResult> upsert(@Valid @RequestBody InventoryUpsertRequest request) {
         return Result.success(inventoryService.upsert(request.toCommands()));

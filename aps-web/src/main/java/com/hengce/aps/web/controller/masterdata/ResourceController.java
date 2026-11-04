@@ -9,6 +9,7 @@ import com.hengce.aps.service.masterdata.resource.ResourceCreateCommand;
 import com.hengce.aps.service.masterdata.resource.ResourceService;
 import com.hengce.aps.service.masterdata.resource.ResourceUpdateCommand;
 import com.hengce.aps.service.masterdata.resource.ResourceView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -80,6 +81,7 @@ public class ResourceController {
      * @return 创建后的资源
      */
     @Operation(summary = "创建资源", description = "状态：已实现。编码重复返回 409/40901，产能非法返回 422/42200。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping
     public Result<ResourceView> create(@Valid @RequestBody ResourceCreateRequest request) {
         return Result.success(resourceService.create(request.toCommand()));
@@ -92,7 +94,8 @@ public class ResourceController {
      * @return 资源详情
      */
     @Operation(summary = "资源详情", description = "状态：已实现。路径参数为 resource.code（C6），响应带只读 id。")
-    @GetMapping("/{code}")
+    // 排除通用导出/导入保留段，避免 GET /resources/export 被本方法抢先匹配（C38）
+    @GetMapping("/{code:^(?!export$)(?!import$).+}")
     public Result<ResourceView> get(@PathVariable String code) {
         return Result.success(resourceService.get(code));
     }
@@ -105,6 +108,7 @@ public class ResourceController {
      * @return 更新后的资源
      */
     @Operation(summary = "更新资源", description = "状态：已实现。code 不可修改，version 必填，冲突返回 409/40901。")
+    @RequiresPermission("MD_WRITE")
     @PutMapping("/{code}")
     public Result<ResourceView> update(@PathVariable String code,
                                        @Valid @RequestBody ResourceUpdateRequest request) {
@@ -118,6 +122,7 @@ public class ResourceController {
      * @return 空响应
      */
     @Operation(summary = "停用资源", description = "状态：已实现。deleted=true 软删除；被日历/任务引用返回 422/42200；重复调用幂等。")
+    @RequiresPermission("MD_WRITE")
     @DeleteMapping("/{code}")
     public Result<Void> delete(@PathVariable String code) {
         resourceService.delete(code);

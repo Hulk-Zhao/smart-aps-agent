@@ -227,10 +227,21 @@ class SolveTaskLifecycleServiceTest {
                                                       ScheduleService scheduleService,
                                                       boolean asyncEnabled,
                                                       boolean fallbackEnabled) {
+        return lifecycle(repository, scheduleService, asyncEnabled, fallbackEnabled,
+                new RecordingRetryClock(), 1, 30L);
+    }
+
+    private static SolveTaskLifecycleService lifecycle(FakeSolveTaskRepository repository,
+                                                      ScheduleService scheduleService,
+                                                      boolean asyncEnabled,
+                                                      boolean fallbackEnabled,
+                                                      SolveRetryClock retryClock,
+                                                      int maxRetries,
+                                                      long delaySeconds) {
         SolveProgressPublisher publisher = new SolveProgressPublisher(event -> { }, "none");
         ConstraintJustificationRepository justificationRepository = new ConstraintJustificationRepository(null);
         return new SolveTaskLifecycleService(repository, justificationRepository, scheduleService, publisher,
-                asyncEnabled, fallbackEnabled, 8, 0);
+                asyncEnabled, fallbackEnabled, 8, 0, retryClock, maxRetries, delaySeconds);
     }
 
     private static ScheduleService mockScheduleService(int timeoutSeconds) {
@@ -251,11 +262,158 @@ class SolveTaskLifecycleServiceTest {
         return new SolveRequest("T-1", SANDBOX_ID, null, "timefold", List.of("SO-1"), Map.of());
     }
 
+    @Test
+    void retryShouldStopWhenConfiguredAttemptsExhausted() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(fallbackOutcome("ENGINE_ERROR"));
+        RecordingRetryClock clock = new RecordingRetryClock();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true, clock, 1, 30L);
+
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail failed = awaitTerminal(lifecycle, submitted.taskId(), 5000);
+
+        assertEquals(SolveTaskStatus.FAILED.name(), failed.status());
+        assertEquals("ENGINE_ERROR", failed.metrics().get("engineFallbackReason"));
+        assertEquals(2, failed.metrics().get("attemptCount"), "首次 + 1 次重试，第 2 次失败即终态，不再有第 3 次");
+        assertEquals(List.of("ENGINE_ERROR"), failed.metrics().get("retryReasons"));
+        assertEquals(1, ((List<?>) failed.metrics().get("retryAt")).size());
+        assertEquals(List.of(java.time.Duration.ofSeconds(30)), clock.waits(),
+                "重试间隔固定 30s，由注入时钟记录，未真实休眠");
+        verify(scheduleService, timeout(1000).times(2)).execute(any(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void retryShouldSucceedOnSecondAttemptWithInjectedClock() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(fallbackOutcome("ENGINE_ERROR"), outcome(SolveTaskStatus.SOLVED));
+        RecordingRetryClock clock = new RecordingRetryClock();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true, clock, 1, 30L);
+
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail solved = awaitTerminal(lifecycle, submitted.taskId(), 5000);
+
+        assertEquals(SolveTaskStatus.SOLVED.name(), solved.status());
+        assertEquals(2, solved.metrics().get("attemptCount"));
+        assertEquals(List.of("ENGINE_ERROR"), solved.metrics().get("retryReasons"));
+        assertEquals(1, clock.waits().size());
+        assertEquals(List.of(java.time.Duration.ofSeconds(30)), clock.waits());
+        assertEquals(1, ((List<?>) solved.metrics().get("retryAt")).size());
+    }
+
+    @Test
+    void validationFailureShouldNotBeRetried() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        Map<String, Object> metrics = new java.util.LinkedHashMap<>();
+        metrics.put("validationFailure", true);
+        metrics.put("phase", "FAILED");
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new ScheduleService.ExecutionOutcome(SolveTaskStatus.FAILED, null, null,
+                        metrics, "参数校验失败", true, List.of()));
+        RecordingRetryClock clock = new RecordingRetryClock();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true, clock, 1, 30L);
+
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail failed = awaitTerminal(lifecycle, submitted.taskId(), 5000);
+
+        assertEquals(SolveTaskStatus.FAILED.name(), failed.status());
+        assertEquals(1, failed.metrics().get("attemptCount"));
+        assertEquals(List.of(), failed.metrics().get("retryReasons"));
+        assertTrue(clock.waits().isEmpty(), "校验失败不得重试");
+        verify(scheduleService, timeout(1000).times(1)).execute(any(), anyLong(), any(), any(), any(), any());
+    }
+
+    @Test
+    void nonRetryableBusinessFailureShouldNotBeRetried() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        Map<String, Object> metrics = new java.util.LinkedHashMap<>();
+        metrics.put("phase", "FAILED");
+        metrics.put("persistedTaskCount", 0);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(new ScheduleService.ExecutionOutcome(SolveTaskStatus.FAILED, null, null,
+                        metrics, "求解结果不完整", false, List.of()));
+        RecordingRetryClock clock = new RecordingRetryClock();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true, clock, 1, 30L);
+
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail failed = awaitTerminal(lifecycle, submitted.taskId(), 5000);
+
+        assertEquals(SolveTaskStatus.FAILED.name(), failed.status());
+        assertEquals(1, failed.metrics().get("attemptCount"));
+        assertTrue(clock.waits().isEmpty(), "覆盖不完整等业务结果不重试");
+    }
+
+    @Test
+    void fiveSecondWatchdogTimeoutShouldRemainTimeoutWithoutPersist() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(5);
+        CountDownLatch release = new CountDownLatch(1);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    release.await(10, TimeUnit.SECONDS);
+                    return outcome(SolveTaskStatus.SOLVED);
+                });
+        RecordingRetryClock clock = new RecordingRetryClock();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true, clock, 1, 30L);
+
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail timedOut = awaitTerminal(lifecycle, submitted.taskId(), 8000);
+
+        assertEquals(SolveTaskStatus.TIMEOUT.name(), timedOut.status());
+        assertEquals(0, timedOut.metrics().get("persistedTaskCount"));
+        assertEquals("TIMEOUT", timedOut.metrics().get("engineFallbackReason"));
+        assertEquals(1, timedOut.metrics().get("attemptCount"), "超时落库也要带 attemptCount");
+        assertTrue(clock.waits().isEmpty(), "看门狗超时是任务终态，不进入重试退避");
+        release.countDown();
+    }
+
     private static ScheduleService.ExecutionOutcome outcome(SolveTaskStatus status) {
         Map<String, Object> metrics = new java.util.LinkedHashMap<>();
         metrics.put("phase", status.name());
         metrics.put("progress", 1.0);
         return new ScheduleService.ExecutionOutcome(status, 0L, -10L, metrics, "ok", false, List.of());
+    }
+
+    private static ScheduleService.ExecutionOutcome fallbackOutcome(String reason) {
+        SolveTaskStatus status = "TIMEOUT".equals(reason) ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
+        Map<String, Object> metrics = new java.util.LinkedHashMap<>();
+        metrics.put("phase", status.name());
+        metrics.put("progress", 1.0);
+        metrics.put("persistedTaskCount", 0);
+        metrics.put("assignedTaskCount", 0);
+        metrics.put("engineFallback", true);
+        metrics.put("engineFallbackReason", reason);
+        metrics.put("fallbackMode", "HARD_ONLY");
+        return new ScheduleService.ExecutionOutcome(status, null, null, metrics, "引擎失败", false, List.of());
+    }
+
+    /**
+     * 可注入重试时钟：记录退避时长但立即返回，等价于“不真实休眠”。
+     */
+    private static final class RecordingRetryClock implements SolveRetryClock {
+
+        private final List<java.time.Duration> waits = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        private final AtomicLong ticks = new AtomicLong();
+
+        @Override
+        public java.time.Instant nowUtc() {
+            return java.time.Instant.parse("2026-11-04T00:00:00Z").plusSeconds(ticks.incrementAndGet());
+        }
+
+        @Override
+        public void await(java.time.Duration delay) {
+            waits.add(delay);
+        }
+
+        List<java.time.Duration> waits() {
+            return List.copyOf(waits);
+        }
     }
 
     private static SolveTaskDetail awaitTerminal(SolveTaskLifecycleService lifecycle, long taskId, long timeoutMillis)

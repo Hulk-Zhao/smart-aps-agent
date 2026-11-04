@@ -20,8 +20,8 @@ import GanttTimeline from '@/components/gantt/GanttTimeline.vue'
 import type { GanttBarModel, GanttDataset, GanttRowModel, GanttZoom } from '@/components/gantt'
 import type { GanttDatasetKey } from '@/components/gantt/adapters'
 import { undoAdjustment } from '@/api/gantt'
-import { ApiError, createTraceId } from '@/api/http'
-import type { TaskAdjustRequest } from '@/types/gantt'
+import { ApiError, createIdempotencyKey } from '@/api/http'
+import type { GanttTask, TaskAdjustRequest } from '@/types/gantt'
 import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
 import { getEnumLabel, getEnumOptions } from '@/constants/enums'
 import type { Calendar } from '@/types/calendars'
@@ -33,6 +33,27 @@ interface RenderMetrics {
   domNodes: number
   measuredAt: string
 }
+
+/** M3-FE-04 性能自测结果：5 次加载 + 120 帧程序化滚动，口径可复现。 */
+interface PerfProbe {
+  dataset: string
+  rounds: number
+  avgMs: number
+  p95Ms: number
+  minMs: number
+  maxMs: number
+  fps: number
+  droppedFrames: number
+  sampledFrames: number
+  rowCount: number
+  taskCount: number
+  domNodes: number
+  measuredAt: string
+}
+
+const PROBE_ROUNDS = 5
+const PROBE_SCROLL_FRAMES = 120
+const PROBE_DROP_THRESHOLD_MS = 25
 
 const route = useRoute()
 const router = useRouter()
@@ -68,10 +89,17 @@ const layers = reactive<GanttLayerFlags>({
 const dataset = ref<GanttDataset | null>(null)
 const analysis = ref<GanttAnalysis | null>(null)
 const metrics = ref<RenderMetrics | null>(null)
+const perf = ref<PerfProbe | null>(null)
+const perfRunning = ref(false)
 const loading = ref(false)
 const error = ref('')
 const stageRef = ref<HTMLElement | null>(null)
 const selectedTaskId = ref<number | null>(null)
+/**
+ * 同一 payload 的重试复用同一 Idempotency-Key，避免「请求已落库但响应丢失」后重复拆分/合并；
+ * payload 变化（用户改参数）则换新 key。声明需早于 immediate watch，避免 TDZ。
+ */
+let pendingAdjustKey: { signature: string; key: string } | null = null
 let loadToken = 0
 
 const adapter = computed(() =>
@@ -117,8 +145,7 @@ const peakLoadText = computed(() => {
  * 锁优先级 FROZEN > lockType > frozen:boolean；时间窗闭区间 [from,to]，零长度前端先拦（400/40000）；
  * 三层冻结（订单级 freeze_status / 任务级 FROZEN）取交集，不是互相替代。
  * ------------------------------------------------------------------------------------------- */
-type AdjustOperation = 'MOVE' | 'LOCK' | 'FREEZE' | 'UNFREEZE'
-type AdjustSubmitOperation = AdjustOperation | 'SPLIT'
+type AdjustSubmitOperation = 'MOVE' | 'LOCK' | 'FREEZE' | 'UNFREEZE' | 'SPLIT' | 'MERGE'
 
 interface AdjustFeedback {
   level: 'success' | 'warning' | 'error'
@@ -128,23 +155,27 @@ interface AdjustFeedback {
   httpStatus?: number | null
 }
 
-const adjustOperations: Array<{ value: AdjustOperation; label: string }> = [
+const adjustOperations: Array<{ value: AdjustSubmitOperation; label: string }> = [
   { value: 'MOVE', label: '移动 MOVE' },
   { value: 'LOCK', label: '锁定 LOCK' },
   { value: 'FREEZE', label: '冻结 FREEZE' },
-  { value: 'UNFREEZE', label: '解冻 UNFREEZE' }
+  { value: 'UNFREEZE', label: '解冻 UNFREEZE' },
+  { value: 'SPLIT', label: '拆分 SPLIT' },
+  { value: 'MERGE', label: '合并 MERGE' }
 ]
 
-const adjOperation = ref<AdjustOperation>('MOVE')
+const adjOperation = ref<AdjustSubmitOperation>('MOVE')
 const adjDryRun = ref(false)
 const adjResourceCode = ref('')
 const adjStartTime = ref('')
 const adjLockFrom = ref('')
 const adjLockTo = ref('')
 const adjReason = ref('')
+const adjSplitQuantities = ref('')
+const adjMergeTaskIds = ref<number[]>([])
 const adjusting = ref(false)
 const adjustFeedback = ref<AdjustFeedback | null>(null)
-const lastAdjustmentId = ref<string | null>(null)
+const lastAdjustmentId = ref<number | null>(null)
 
 const resourceOptions = computed(() => {
   const codes = new Set<string>()
@@ -157,6 +188,39 @@ const resourceOptions = computed(() => {
   })
   return [...codes].sort().map((code) => ({ value: code, label: code }))
 })
+
+/** C36 MERGE 候选：同订单行、同工序、同资源，且未冻结/未开始/未完成的其它任务。 */
+const mergeCandidates = computed(() => {
+  const bar = selectedBar.value
+  if (!bar) {
+    return []
+  }
+  return (selectedRow.value?.bars ?? [])
+    .filter(
+      (item) =>
+        item.taskId !== bar.taskId &&
+        item.operationIndex === bar.operationIndex &&
+        (item.resourceCode ?? null) === (bar.resourceCode ?? null) &&
+        item.status !== 'FROZEN' &&
+        item.status !== 'IN_PROGRESS' &&
+        item.status !== 'COMPLETED'
+    )
+    .sort(
+      (left, right) =>
+        (left.sequenceInResource ?? 0) - (right.sequenceInResource ?? 0) ||
+        Date.parse(left.startTime) - Date.parse(right.startTime)
+    )
+    .map((item) => ({
+      value: item.taskId,
+      label: `#${item.taskId} · qty ${item.qty ?? '—'} · ${formatMergeTime(item)}`
+    }))
+})
+
+function formatMergeTime(bar: GanttBarModel): string {
+  const from = localInput(bar.startTime)
+  const to = localInput(bar.endTime)
+  return `${from} → ${to}`
+}
 
 const selectedOrderFrozen = computed(() => selectedRow.value?.freezeStatus === 'FROZEN')
 const selectedTaskFrozen = computed(() => {
@@ -231,6 +295,8 @@ function applyBarDefaults(bar: GanttBarModel): void {
   adjLockFrom.value = localInput(bar.startTime)
   adjLockTo.value = localInput(bar.endTime)
   adjReason.value = ''
+  adjSplitQuantities.value = ''
+  adjMergeTaskIds.value = []
 }
 
 watch(
@@ -238,6 +304,7 @@ watch(
   (taskId) => {
     adjustFeedback.value = null
     lastAdjustmentId.value = null
+    pendingAdjustKey = null
     const bar = findBar(taskId)
     if (bar) {
       applyBarDefaults(bar)
@@ -256,20 +323,73 @@ function resetAdjustForm(): void {
 }
 
 function rejectLocally(title: string, detail: string): void {
-  adjustFeedback.value = { level: 'warning', title, detail, code: 40000, httpStatus: 400 }
+  rejectLocallyWith(40000, title, detail)
 }
 
-async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
+function rejectLocallyWith(
+  code: number,
+  title: string,
+  detail: string,
+  httpStatus = 400
+): void {
+  adjustFeedback.value = { level: 'warning', title, detail, code, httpStatus }
+}
+
+function parseSplitQuantities(raw: string): number[] | null {
+  const tokens = raw
+    .split(/[\s,，]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0)
+  if (tokens.length === 0) {
+    return null
+  }
+  const values = tokens.map((token) => Number(token))
+  return values.some((value) => !Number.isFinite(value) || value <= 0) ? null : values
+}
+
+/** MERGE 本地预校验：参与任务必须在同订单行、同工序、同资源内连续相邻。 */
+function mergeAdjacencyError(bar: GanttBarModel, ids: number[]): string | null {
+  const row = selectedRow.value
+  if (!row) {
+    return '当前选中任务不在可见行内'
+  }
+  const group = row.bars
+    .filter(
+      (item) =>
+        item.operationIndex === bar.operationIndex &&
+        (item.resourceCode ?? null) === (bar.resourceCode ?? null)
+    )
+    .sort(
+      (left, right) =>
+        (left.sequenceInResource ?? Number.MAX_SAFE_INTEGER) -
+          (right.sequenceInResource ?? Number.MAX_SAFE_INTEGER) ||
+        Date.parse(left.startTime) - Date.parse(right.startTime)
+    )
+  const positions = ids
+    .map((id) => group.findIndex((item) => item.taskId === id))
+    .sort((left, right) => left - right)
+  if (positions.some((position) => position < 0)) {
+    return '所选任务已不在当前窗口，请刷新后重选'
+  }
+  if (positions.some((position, index) => index > 0 && position !== positions[index - 1] + 1)) {
+    return '所选任务在资源内不连续；MERGE 要求相邻任务（中间不能夹其它任务）'
+  }
+  return null
+}
+
+/**
+ * 前端可判定的 400/40000、42200 参数问题先拦；
+ * 版本、冻结、占用、相邻性等最终仍以后端（或 mock 同语义实现）为准。
+ */
+function buildAdjustPayload(
+  operation: AdjustSubmitOperation,
+  dryRun: boolean
+): TaskAdjustRequest | null {
   const bar = selectedBar.value
-  if (!bar || adjusting.value) {
-    return
+  if (!bar) {
+    return null
   }
-  adjustFeedback.value = null
-  const payload: TaskAdjustRequest = {
-    operation,
-    version: bar.version,
-    dryRun: adjDryRun.value
-  }
+  const payload: TaskAdjustRequest = { operation, version: bar.version, dryRun }
   if (operation === 'MOVE') {
     const start = isoOfLocal(adjStartTime.value)
     if (!start) {
@@ -277,7 +397,7 @@ async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
         '参数不合法（400 / 40000）：MOVE 必须填写开始时间',
         '请选择新的开始时间后再提交；MOVE 由后端按 startTime 平移并保持原加工时长。'
       )
-      return
+      return null
     }
     payload.startTime = start
     if (adjResourceCode.value) {
@@ -292,14 +412,14 @@ async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
         '参数不合法（400 / 40000）：锁定时间窗必须同时提供 from / to',
         '时间窗是闭区间 [from,to]，两项均必填；缺失任一项后端返回 40000。'
       )
-      return
+      return null
     }
     if (Date.parse(to) <= Date.parse(from)) {
       rejectLocally(
         '参数不合法（400 / 40000）：时间窗为零长度或反向',
         '闭区间 [from,to] 必须满足 lockTo 晚于 lockFrom；零长度窗口会被数据库 CHECK 拒绝，后端返回 HTTP 400 + 40000。请至少留 1 分钟。'
       )
-      return
+      return null
     }
     payload.lockFrom = from
     payload.lockTo = to
@@ -309,27 +429,205 @@ async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
       '参数不合法（400 / 40000）：FREEZE 必须填写原因',
       'C22 规定冻结必须带 reason，用于 task_adjustment 审计记录；未填写时后端返回 40000。'
     )
-    return
+    return null
+  }
+  if (operation === 'SPLIT' || operation === 'MERGE') {
+    if (!adjReason.value.trim()) {
+      rejectLocally(
+        `参数不合法（400 / 40000）：${operation} 必须填写原因`,
+        'C36 规定 SPLIT/MERGE 为不可逆结构变更，必须带 reason 写入 task_adjustment 审计记录。'
+      )
+      return null
+    }
+  }
+  if (operation === 'SPLIT') {
+    const quantities = parseSplitQuantities(adjSplitQuantities.value)
+    if (!quantities) {
+      rejectLocally(
+        '参数不合法（400 / 40000）：拆分数量格式错误',
+        '请用逗号/空格分隔 2–10 个正数，例如「10, 20, 30」；每段必须 > 0。'
+      )
+      return null
+    }
+    if (quantities.length < 2 || quantities.length > 10) {
+      rejectLocallyWith(
+        42200,
+        `参数不合法（42200）：拆分数量需 2–10 项，当前 ${quantities.length} 项`,
+        'C36 只接受 2–10 段 SPLIT；请调整分段数。'
+      )
+      return null
+    }
+    const qty = bar.qty
+    if (qty === null || qty === undefined || qty <= 0) {
+      rejectLocallyWith(
+        42200,
+        '参数不合法（42200）：源任务 qty 为空，无法拆分',
+        'C36 要求源任务 qty 非空且 > 0；请在排程结果中确认该任务数量。'
+      )
+      return null
+    }
+    const total = quantities.reduce((sum, value) => sum + value, 0)
+    if (Math.abs(total - qty) > 1e-4) {
+      rejectLocallyWith(
+        42200,
+        `参数不合法（42200）：拆分数量之和必须等于 qty`,
+        `当前拆分合计 ${total}，源任务 qty ${qty}，差 ${Math.abs(total - qty)}；后端容差 1e-4。`
+      )
+      return null
+    }
+    payload.splitQuantities = quantities
+  }
+  if (operation === 'MERGE') {
+    const ids = [...new Set([...adjMergeTaskIds.value, bar.taskId])]
+    if (ids.length < 2 || ids.length > 10) {
+      rejectLocallyWith(
+        42201,
+        '合并不可行（42201）：需选择 2–10 个任务',
+        'mergeTaskIds 必须包含当前任务自身，合计 2–10 项。'
+      )
+      return null
+    }
+    const adjacency = mergeAdjacencyError(bar, ids)
+    if (adjacency) {
+      rejectLocallyWith(42201, '合并不可行（42201）：参与任务不相邻', adjacency)
+      return null
+    }
+    payload.mergeTaskIds = ids
   }
   if (adjReason.value.trim()) {
     payload.reason = adjReason.value.trim()
   }
-  adjusting.value = true
-  try {
-    const adjust = adapter.value.adjust
-    if (!adjust) {
-      throw new ApiError(50100, '当前数据源不支持人工调整')
+  return payload
+}
+
+type BarSnapshot = Pick<
+  GanttBarModel,
+  | 'startTime'
+  | 'endTime'
+  | 'status'
+  | 'frozen'
+  | 'version'
+  | 'lockType'
+  | 'resourceCode'
+  | 'qty'
+  | 'late'
+>
+
+function captureBar(bar: GanttBarModel): BarSnapshot {
+  return {
+    startTime: bar.startTime,
+    endTime: bar.endTime,
+    status: bar.status,
+    frozen: bar.frozen,
+    version: bar.version,
+    lockType: bar.lockType,
+    resourceCode: bar.resourceCode,
+    qty: bar.qty,
+    late: bar.late
+  }
+}
+
+/** 乐观应用：dryRun 返回的「将要写入」视图先行落到本地，真实请求失败时用快照回滚。 */
+function applyLocalTask(bar: GanttBarModel, task: GanttTask): void {
+  if (task.startTime) {
+    bar.startTime = task.startTime
+  }
+  if (task.endTime) {
+    bar.endTime = task.endTime
+  }
+  bar.status = task.status
+  bar.frozen = task.status === 'FROZEN'
+  bar.version = task.version
+  bar.lockType = task.lockType ?? 'NONE'
+  bar.resourceCode = task.resourceCode
+  bar.qty = task.qty
+  bar.late = task.late
+}
+
+function restoreBar(bar: GanttBarModel, snapshot: BarSnapshot): void {
+  bar.startTime = snapshot.startTime
+  bar.endTime = snapshot.endTime
+  bar.status = snapshot.status
+  bar.frozen = snapshot.frozen
+  bar.version = snapshot.version
+  bar.lockType = snapshot.lockType
+  bar.resourceCode = snapshot.resourceCode
+  bar.qty = snapshot.qty
+  bar.late = snapshot.late
+}
+
+async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
+  const bar = selectedBar.value
+  if (!bar || adjusting.value) {
+    return
+  }
+  adjustFeedback.value = null
+  const payload = buildAdjustPayload(operation, adjDryRun.value)
+  if (!payload) {
+    return
+  }
+  const adjust = adapter.value.adjust
+  if (!adjust) {
+    adjustFeedback.value = {
+      level: 'error',
+      title: '当前数据源不支持人工调整',
+      detail: '请切换到 mock 数据源或连接 18085 后端后重试。',
+      code: 50100,
+      httpStatus: null
     }
-    const result = await adjust(bar.taskId, payload, createTraceId())
+    return
+  }
+
+  adjusting.value = true
+  const snapshot = captureBar(bar)
+  try {
+    if (!payload.dryRun) {
+      // 写前预校验：dryRun=true 不落库，只返回完整校验与目标视图。
+      const precheck = await adjust(
+        bar.taskId,
+        { ...payload, dryRun: true },
+        createIdempotencyKey('gantt-pre')
+      )
+      if (!precheck.applied || precheck.conflicts.length > 0) {
+        adjustFeedback.value = {
+          level: 'warning',
+          title: 'dryRun 预校验未通过，未提交真实调整',
+          detail:
+            precheck.conflicts.map((item) => item.message).join('；') ||
+            'applied=false 且无冲突明细，后端未给出可执行视图。',
+          code: 42201,
+          httpStatus: 200
+        }
+        return
+      }
+      if (precheck.task) {
+        applyLocalTask(bar, precheck.task)
+      }
+    }
+
+    const signature = JSON.stringify(payload)
+    if (!pendingAdjustKey || pendingAdjustKey.signature !== signature) {
+      pendingAdjustKey = { signature, key: createIdempotencyKey('gantt-adj') }
+    }
+    const result = await adjust(bar.taskId, payload, pendingAdjustKey.key)
+    if (!result.dryRun) {
+      pendingAdjustKey = null
+    }
     lastAdjustmentId.value = result.adjustmentId
+    const created = result.createdTaskIds?.length
+      ? `；新建任务 ${result.createdTaskIds.join(', ')}`
+      : ''
+    const removed = result.removedTaskIds?.length
+      ? `；软删任务 ${result.removedTaskIds.join(', ')}`
+      : ''
     adjustFeedback.value = {
       level: 'success',
       title: result.dryRun
         ? 'dryRun 校验通过：applied=true，未产生 adjustment 行'
         : `调整成功（adjustmentId=${result.adjustmentId}）`,
       detail: result.dryRun
-        ? `dryRun=true：后端只做完整校验与「将要写入」视图计算，未改 task、未写 task_adjustment（adjustmentId=null）。目标资源 ${result.task?.resourceCode ?? '—'}，目标时间 ${localInput(result.task?.startTime)} → ${localInput(result.task?.endTime)}，目标版本 ${result.task?.version ?? bar.version}。`
-        : `applied=${result.applied}，任务版本 ${bar.version} → ${result.task?.version ?? '—'}；资源 ${result.task?.resourceCode ?? '—'}；时间 ${localInput(result.task?.startTime)} → ${localInput(result.task?.endTime)}。已写入 task_adjustment，可撤销本次。`,
+        ? `dryRun=true：后端只做完整校验与「将要写入」视图计算，未改 task、未写 task_adjustment（adjustmentId=null）。目标资源 ${result.task?.resourceCode ?? '—'}，目标时间 ${localInput(result.task?.startTime)} → ${localInput(result.task?.endTime)}，目标版本 ${result.task?.version ?? bar.version}，qty ${result.task?.qty ?? '—'}。`
+        : `applied=${result.applied}，任务版本 ${bar.version} → ${result.task?.version ?? '—'}；资源 ${result.task?.resourceCode ?? '—'}；时间 ${localInput(result.task?.startTime)} → ${localInput(result.task?.endTime)}；qty ${result.task?.qty ?? '—'}${created}${removed}。已写入 task_adjustment，可撤销本次。`,
       code: 0,
       httpStatus: 200
     }
@@ -337,6 +635,7 @@ async function submitAdjust(operation: AdjustSubmitOperation): Promise<void> {
       await loadDataset(true)
     }
   } catch (exception) {
+    restoreBar(bar, snapshot)
     adjustFeedback.value = describeAdjustError(exception, {
       orderFrozen: selectedOrderFrozen.value,
       version: bar.version,
@@ -355,7 +654,7 @@ async function undoLastAdjustment(): Promise<void> {
   }
   adjusting.value = true
   try {
-    const result = await undoAdjustment(Number(adjustmentId), createTraceId())
+    const result = await undoAdjustment(adjustmentId, createIdempotencyKey('gantt-undo'))
     adjustFeedback.value = {
       level: 'success',
       title: `已撤销最近一次调整（adjustmentId=${adjustmentId}）`,
@@ -408,7 +707,7 @@ function describeAdjustError(
       ...base,
       level: 'warning',
       title: '任务已执行（40903）：进行中 / 已完成任务禁止人工调整',
-      detail: `IN_PROGRESS / COMPLETED 任务不允许 MOVE/LOCK/FREEZE/UNFREEZE（执行事实优先于人工调整）。\n${detail}`
+      detail: `IN_PROGRESS / COMPLETED 任务不允许 MOVE/LOCK/FREEZE/UNFREEZE/SPLIT/MERGE（执行事实优先于人工调整）。\n${detail}`
     }
   }
   if (exception.code === 42201) {
@@ -451,12 +750,28 @@ function describeAdjustError(
       detail: `常见原因：目标资源占用、目标时段非可用、工序依赖顺序违例、或超出订单/任务锁窗。后端原文见下方。\n${detail}`
     }
   }
+  if (exception.code === 40900) {
+    return {
+      ...base,
+      level: 'warning',
+      title: '幂等冲突（40900）：同一 Idempotency-Key 已被使用',
+      detail: `该 Idempotency-Key 对应的调整已执行或正在执行；本页对同一 payload 的失败重试会复用原 key，改参数后会生成新 key。请刷新后确认任务版本再决定是否重试。\n${detail}`
+    }
+  }
   if (exception.code === 50100) {
     return {
       ...base,
       level: 'warning',
-      title: '未实现（50100）：SPLIT / MERGE 在 M2 冻结',
-      detail: `拆分 / 合并属 M3 交付项；M2 只冻结枚举，本次请求未产生任何调整记录。\n${detail}`
+      title: '未实现（50100）：当前后端版本不支持该操作',
+      detail: `C36 SPLIT/MERGE 已上线；出现 50100 说明连接的是旧后端或该操作未在该环境启用。本次请求未产生任何调整记录。\n${detail}`
+    }
+  }
+  if (exception.code === 42200) {
+    return {
+      ...base,
+      level: 'warning',
+      title: '结构变更不合法（42200）：SPLIT / MERGE 数量校验失败',
+      detail: `SPLIT 要求 splitQuantities 2–10 项、每项 > 0、和等于源任务 qty（容差 1e-4）；MERGE 要求参与任务 qty 非空且 > 0。\n${detail}`
     }
   }
   if (exception.code === 40000) {
@@ -464,7 +779,7 @@ function describeAdjustError(
       ...base,
       level: 'warning',
       title: '参数不合法（400 / 40000）：闭区间或必填项校验失败',
-      detail: `时间窗是闭区间 [from,to]，from==to 的零长度窗会被数据库 CHECK 拒绝；MOVE 需 startTime，LOCK 需 lockFrom/lockTo 且 to>from，FREEZE 需 reason。\n${detail}`
+      detail: `时间窗是闭区间 [from,to]，from==to 的零长度窗会被数据库 CHECK 拒绝；MOVE 需 startTime，LOCK 需 lockFrom/lockTo 且 to>from，FREEZE/SPLIT/MERGE 需 reason。\n${detail}`
     }
   }
   if (exception.code === 40400) {
@@ -750,10 +1065,108 @@ async function loadDataset(preserveSelection = false): Promise<void> {
   }
 }
 
+function percentileOf(values: number[], ratio: number): number {
+  const sorted = [...values].sort((left, right) => left - right)
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((ratio / 100) * sorted.length) - 1)
+  )
+  return Math.round(sorted[index] * 100) / 100
+}
+
+/**
+ * 可复现测量：把 .gantt-scroll 在 120 帧内从顶滚到底，记录相邻帧间隔；
+ * FPS = 采样帧数 / 累计帧间隔，掉帧 = 帧间隔 > 25ms 的帧数（约 40fps 以下）。
+ */
+function measureScrollFps(
+  element: HTMLElement,
+  frames: number
+): Promise<{ fps: number; droppedFrames: number; sampledFrames: number }> {
+  return new Promise((resolve) => {
+    const max = Math.max(element.scrollHeight - element.clientHeight, 0)
+    const step = max > 0 ? Math.max(Math.floor(max / frames), 1) : 0
+    element.scrollTop = 0
+    let last = 0
+    let sampled = 0
+    let elapsed = 0
+    let dropped = 0
+    const tick = (now: number): void => {
+      if (last !== 0) {
+        const delta = now - last
+        elapsed += delta
+        sampled += 1
+        if (delta > PROBE_DROP_THRESHOLD_MS) {
+          dropped += 1
+        }
+      }
+      last = now
+      if (step > 0) {
+        element.scrollTop = Math.min(max, element.scrollTop + step)
+      }
+      if (sampled < frames) {
+        requestAnimationFrame(tick)
+        return
+      }
+      resolve({
+        fps: elapsed > 0 ? Math.round((sampled * 1000 * 10) / elapsed) / 10 : 0,
+        droppedFrames: dropped,
+        sampledFrames: sampled
+      })
+    }
+    requestAnimationFrame(tick)
+  })
+}
+
+async function runPerfProbe(): Promise<void> {
+  if (perfRunning.value) {
+    return
+  }
+  perfRunning.value = true
+  perf.value = null
+  try {
+    const totals: number[] = []
+    for (let round = 0; round < PROBE_ROUNDS; round += 1) {
+      await loadDataset(true)
+      if (metrics.value) {
+        totals.push(metrics.value.totalMs)
+      }
+    }
+    if (totals.length === 0) {
+      return
+    }
+    const scrollElement =
+      stageRef.value?.querySelector<HTMLElement>('.gantt-scroll') ?? null
+    const scroll = scrollElement
+      ? await measureScrollFps(scrollElement, PROBE_SCROLL_FRAMES)
+      : { fps: 0, droppedFrames: 0, sampledFrames: 0 }
+    if (scrollElement) {
+      scrollElement.scrollTop = 0
+    }
+    perf.value = {
+      dataset: datasetKey.value,
+      rounds: totals.length,
+      avgMs: Math.round((totals.reduce((sum, value) => sum + value, 0) / totals.length) * 100) / 100,
+      p95Ms: percentileOf(totals, 95),
+      minMs: Math.round(Math.min(...totals) * 100) / 100,
+      maxMs: Math.round(Math.max(...totals) * 100) / 100,
+      fps: scroll.fps,
+      droppedFrames: scroll.droppedFrames,
+      sampledFrames: scroll.sampledFrames,
+      rowCount: dataset.value?.rows.length ?? 0,
+      taskCount: analysis.value?.summary.taskCount ?? 0,
+      domNodes: stageRef.value?.querySelectorAll('*').length ?? 0,
+      measuredAt: new Date().toLocaleString('zh-CN', { hour12: false })
+    }
+  } finally {
+    perfRunning.value = false
+  }
+}
+
 function readQuery(): void {
   const query = route.query
   const key = String(query.dataset ?? '')
-  datasetKey.value = key === '100x10' || key === '500x50' || key === '48x8' ? key : '48x8'
+  datasetKey.value =
+    key === '100x10' || key === '500x50' || key === '5000x50' || key === '48x8' ? key : '48x8'
   const nextZoom = String(query.zoom ?? '')
   zoom.value = nextZoom === 'hour' || nextZoom === 'week' || nextZoom === 'month' ? nextZoom : 'day'
   dataSource.value = String(query.source ?? '') === 'api' ? 'api' : 'mock'
@@ -765,6 +1178,7 @@ function readQuery(): void {
 readQuery()
 
 watch([datasetKey, dataSource], () => {
+  perf.value = null
   void loadDataset()
 })
 
@@ -783,7 +1197,7 @@ onMounted(() => {
 
 <template>
   <div>
-    <h2 class="page-title">订单甘特图（M2-FE-02 · 只读增强）</h2>
+    <h2 class="page-title">订单甘特图（M3 W7 · 虚拟滚动 + C36 调整）</h2>
 
     <el-card class="page-card" shadow="never">
       <div class="toolbar">
@@ -939,6 +1353,48 @@ onMounted(() => {
     </el-card>
 
     <el-card class="page-card" shadow="never">
+      <template #header>
+        性能自测（M3-FE-04 · 5000 任务虚拟滚动）
+        <span class="muted">（结果只在当前页面内，不落库）</span>
+      </template>
+      <div class="perf-probe">
+        <el-button type="primary" :loading="perfRunning" @click="runPerfProbe">
+          运行（{{ PROBE_ROUNDS }} 次加载 + {{ PROBE_SCROLL_FRAMES }} 帧滚动）
+        </el-button>
+        <span class="muted">
+          虚拟窗口参数：行高 34px · 视口 460px（≈13 行） · 纵向缓冲 6 行 · 横向缓冲 240px
+        </span>
+      </div>
+      <el-descriptions v-if="perf" class="perf-probe-result" :column="4" border size="small">
+        <el-descriptions-item label="数据档 / 采样轮次">
+          {{ perf.dataset }} / {{ perf.rounds }}
+        </el-descriptions-item>
+        <el-descriptions-item label="首屏合计 avg / P95">
+          {{ perf.avgMs }} ms / {{ perf.p95Ms }} ms
+        </el-descriptions-item>
+        <el-descriptions-item label="首屏 min / max">
+          {{ perf.minMs }} ms / {{ perf.maxMs }} ms
+        </el-descriptions-item>
+        <el-descriptions-item label="滚动 FPS / 掉帧">
+          {{ perf.fps }} / {{ perf.droppedFrames }}（{{ perf.sampledFrames }} 帧，>25ms 记为掉帧）
+        </el-descriptions-item>
+        <el-descriptions-item label="行 / 任务">
+          {{ perf.rowCount }} / {{ perf.taskCount }}
+        </el-descriptions-item>
+        <el-descriptions-item label="DOM 节点数">
+          {{ perf.domNodes }}
+        </el-descriptions-item>
+        <el-descriptions-item label="测量时间" :span="2">{{ perf.measuredAt }}</el-descriptions-item>
+      </el-descriptions>
+      <p class="perf-note">
+        口径：首屏 = adapter 取数 + analyzeGanttDataset + 两次 rAF（绘制提交）合计；重复 {{ PROBE_ROUNDS }}
+        次取 P95。滚动 =
+        .gantt-scroll 从 0 到 scrollHeight 等步长推进 120 帧，统计相邻帧间隔。数值是本机实测，
+        与机器性能相关；同一浏览器重复运行即可复现。
+      </p>
+    </el-card>
+
+    <el-card class="page-card" shadow="never">
       <template #header
         >订单表（{{ analysis?.summary.rowCount ?? 0 }} 行，C29 排序 orderNo）</template
       >
@@ -971,7 +1427,7 @@ onMounted(() => {
 
     <el-card class="page-card" shadow="never">
       <template #header>
-        人工调整（M2-FE-03 · C22 POST /api/v1/tasks/{id}/adjust）
+        人工调整（C22 / C36 POST /api/v1/tasks/{id}/adjust）
         <span class="muted">（先在上方甘特图中点选任务条）</span>
       </template>
       <el-empty
@@ -985,7 +1441,8 @@ onMounted(() => {
             {{ selectedBar.operationName ?? '' }}
           </el-descriptions-item>
           <el-descriptions-item label="任务 / 版本">
-            #{{ selectedBar.taskId }} / v{{ selectedBar.version }}
+            #{{ selectedBar.taskId }} / v{{ selectedBar.version }} / qty
+            {{ selectedBar.qty ?? '—' }}
           </el-descriptions-item>
           <el-descriptions-item label="资源">
             {{ selectedBar.resourceCode ?? '—' }}
@@ -1016,7 +1473,7 @@ onMounted(() => {
           type="warning"
           :closable="false"
           show-icon
-          title="三层冻结取交集：订单级与任务级任一 FROZEN，MOVE / LOCK / UNFREEZE 都会被 42201 拒绝"
+          title="三层冻结取交集：订单级与任务级任一 FROZEN，MOVE / LOCK / UNFREEZE / SPLIT / MERGE 都会被 42201 拒绝"
         />
         <el-alert
           v-else-if="selectedLockType !== 'NONE'"
@@ -1079,27 +1536,55 @@ onMounted(() => {
               40000），前端先拦
             </span>
           </el-form-item>
+          <el-form-item v-if="adjOperation === 'SPLIT'" label="拆分数量">
+            <el-input
+              v-model="adjSplitQuantities"
+              placeholder="如 10, 20, 30"
+              style="max-width: 260px"
+            />
+            <span class="muted adjust-inline">
+              2–10 段，每段 > 0，和必须等于 qty {{ selectedBar.qty ?? '—' }}（容差 1e-4）；源任务保留第
+              1 段
+            </span>
+          </el-form-item>
+          <el-form-item v-if="adjOperation === 'MERGE'" label="合并任务">
+            <el-select
+              v-model="adjMergeTaskIds"
+              multiple
+              collapse-tags
+              placeholder="选择同工序同资源的相邻任务（当前任务自动加入）"
+              style="min-width: 320px"
+            >
+              <el-option
+                v-for="option in mergeCandidates"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <span class="muted adjust-inline">
+              当前任务 #{{ selectedBar.taskId }} 自动加入 mergeTaskIds；需 2–10 项且在资源内连续相邻
+            </span>
+          </el-form-item>
           <el-form-item label="原因 reason">
             <el-input
               v-model="adjReason"
-              maxlength="100"
+              maxlength="512"
               show-word-limit
-              placeholder="FREEZE 必填；MOVE/LOCK/UNFREEZE 可选（写入 adjustment 审计）"
+              placeholder="FREEZE / SPLIT / MERGE 必填；MOVE/LOCK/UNFREEZE 可选（写入 adjustment 审计）"
               style="max-width: 520px"
             />
           </el-form-item>
           <el-form-item label="dryRun">
             <el-switch v-model="adjDryRun" />
             <span class="muted adjust-inline">
-              只校验不落库：返回 applied=true 且 adjustmentId=null，不产生 adjustment 行、不改任务
+              只校验不落库：返回 applied=true 且 adjustmentId=null；真实提交时本页先自动跑一次 dryRun
+              预校验，失败则不写库并用快照回滚本地视图
             </span>
           </el-form-item>
           <el-form-item>
             <el-button type="primary" :loading="adjusting" @click="submitAdjust(adjOperation)"
               >提交 {{ adjOperation }}</el-button
-            >
-            <el-button :disabled="adjusting" @click="submitAdjust('SPLIT')"
-              >SPLIT 诊断（预期 50100）</el-button
             >
             <el-button
               v-if="lastAdjustmentId && dataSource === 'api'"
@@ -1108,6 +1593,9 @@ onMounted(() => {
               >撤销本次（{{ lastAdjustmentId }}）</el-button
             >
             <el-button :disabled="adjusting" @click="resetAdjustForm">重置</el-button>
+            <span class="muted adjust-inline">
+              Idempotency-Key 前缀 gantt-pre / gantt-adj / gantt-undo；同 payload 失败重试复用原 key
+            </span>
           </el-form-item>
         </el-form>
 
@@ -1432,6 +1920,17 @@ onMounted(() => {
   font-size: var(--font-xs);
   line-height: 18px;
   color: var(--text-3);
+}
+
+.perf-probe {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.perf-probe-result {
+  margin-top: var(--space-3);
 }
 
 .is-danger {

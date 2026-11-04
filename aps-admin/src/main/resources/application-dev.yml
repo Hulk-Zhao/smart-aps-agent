@@ -28,3 +28,10 @@ spring:
 logging:
   level:
     org.flywaydb: INFO
+
+# 通知 outbox 轮询驱动（C33）：dev 显式打开；prod 保持 application.yml 的默认 false
+aps:
+  notification:
+    scheduler:
+      enabled: true
+      interval-ms: 30000

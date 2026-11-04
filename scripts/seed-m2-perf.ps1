@@ -96,6 +96,11 @@ DELETE FROM task WHERE tenant_id = '$tenant' AND sandbox_id = '$sandbox';
 DELETE FROM task_adjustment WHERE tenant_id = '$tenant' AND sandbox_id = '$sandbox';
 DELETE FROM plan_version WHERE tenant_id = '$tenant' AND sandbox_id = '$sandbox';
 DELETE FROM solve_task WHERE tenant_id = '$tenant' AND sandbox_id = '$sandbox';
+-- 订单必须先于 routing 删除：orders.routing_id 外键指向 routing（fk_orders_routing），
+-- 先删 routing 会让同库二次造数直接失败（不幂等）。
+DELETE FROM orders WHERE tenant_id = '$tenant' AND remark = '$orderRemark'
+  AND product_id IN (
+      SELECT id FROM material WHERE tenant_id = '$tenant' AND code >= 'MAT-FG-101' AND code <= 'MAT-FG-110');
 DELETE FROM routing_edge WHERE tenant_id = '$tenant' AND routing_id IN (
     SELECT r.id FROM routing r JOIN material m ON m.id = r.product_id
     WHERE r.tenant_id = '$tenant' AND m.code >= 'MAT-FG-101' AND m.code <= 'MAT-FG-110');
@@ -104,9 +109,6 @@ DELETE FROM routing_node WHERE tenant_id = '$tenant' AND routing_id IN (
     WHERE r.tenant_id = '$tenant' AND m.code >= 'MAT-FG-101' AND m.code <= 'MAT-FG-110');
 DELETE FROM routing WHERE tenant_id = '$tenant' AND product_id IN (
     SELECT id FROM material WHERE tenant_id = '$tenant' AND code >= 'MAT-FG-101' AND code <= 'MAT-FG-110');
-DELETE FROM orders WHERE tenant_id = '$tenant' AND remark = '$orderRemark'
-  AND product_id IN (
-      SELECT id FROM material WHERE tenant_id = '$tenant' AND code >= 'MAT-FG-101' AND code <= 'MAT-FG-110');
 DELETE FROM strategy_rule WHERE tenant_id = '$tenant' AND strategy_id = '$strategy';
 DELETE FROM strategy WHERE id = '$strategy';
 DELETE FROM operation_template WHERE tenant_id = '$tenant' AND code IN (

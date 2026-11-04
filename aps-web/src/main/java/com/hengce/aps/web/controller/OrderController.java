@@ -13,6 +13,7 @@ import com.hengce.aps.service.masterdata.order.OrderService;
 import com.hengce.aps.service.masterdata.order.OrderSource;
 import com.hengce.aps.service.masterdata.order.OrderUpdateCommand;
 import com.hengce.aps.service.masterdata.order.OrderView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -97,7 +98,8 @@ public class OrderController {
      * @return 订单详情
      */
     @Operation(summary = "订单详情", description = "状态：已实现。路径参数为 order_no（C6）。")
-    @GetMapping("/{orderNo}")
+    // 排除通用导出/导入保留段，避免 GET /orders/export 被本方法抢先匹配（C38）
+    @GetMapping("/{orderNo:^(?!export$)(?!import$).+}")
     public Result<OrderView> detail(@PathVariable String orderNo) {
         return Result.success(orderService.get(orderNo));
     }
@@ -109,6 +111,7 @@ public class OrderController {
      * @return 创建后的订单
      */
     @Operation(summary = "新建订单", description = "状态：已实现。默认 DRAFT/UNFROZEN；订单号重复返回 409/40900。")
+    @RequiresPermission("OM_WRITE")
     @PostMapping
     public Result<OrderView> create(@Valid @RequestBody OrderCreateRequest request) {
         return Result.success(orderService.create(request.toCommand()));
@@ -123,6 +126,7 @@ public class OrderController {
      */
     @Operation(summary = "更新订单",
             description = "状态：已实现。仅 DRAFT 可改，orderNo 不可改，version 冲突返回 409/40901，非 DRAFT 返回 422/42200。")
+    @RequiresPermission("OM_WRITE")
     @PutMapping("/{orderNo}")
     public Result<OrderView> update(@PathVariable String orderNo,
                                     @Valid @RequestBody OrderUpdateRequest request) {
@@ -137,6 +141,7 @@ public class OrderController {
      */
     @Operation(summary = "确认订单",
             description = "状态：已实现。无 body；重复确认幂等返回 200；C8 校验失败返回 422/42200。")
+    @RequiresPermission("OM_WRITE")
     @PutMapping("/{orderNo}/confirm")
     public Result<OrderView> confirm(@PathVariable String orderNo) {
         return Result.success(orderService.confirm(orderNo));
@@ -152,6 +157,7 @@ public class OrderController {
     @Operation(summary = "冻结/解冻订单",
             description = "状态：已实现（C23）。四态 freezeStatus；LOCKED_TIME_WINDOW 需 lockFrom/lockTo，"
                     + "LOCKED_RESOURCE 需 lockedResourceCodes；仅改冻结轴，不改 status；version 冲突返回 409/40901。")
+    @RequiresPermission("ORDER_FREEZE")
     @PutMapping("/{orderNo}/freeze")
     public Result<OrderView> freeze(@PathVariable String orderNo,
                                     @Valid @RequestBody OrderFreezeRequest request) {
@@ -167,6 +173,7 @@ public class OrderController {
      */
     @Operation(summary = "修改订单优先级",
             description = "状态：已实现（C23）。priority 影响排产软约束权重；version 冲突返回 409/40901。")
+    @RequiresPermission("OM_WRITE")
     @PutMapping("/{orderNo}/priority")
     public Result<OrderView> priority(@PathVariable String orderNo,
                                       @Valid @RequestBody OrderPriorityRequest request) {
@@ -184,6 +191,7 @@ public class OrderController {
     @Operation(summary = "释放订单",
             description = "状态：已实现（C23）。CONFIRMED/SCHEDULED → RELEASED，并自动把订单下 PLANNED 任务置为 FROZEN；"
                     + "重复释放幂等；其他状态返回 422/42200。")
+    @RequiresPermission("OM_WRITE")
     @PutMapping("/{orderNo}/release")
     public Result<OrderView> release(@PathVariable String orderNo,
                                      @RequestBody(required = false) OrderReleaseRequest request) {

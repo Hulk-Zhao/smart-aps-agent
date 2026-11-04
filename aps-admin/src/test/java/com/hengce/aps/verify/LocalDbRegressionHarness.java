@@ -24,6 +24,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 /**
  * 本地真库回归（test scope，无 Docker）。
  *
+ * <p><b>仅手工运行，不参与自动化测试</b>：类名不匹配 Surefire 默认 include（{@code Test*}/{@code *Test}/
+ * {@code *Tests}/{@code *TestCase}），{@code mvn test} 不会触发本类；只能通过
+ * {@code scripts/local-verify.ps1} 或显式 {@code java -cp} 手工执行。</p>
+ *
  * <p>直接复用生产的 Spring Boot 装配与 MyBatis-Plus 拦截器链，对 aps_local 库逐条验证：
  * 租户拦截（SELECT/UPDATE/DELETE/INSERT）、忽略表、乐观锁、逻辑删除、JSONB 往返、审计填充。
  * 不注册任何测试侧类型处理器，UUID/Serializable 处理器完全来自生产

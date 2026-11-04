@@ -8,6 +8,7 @@ import com.hengce.aps.service.masterdata.material.MaterialCreateCommand;
 import com.hengce.aps.service.masterdata.material.MaterialService;
 import com.hengce.aps.service.masterdata.material.MaterialUpdateCommand;
 import com.hengce.aps.service.masterdata.material.MaterialView;
+import com.hengce.aps.web.security.RequiresPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -76,6 +77,7 @@ public class MaterialController {
      * @return 创建后的物料
      */
     @Operation(summary = "创建物料", description = "状态：已实现。编码重复返回 409/40901。")
+    @RequiresPermission("MD_WRITE")
     @PostMapping
     public Result<MaterialView> create(@Valid @RequestBody MaterialCreateRequest request) {
         return Result.success(materialService.create(request.toCommand()));
@@ -88,7 +90,8 @@ public class MaterialController {
      * @return 物料详情
      */
     @Operation(summary = "物料详情", description = "状态：已实现。路径参数为 material.code（C6）。")
-    @GetMapping("/{code}")
+    // 排除通用导出/导入保留段，避免 GET /materials/export 被本方法抢先匹配（C38）
+    @GetMapping("/{code:^(?!export$)(?!import$).+}")
     public Result<MaterialView> get(@PathVariable String code) {
         return Result.success(materialService.get(code));
     }
@@ -101,6 +104,7 @@ public class MaterialController {
      * @return 更新后的物料
      */
     @Operation(summary = "更新物料", description = "状态：已实现。version 必填，冲突返回 409/40901。")
+    @RequiresPermission("MD_WRITE")
     @PutMapping("/{code}")
     public Result<MaterialView> update(@PathVariable String code,
                                        @Valid @RequestBody MaterialUpdateRequest request) {
@@ -114,6 +118,7 @@ public class MaterialController {
      * @return 空响应
      */
     @Operation(summary = "删除物料", description = "状态：已实现。被 BOM/订单/工艺路线引用时返回 422/42200。")
+    @RequiresPermission("MD_WRITE")
     @DeleteMapping("/{code}")
     public Result<Void> delete(@PathVariable String code) {
         materialService.delete(code);

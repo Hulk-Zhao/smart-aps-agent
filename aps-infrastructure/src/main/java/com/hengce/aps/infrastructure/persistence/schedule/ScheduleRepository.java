@@ -2,6 +2,7 @@ package com.hengce.aps.infrastructure.persistence.schedule;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hengce.aps.common.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -219,14 +220,15 @@ public class ScheduleRepository {
      */
     public void finishSolveTask(long solveTaskId, String status, Long scoreHard, Long scoreSoft,
                                 String metricsJson, String errorMessage) {
+        UUID tenantId = TenantContext.getTenantId();
         String sql = """
                 UPDATE solve_task
                 SET status = ?, score_hard = ?, score_soft = ?, finished_at = ?, metrics = ?::jsonb,
                     error_message = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND tenant_id = ?
                 """;
         jdbcTemplate.update(sql, status, scoreHard, scoreSoft, OffsetDateTime.now(java.time.ZoneOffset.UTC),
-                metricsJson, errorMessage, solveTaskId);
+                metricsJson, errorMessage, solveTaskId, tenantId);
     }
 
     /**
@@ -259,14 +261,21 @@ public class ScheduleRepository {
         if (taskIds.isEmpty()) {
             return;
         }
+        UUID tenantId = TenantContext.getTenantId();
         String sql = """
                 DELETE FROM constraint_justification
-                 WHERE EXISTS (
+                 WHERE tenant_id = ?
+                   AND EXISTS (
                      SELECT 1 FROM jsonb_array_elements(implicated_facts) AS fact
                       WHERE (fact ->> 'id')::bigint IN (%s)
                  )
                 """.formatted(placeholders(taskIds.size()));
-        jdbcTemplate.update(sql, taskIds.toArray());
+        Object[] args = new Object[taskIds.size() + 1];
+        args[0] = tenantId;
+        for (int index = 0; index < taskIds.size(); index++) {
+            args[index + 1] = taskIds.get(index);
+        }
+        jdbcTemplate.update(sql, args);
     }
 
     /**

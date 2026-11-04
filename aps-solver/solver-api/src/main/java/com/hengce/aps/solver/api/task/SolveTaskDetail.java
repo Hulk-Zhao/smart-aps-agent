@@ -31,7 +31,8 @@ import java.util.UUID;
  * @param errorMessage 失败/超时说明，可空
  * @param degraded 是否发生引擎降级（{@code metrics.engineFallback=true}）
  * @param metrics 求解指标（含 calendarFallback/dependencyFallback/setupMatrixFallback/
- *                engineFallback/engineFallbackReason/fallbackMode/fallbackAt 等）
+ *                engineFallback/engineFallbackReason/fallbackMode/fallbackAt 等）；
+ *                Map 内的 {@code null} 值也必须输出（全局 {@code non_null} 不得作用于此字段内容）
  * @param startedAt 开始求解时间
  * @param finishedAt 结束时间，未结束为空
  * @param createdAt 创建时间
@@ -55,6 +56,7 @@ public record SolveTaskDetail(
         String errorCode,
         String errorMessage,
         boolean degraded,
+        @JsonInclude(value = JsonInclude.Include.ALWAYS, content = JsonInclude.Include.ALWAYS)
         Map<String, Object> metrics,
         OffsetDateTime startedAt,
         OffsetDateTime finishedAt,

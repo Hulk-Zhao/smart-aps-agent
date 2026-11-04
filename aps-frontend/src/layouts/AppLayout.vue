@@ -32,7 +32,7 @@ async function copyTraceId() {
 
 <template>
   <el-container class="layout">
-    <el-aside width="220px" class="aside">
+    <el-aside width="var(--sidebar-w)" class="aside">
       <div class="brand">衡策 APS</div>
       <el-menu :default-active="activeMenu" :default-openeds="['master-data']" router class="menu">
         <template v-for="module in menuModules" :key="module.key">
@@ -66,53 +66,55 @@ async function copyTraceId() {
 <style scoped>
 .layout {
   min-height: 100vh;
+  background: var(--bg);
 }
 
 .aside {
-  background: #1f2d3d;
+  background: var(--sidebar-bg);
 }
 
 .brand {
-  height: 60px;
-  line-height: 60px;
-  color: #ffffff;
-  font-size: 18px;
+  height: var(--topbar-h);
+  line-height: var(--topbar-h);
+  color: var(--text);
+  font-size: var(--font-lg);
   font-weight: 600;
   text-align: center;
-  letter-spacing: 2px;
+  letter-spacing: var(--tracking-brand);
 }
 
 .menu {
   border-right: none;
-  background: #1f2d3d;
+  background: var(--sidebar-bg);
 }
 
 .menu :deep(.el-menu-item),
 .menu :deep(.el-sub-menu__title) {
-  color: #c0c4cc;
+  color: var(--text-2);
 }
 
 .menu :deep(.el-menu-item.is-active) {
-  color: #ffffff;
-  background: #324157;
+  color: var(--text);
+  background: var(--primary-light);
 }
 
 .header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #ffffff;
-  border-bottom: 1px solid #e4e7ed;
+  height: var(--topbar-h);
+  background: var(--card);
+  border-bottom: var(--border-width) solid var(--border);
 }
 
 .trace {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .trace-label {
-  color: #909399;
-  font-size: 12px;
+  color: var(--text-3);
+  font-size: var(--font-xs);
 }
 </style>

@@ -1,5 +1,154 @@
+/* ============================================================
+   设计令牌（B1：暗色驾驶舱）
+   取值对齐参考平台 D:\tools\mfg-agent
+   backend/src/mfg_agents/v2/demo/ui/app.css:6-70（:root 令牌）
+   ============================================================ */
+:root {
+  /* 品牌色 */
+  --primary: #3b8ae8;
+  --primary-hover: #62a1eb;
+  --primary-dark: #2f6eba;
+  --primary-light: rgba(59, 138, 232, 0.14);
+  --primary-bg: rgba(59, 138, 232, 0.1);
+
+  /* 背景层级 */
+  --bg: #0a1322;
+  --bg-soft: #0f1d33;
+  --bg-sub: #0d1930;
+  --card: #16273f;
+  --card-hover: #1b2f4c;
+  --sidebar-bg: #0d1b30;
+  --sidebar-bg-2: #10233f;
+
+  /* 边框 / 文字层级 */
+  --border: #263e62;
+  --border-strong: #35507a;
+  --text: #eef4fe;
+  --text-2: #bccbdf;
+  --text-3: #93a8c6;
+
+  /* 状态色 */
+  --ok: #3fcb79;
+  --ok-bg: rgba(63, 203, 121, 0.13);
+  --warn: #e8b93e;
+  --warn-bg: rgba(232, 185, 62, 0.13);
+  --danger: #f4696b;
+  --danger-bg: rgba(244, 105, 107, 0.13);
+  --info: #93a8c6;
+  --info-bg: rgba(147, 168, 198, 0.12);
+
+  /* 形状 */
+  --radius: 12px;
+  --radius-sm: 8px;
+  --border-width: 1px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 2px 6px rgba(0, 0, 0, 0.3), 0 12px 30px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 18px 50px rgba(0, 0, 0, 0.55);
+
+  /* 间距刻度（4px 基准） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* 字号 / 字距 */
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-base: 14px;
+  --font-lg: 18px;
+  --font-title: 20px;
+  --tracking-brand: 2px;
+
+  /* 布局 */
+  --sidebar-w: 220px;
+  --topbar-h: 58px;
+  --content-pad-top: 22px;
+  --content-pad-x: 28px;
+  --content-pad-bottom: 40px;
+
+  /* Element Plus 主题覆盖：主色 */
+  --el-color-primary: var(--primary);
+  --el-color-primary-light-3: #2c66ad;
+  --el-color-primary-light-5: #234e85;
+  --el-color-primary-light-7: #19375d;
+  --el-color-primary-light-8: #16365a;
+  --el-color-primary-light-9: #133251;
+  --el-color-primary-dark-2: var(--primary-dark);
+
+  /* Element Plus 主题覆盖：状态色 */
+  --el-color-success: var(--ok);
+  --el-color-success-light-9: var(--ok-bg);
+  --el-color-warning: var(--warn);
+  --el-color-warning-light-9: var(--warn-bg);
+  --el-color-danger: var(--danger);
+  --el-color-danger-light-9: var(--danger-bg);
+  --el-color-error: var(--danger);
+  --el-color-error-light-9: var(--danger-bg);
+  --el-color-info: var(--info);
+  --el-color-info-light-9: var(--info-bg);
+
+  /* Element Plus 主题覆盖：背景 / 文字 / 边框 */
+  --el-bg-color: var(--card);
+  --el-bg-color-page: var(--bg);
+  --el-bg-color-overlay: var(--card);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--text-3);
+  --el-text-color-placeholder: var(--text-3);
+  --el-text-color-disabled: #6c7f9a;
+  --el-border-color: var(--border);
+  --el-border-color-light: #2b4568;
+  --el-border-color-lighter: #223a57;
+  --el-border-color-extra-light: #1a2c46;
+  --el-border-color-dark: var(--border-strong);
+  --el-border-color-darker: #3f5d8a;
+  --el-border-width: var(--border-width);
+  --el-fill-color: #182b45;
+  --el-fill-color-light: var(--card-hover);
+  --el-fill-color-lighter: #14243b;
+  --el-fill-color-extra-light: #101e33;
+  --el-fill-color-dark: #20385a;
+  --el-fill-color-darker: #244068;
+  --el-fill-color-blank: var(--card);
+  --el-disabled-bg-color: var(--card-hover);
+  --el-disabled-text-color: #6c7f9a;
+  --el-disabled-border-color: var(--border);
+  --el-mask-color: rgba(4, 10, 20, 0.8);
+  --el-mask-color-extra-light: rgba(4, 10, 20, 0.4);
+  --el-box-shadow-light: var(--shadow-sm);
+  --el-box-shadow: var(--shadow-md);
+  --el-box-shadow-dark: var(--shadow-pop);
+  --el-header-height: var(--topbar-h);
+
+  /* Element Plus 主题覆盖：表格 / 卡片 / 弹窗 / 菜单 */
+  --el-table-bg-color: var(--card);
+  --el-table-tr-bg-color: var(--card);
+  --el-table-header-bg-color: var(--bg-soft);
+  --el-table-row-hover-bg-color: var(--card-hover);
+  --el-table-border-color: var(--border);
+  --el-table-text-color: var(--text-2);
+  --el-table-header-text-color: var(--text);
+  --el-card-bg-color: var(--card);
+  --el-card-border-color: var(--border);
+  --el-dialog-bg-color: var(--card);
+  --el-menu-bg-color: var(--sidebar-bg);
+  --el-menu-text-color: var(--text-2);
+  --el-menu-active-color: var(--text);
+  --el-menu-hover-bg-color: var(--primary-light);
+  --el-menu-item-height: 48px;
+  --el-menu-sub-item-height: 44px;
+}
+
 * {
   box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
 }
 
 html,
@@ -12,16 +161,22 @@ body,
 
 body {
   font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif;
-  color: #303133;
-  background: #f5f7fa;
+  color: var(--text);
+  background: var(--bg);
+  font-size: var(--font-base);
+}
+
+.el-main {
+  padding: var(--content-pad-top) var(--content-pad-x) var(--content-pad-bottom);
 }
 
 .page-title {
-  margin: 0 0 16px;
-  font-size: 20px;
+  margin: 0 0 var(--space-4);
+  font-size: var(--font-title);
   font-weight: 600;
+  color: var(--text);
 }
 
 .page-card {
-  margin-bottom: 16px;
+  margin-bottom: var(--space-4);
 }

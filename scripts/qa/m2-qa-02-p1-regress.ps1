@@ -1,4 +1,4 @@
-#requires -version 5.1
+﻿#requires -version 5.1
 <#
   M2-QA-02 P1 回归脚本（可重复执行，同一请求 / 同一断言）
 
@@ -30,25 +30,34 @@ $script:Passes = 0
 
 function Invoke-Api {
     param([string]$Method, [string]$Path, [string]$Body)
-    $tmp = Join-Path $env:TEMP ('qa2reg_' + [guid]::NewGuid().ToString('N') + '.json')
-    $argv = @('-s', '-w', "`n%{http_code}", '-X', $Method, ($BaseUrl + $Path), '-H', "X-API-Key: $ApiKey")
-    if ($null -ne $Body -and $Body.Length -gt 0) {
-        [IO.File]::WriteAllText($tmp, $Body, (New-Object Text.UTF8Encoding($false)))
-        $argv += @('-H', 'Content-Type: application/json', '--data-binary', "@$tmp")
-    }
-    $raw = (& curl.exe @argv) -join "`n"
-    if (Test-Path $tmp) { Remove-Item $tmp -Force }
-    $lines = $raw -split "`n"
+    # 传输层退避：接口按契约 L1434-L1450 约 1 次/秒限流，超限返回 HTTP 429 / code 42900。
+    # 这里只在收到 429 时等待重发同一请求，不改变任何判据的期望值。
     $status = 0
     $payload = ''
-    if ($lines.Count -ge 2) {
-        $status = [int]($lines[-1].Trim())
-        $payload = (($lines[0..($lines.Count - 2)]) -join "`n").Trim()
-    } else {
-        $payload = $raw.Trim()
-    }
     $obj = $null
-    try { $obj = $payload | ConvertFrom-Json } catch { $obj = $null }
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        $tmp = Join-Path $env:TEMP ('qa2reg_' + [guid]::NewGuid().ToString('N') + '.json')
+        $argv = @('-s', '-w', "`n%{http_code}", '-X', $Method, ($BaseUrl + $Path), '-H', "X-API-Key: $ApiKey")
+        if ($null -ne $Body -and $Body.Length -gt 0) {
+            [IO.File]::WriteAllText($tmp, $Body, (New-Object Text.UTF8Encoding($false)))
+            $argv += @('-H', 'Content-Type: application/json', '--data-binary', "@$tmp")
+        }
+        $raw = (& curl.exe @argv) -join "`n"
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+        $lines = $raw -split "`n"
+        $status = 0
+        $payload = ''
+        if ($lines.Count -ge 2) {
+            $status = [int]($lines[-1].Trim())
+            $payload = (($lines[0..($lines.Count - 2)]) -join "`n").Trim()
+        } else {
+            $payload = $raw.Trim()
+        }
+        $obj = $null
+        try { $obj = $payload | ConvertFrom-Json } catch { $obj = $null }
+        if ($status -eq 429) { Start-Sleep -Milliseconds 1300; continue }
+        break
+    }
     return [pscustomobject]@{ Http = $status; Raw = $payload; Json = $obj }
 }
 

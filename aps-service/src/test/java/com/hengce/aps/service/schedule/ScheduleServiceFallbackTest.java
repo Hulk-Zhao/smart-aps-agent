@@ -151,6 +151,41 @@ class ScheduleServiceFallbackTest {
     }
 
     @Test
+    void integrityGuardFailureShouldNotBeMarkedAsEngineFallback() {
+        ScheduleSolution complete = new ScheduleSolution("SOLVED",
+                new ScoreFact(BigDecimal.ZERO, BigDecimal.ZERO, "0hard/0soft"),
+                List.of(), List.of(), metrics(), "ok");
+        SolverAdapter adapter = new SolverAdapter() {
+            @Override
+            public SolverEngine engine() {
+                return SolverEngine.TIMEFOLD;
+            }
+
+            @Override
+            public ScheduleSolution solve(ScheduleProblem problem, SolveConfig config) {
+                return complete;
+            }
+        };
+        ScheduleService service = new ScheduleService(List.of(adapter), assembler, resultWriter,
+                solveTaskRepository, strategyService, true, false);
+        when(assembler.assemble(any(), any())).thenReturn(assembled());
+        when(resultWriter.persist(any(), eq(complete), eq(7L)))
+                .thenThrow(new ScheduleIntegrityException(
+                        "求解结果落库后整表重叠校验失败（本次写入任务参与的重叠对 1 对）: 11/12@R-1"));
+
+        ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
+                adapter, () -> false, (phase, progress, bestScore) -> { });
+
+        assertEquals(SolveTaskStatus.FAILED, outcome.status());
+        assertFalse(Boolean.TRUE.equals(outcome.metrics().get("engineFallback")),
+                "完整性守卫不是引擎异常，不得写降级标记");
+        assertNull(outcome.metrics().get("engineFallbackReason"));
+        assertNull(outcome.metrics().get("engineFallbackDetail"));
+        assertEquals(0, outcome.metrics().get("persistedTaskCount"));
+        assertTrue(outcome.message().contains("整表重叠校验失败"), outcome.message());
+    }
+
+    @Test
     void validationFailureShouldNotWriteFallbackMarker() {
         ScheduleService service = new ScheduleService(List.of(new ThrowingAdapter()), assembler,
                 resultWriter, solveTaskRepository, strategyService, true, false);

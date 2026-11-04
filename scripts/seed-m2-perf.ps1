@@ -199,33 +199,33 @@ VALUES ('$factoryCal', '$tenant', 'CAL-FAC-11', '高负载全厂日历', 'FACTOR
         $resIds["CNC-$i"] = $id
         $rn = 10 + $i
         $cap = 4 + ($i % 5)
-        [void]$sb.AppendLine("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-CNC-{0:d2}', '数控加工中心 {1} 号', 'PRIMARY', 'UNIT_PER_HOUR', $cap, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn)
+        [void]$sb.AppendLine(("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-CNC-{0:d2}', '数控加工中心 {1} 号', 'PRIMARY', 'UNIT_PER_HOUR', $cap, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn))
     }
     for ($i = 1; $i -le 5; $i++) {
         $id = Uuid 'e9000000' (1020 + $i)
         $resIds["HEAT-$i"] = $id
         $rn = 10 + $i
         $cal = Uuid 'e9000000' (200 + $i)
-        [void]$sb.AppendLine("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-HEAT-{0:d2}', '热处理炉 {1} 号', 'PRIMARY', 'BATCH_SECONDS', 900, 10, 1.00, '$cal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn)
+        [void]$sb.AppendLine(("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-HEAT-{0:d2}', '热处理炉 {1} 号', 'PRIMARY', 'BATCH_SECONDS', 900, 10, 1.00, '$cal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn))
     }
     for ($i = 1; $i -le 15; $i++) {
         $id = Uuid 'e9000000' (1040 + $i)
         $resIds["ASM-$i"] = $id
         $rn = 10 + $i
         $cap = 5 + ($i % 4)
-        [void]$sb.AppendLine("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-ASSY-{0:d2}', '总装线 {1} 号', 'PRIMARY', 'UNIT_PER_HOUR', $cap, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn)
+        [void]$sb.AppendLine(("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-ASSY-{0:d2}', '总装线 {1} 号', 'PRIMARY', 'UNIT_PER_HOUR', $cap, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn))
     }
     for ($i = 1; $i -le 5; $i++) {
         $id = Uuid 'e9000000' (1060 + $i)
         $resIds["QA-$i"] = $id
         $rn = 10 + $i
-        [void]$sb.AppendLine("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-QC-{0:d2}', '质检工位 {1} 号', 'SECONDARY', 'SECONDS_PER_UNIT', 0, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn)
+        [void]$sb.AppendLine(("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-QC-{0:d2}', '质检工位 {1} 号', 'SECONDARY', 'SECONDS_PER_UNIT', 0, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn))
     }
     for ($i = 1; $i -le 5; $i++) {
         $id = Uuid 'e9000000' (1080 + $i)
         $resIds["HUMAN-$i"] = $id
         $rn = 10 + $i
-        [void]$sb.AppendLine("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-OP-{0:d2}', '操作工 {1} 号', 'HUMAN', 'SECONDS_PER_UNIT', 0, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn)
+        [void]$sb.AppendLine(("INSERT INTO resource (id, tenant_id, code, name, type, capacity_mode, capacity_value, batch_capacity, efficiency, calendar_id, setup_seconds, teardown_seconds, maintenance_plan, industry_attrs) VALUES ('$id', '$tenant', 'RES-OP-{0:d2}', '操作工 {1} 号', 'HUMAN', 'SECONDS_PER_UNIT', 0, NULL, 1.00, '$factoryCal', 0, 0, '{{}}'::jsonb, '{{}}'::jsonb);" -f $rn, $rn))
     }
 
     # 工序模板 8 个
@@ -327,7 +327,7 @@ finally {
 # ---------------------------------------------------------------------------
 # 规模实测
 # ---------------------------------------------------------------------------
-$summary = & $psql -h $DbHost -p $DbPort -U $DbUser -d $DbName -t -A -F '|' -c @"
+$summarySql = @"
 SELECT 'orders', count(*) FROM orders WHERE tenant_id = '$tenant' AND remark = '$orderRemark'
 UNION ALL SELECT 'materials', count(*) FROM material WHERE tenant_id = '$tenant' AND code >= 'MAT-FG-101' AND code <= 'MAT-FG-110'
 UNION ALL SELECT 'resources', count(*) FROM resource WHERE tenant_id = '$tenant' AND (
@@ -351,7 +351,15 @@ UNION ALL SELECT 'routing_edges', count(*) FROM routing_edge WHERE tenant_id = '
 UNION ALL SELECT 'expected_tasks', count(*) * 6 FROM orders WHERE tenant_id = '$tenant' AND remark = '$orderRemark'
 ORDER BY 1;
 "@
-if ($LASTEXITCODE -ne 0) { throw 'summary query failed' }
+$summarySqlFile = Join-Path ([System.IO.Path]::GetTempPath()) ("aps-perf-summary-{0}.sql" -f ([guid]::NewGuid().ToString('N')))
+try {
+    [System.IO.File]::WriteAllText($summarySqlFile, $summarySql, $utf8NoBom)
+    $summary = & $psql -h $DbHost -p $DbPort -U $DbUser -d $DbName -t -A -F '|' -f $summarySqlFile
+    if ($LASTEXITCODE -ne 0) { throw 'summary query failed' }
+}
+finally {
+    Remove-Item $summarySqlFile -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ''
 foreach ($line in @($summary)) { if ($line) { Write-Host "    $line" } }

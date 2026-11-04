@@ -158,7 +158,7 @@ public class ScheduleResultWriter {
         List<ScheduleRepository.OverlapRow> overlaps = scheduleRepository.findResourceOverlaps(
                 assembled.tenantId(), assembled.sandboxId(), insertedTaskIds);
         if (!overlaps.isEmpty()) {
-            throw new IllegalStateException(
+            throw new ScheduleIntegrityException(
                     "求解结果落库后整表重叠校验失败（本次写入任务参与的重叠对 " + overlaps.size() + " 对）: "
                             + overlaps.stream()
                             .map(row -> row.firstTaskId() + "/" + row.secondTaskId()

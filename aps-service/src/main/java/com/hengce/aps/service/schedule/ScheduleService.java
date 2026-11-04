@@ -354,9 +354,11 @@ public class ScheduleService {
                     "求解引擎未装配: " + engineCode(config), null, List.of());
         }
 
+        // 在 try 外声明：完整性守卫失败时要回填该解的分数与已排位数（不写降级标记）。
+        ScheduleSolution solution = null;
         try {
             progressSink.update("SOLVING", 0.10, null);
-            ScheduleSolution solution = adapter.solve(assembled.problem(), config);
+            solution = adapter.solve(assembled.problem(), config);
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, solution, durationMs);
             // 保留 null 值：metrics.bestScore 必须恒存在（C20），值可为 null；
@@ -400,6 +402,15 @@ public class ScheduleService {
             SolveResult base = SolveEnvelopeMapper.toResult(request, solution);
             return new ExecutionOutcome(SolveTaskStatus.SOLVED, score(solution, true), score(solution, false),
                     metrics, enrichMessage(base.message(), solution), false, base.tasks());
+        } catch (ScheduleIntegrityException exception) {
+            // 数据完整性守卫（如整表重叠）失败：引擎正常返回，是落库前最后一道闸门拦下了计划。
+            // 按契约记 FAILED/FAILED 并保留明细，不写 engineFallback*/degraded（没走降级路径）。
+            Map<String, Object> guardMetrics = baseMetrics(config, solution, elapsedMillis(startNanos));
+            guardMetrics.put("bestScore", bestScore(solution));
+            guardMetrics.put("expectedTaskCount", assembled.expectedTaskCount());
+            guardMetrics.put("assignedTaskCount", solution == null ? 0 : solution.assignments().size());
+            guardMetrics.put("excludedOrders", List.of());
+            return failed(guardMetrics, exception.getMessage(), solution);
         } catch (BizException exception) {
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, null, durationMs);

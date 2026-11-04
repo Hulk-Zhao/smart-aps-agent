@@ -70,6 +70,23 @@ class ScheduleResultWriterIntegrityTest {
     }
 
     @Test
+    void overlapGuardFailsAsIntegrityErrorNotEngineError() {
+        OverlapRow overlap = new OverlapRow(1L, 2L, RESOURCE_ID,
+                BASE, BASE.plusHours(1), BASE.plusMinutes(30), BASE.plusMinutes(90));
+        FakeScheduleRepository repository = new FakeScheduleRepository(1, List.of(overlap));
+        ScheduleResultWriter writer = new ScheduleResultWriter(repository);
+
+        ScheduleIntegrityException error = assertThrows(ScheduleIntegrityException.class,
+                () -> writer.persist(assembled(1), solution(assignments(1)), 7L),
+                "整表重叠是数据完整性守卫，不得抛成引擎异常类型");
+
+        assertTrue(error.getMessage().contains("整表重叠校验失败"), error.getMessage());
+        assertTrue(error.getMessage().contains("1") && error.getMessage().contains(RESOURCE_ID.toString()),
+                "message 必须保留重叠对明细: " + error.getMessage());
+        assertEquals(0, repository.justificationInsertCount, "守卫失败后不得再写归因行");
+    }
+
+    @Test
     void completeAssignmentsArePersisted() {
         FakeScheduleRepository repository = new FakeScheduleRepository(2);
         ScheduleResultWriter writer = new ScheduleResultWriter(repository);
@@ -130,11 +147,20 @@ class ScheduleResultWriterIntegrityTest {
 
         private final List<NewTaskRow> insertedRows = new ArrayList<>();
 
+        private final List<OverlapRow> overlapRows;
+
+        private int justificationInsertCount;
+
         private long nextId;
 
         private FakeScheduleRepository(int existingTaskRowCount) {
+            this(existingTaskRowCount, List.of());
+        }
+
+        private FakeScheduleRepository(int existingTaskRowCount, List<OverlapRow> overlapRows) {
             super(null);
             this.existingTaskRowCount = existingTaskRowCount;
+            this.overlapRows = overlapRows;
         }
 
         @Override
@@ -158,14 +184,14 @@ class ScheduleResultWriterIntegrityTest {
 
         @Override
         public List<OverlapRow> findResourceOverlaps(UUID tenantId, UUID sandboxId, List<Long> taskIds) {
-            return List.of();
+            return overlapRows;
         }
 
         @Override
         public void insertJustification(UUID tenantId, long solveTaskId, String constraintCode,
                                         String constraintType, List<Long> taskIds, String description,
                                         Integer weight, BigDecimal deduction) {
-            // 归因不是本用例关注点
+            justificationInsertCount++;
         }
     }
 }

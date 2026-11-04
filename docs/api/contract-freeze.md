@@ -1411,6 +1411,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
    - `engineFallbackReason/Detail` 与 `status` **不互相推断**：不得从 `status=SOLVED` 推断「没降级」，也不得从 `degraded=true` 推断「失败」；
    - `TIMEOUT`、`FAILED` 仍不得为 `SOLVED`；`degraded=true` 不能替代第 4 条三项条件；`fallbackMode=PARTIAL`（M3 预留）若未来产出部分排位结果，其终态同样不得为 `SOLVED`。
 7. **验收口径**：判定“求解成功”必须同时给出 `status=SOLVED`、`bestScore` 硬分 0、`persistedTaskCount = expectedTaskCount` 与库内 `task` 实际行数；仅凭 `status=SOLVED` 或 `0hard/0soft` 不得判定成功（压测已复现 `SOLVED/0hard/0soft/persistedTaskCount=0` 的假成功）。
+8. **重叠守卫不得归因为引擎异常**：`ScheduleResultWriter` 落库前的**整表重叠校验**属**数据完整性守卫**——引擎正常返回、由守卫拦下重叠计划时，必须记 `status=FAILED`、`errorCode=FAILED`，`message` 带重叠对明细，**不得**置 `engineFallback*` 或 `degraded=true`（未走降级路径）。`ENGINE_ERROR` / `engineFallbackDetail=ENGINE_EXCEPTION` **只**留给引擎异常与结果口径不一致。
 
 **`metrics` 键清单（2026-11-04 实测补登；`metrics` 仍为开放对象，键集合不冻结）**：
 
@@ -1427,6 +1428,8 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 | `moveThreadCountIgnored` | 请求值未被运行时支持（如社区版请求 7 → `Effective=NONE`、`Ignored=true`） |
 | `multiThreadedAvailable` | 当前发行版是否具备多线程能力 |
 
+- 全局 `default-property-inclusion: non_null` **不得**作用于 `metrics` 映射内部；`metrics` 的值若为 `null`，**必须原样输出为 `null`**（不得丢弃、不得替换成默认值）。原因：`null` 表示「确实没有该值」，与「没算/不知道」不同。
+
 **已知限制：单进程求解并发度恒为 1（M2，W4 取证；不是 bug）**：
 
 - `SoftConstraintWeights` 是**进程级静态 `AtomicReference`**；互斥由 `TimefoldSolverAdapter` 的 `private static final ReentrantLock SOLVER_LOCK` 保证，临界区覆盖 `activate → create/buildSolver/solve → disable`；权重在 `SolverFactory.create(...)` 时被约束流读取一次并固化。因此**同一进程内同一时刻只能有一个求解会话，并发度恒为 1**。
@@ -1434,6 +1437,7 @@ constraint:                       # 兼容别名：单对象，等价 constraint
 - 等锁期间任务已是 `RUNNING`（不会被回落成 `PENDING`）；超时则直接 `FAILED`，不产生结果行。
 - 多 JVM 部署时锁与权重注册表**按进程隔离**，不存在跨进程串味；总并发度 = 实例数，单实例仍为 1。
 - **验收含义（必须遵守）**：压测与联调用例**不得**把“并发发起求解”当作并行吞吐来度量——此时测到的是排队时间与拒绝率，不是引擎性能。要测吞吐必须多进程/多实例，或串行计时单次求解。
+- **单订单子集重排未纳入场景内既有占用（M2 已知限制）**：请求只点部分订单、且场景内已有其他订单的任务、又未传 `pinnedOrderNos` 时，求解题面不含这些既有占用，落库前整表重叠守卫会判失败（这是**正确**拦截，不是 bug）。M2 不做自动收敛；该场景的正式语义归 **M3 增量重排**，M3 需明确“子集重排必须显式声明既有占用（pinned）或整场景重排”。
 
 **端点**：
 

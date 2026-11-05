@@ -41,7 +41,7 @@ public class OrderTaskFreezeRepository {
     public int freezePlannedTasks(UUID tenantId, UUID orderId) {
         String sql = """
                 UPDATE task
-                   SET status = 'FROZEN', updated_at = CURRENT_TIMESTAMP
+                   SET status = 'FROZEN', lock_type = 'FROZEN', updated_at = CURRENT_TIMESTAMP
                  WHERE tenant_id = ? AND order_id = ? AND deleted = false AND status = 'PLANNED'
                 """;
         return jdbcTemplate.update(sql, tenantId, orderId);

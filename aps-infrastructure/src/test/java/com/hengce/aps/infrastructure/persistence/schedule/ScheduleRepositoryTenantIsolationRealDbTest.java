@@ -13,6 +13,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -58,6 +59,12 @@ class ScheduleRepositoryTenantIsolationRealDbTest {
     private static final String MAINTENANCE_DATABASE = "postgres";
 
     private static final long FACT_B = 990001L;
+
+    private static final OffsetDateTime WIDE_HORIZON_START =
+            OffsetDateTime.parse("2000-01-01T00:00:00Z");
+
+    private static final OffsetDateTime WIDE_HORIZON_END =
+            OffsetDateTime.parse("2100-01-01T00:00:00Z");
 
     private static final Map<String, Boolean> PREPARED = new ConcurrentHashMap<>();
 
@@ -146,7 +153,8 @@ class ScheduleRepositoryTenantIsolationRealDbTest {
     void crossTenantShouldNotReadUpdateOrDeleteOtherTenantRows() {
         assertTrue(repository.findScheduledTaskRows(TENANT_A, sandboxB).isEmpty(),
                 "本租户上下文查不到对方租户场景下的任务");
-        assertTrue(repository.findFrozenTasks(TENANT_A, sandboxB).isEmpty(),
+        assertTrue(repository.findFrozenTasks(TENANT_A, sandboxB,
+                        WIDE_HORIZON_START, WIDE_HORIZON_END).isEmpty(),
                 "本租户上下文查不到对方租户的冻结任务");
 
         repository.finishSolveTask(solveTaskB, "SOLVED", 0L, 0L, "{\"phase\":\"DONE\"}", "跨租户尝试");
@@ -162,7 +170,8 @@ class ScheduleRepositoryTenantIsolationRealDbTest {
 
         assertEquals(1, repository.findScheduledTaskRows(TENANT_B, sandboxB).size(),
                 "本租户可读取自己的任务");
-        assertEquals(1, repository.findFrozenTasks(TENANT_B, sandboxB).size(),
+        assertEquals(1, repository.findFrozenTasks(TENANT_B, sandboxB,
+                        WIDE_HORIZON_START, WIDE_HORIZON_END).size(),
                 "本租户可读取自己的冻结任务");
 
         repository.finishSolveTask(solveTaskB, "SOLVED", 0L, 0L, "{\"phase\":\"DONE\"}", "本租户更新");

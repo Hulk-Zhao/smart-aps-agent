@@ -1,5 +1,6 @@
 package com.hengce.aps.service.schedule;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.BusinessException;
@@ -22,22 +23,31 @@ import com.hengce.aps.infrastructure.persistence.resource.ResourceMapper;
 import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository;
 import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository.FrozenTaskRow;
 import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository.OrderSourceRow;
+import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository.CompletedFrozenOperationRow;
+import com.hengce.aps.infrastructure.persistence.strategy.ConstraintDsl;
+import com.hengce.aps.infrastructure.persistence.strategy.ConstraintDslMapper;
+import com.hengce.aps.service.setup.SetupMatrixService;
 import com.hengce.aps.solver.api.AvailabilityWindow;
+import com.hengce.aps.solver.api.ConstraintSpec;
 import com.hengce.aps.solver.api.OperationDependency;
 import com.hengce.aps.solver.api.ScheduleProblem;
 import com.hengce.aps.solver.api.SchedulingOperation;
 import com.hengce.aps.solver.api.SchedulingOrder;
 import com.hengce.aps.solver.api.SchedulingResource;
+import com.hengce.aps.solver.api.SetupMatrixEntry;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.TaskAssignment;
 import com.hengce.aps.solver.api.duration.OperationRunDuration;
+import com.hengce.aps.solver.dsl.ConstraintDslEngineMapping;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -51,6 +61,10 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -62,6 +76,11 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class ScheduleProblemAssembler {
+
+    /**
+     * 求解窗口日志：锚点生效时 {@code horizonStart} 不再随真实时刻漂移，供复现性核对。
+     */
+    private static final Logger LOGGER = LoggerFactory.getLogger(ScheduleProblemAssembler.class);
 
     /**
      * 可用时段向前后各扩展的小时数，覆盖求解器以自身 now 为基准的 7 天 horizon。
@@ -129,6 +148,51 @@ public class ScheduleProblemAssembler {
     private final CalendarMapper calendarMapper;
 
     /**
+     * 换型矩阵服务：装配时装载 FROM/TO 矩阵。
+     */
+    private final SetupMatrixService setupMatrixService;
+
+    /**
+     * 约束 DSL 持久层；为 null 时（装配器单测）视为没有 ACTIVE DSL。
+     */
+    private final ConstraintDslMapper constraintDslMapper;
+
+    /**
+     * 业务时区（{@code aps.business.time-zone}）：日历班次的本地时间按此时区落地。
+     */
+    private final ZoneId businessZone;
+
+    /**
+     * 构造装配器（兼容不含约束 DSL 依赖的单测）。
+     *
+     * @param scheduleRepository 排产持久层
+     * @param routingMapper 路线 Mapper
+     * @param routingNodeMapper 节点 Mapper
+     * @param routingEdgeMapper 边 Mapper
+     * @param operationTemplateMapper 模版 Mapper
+     * @param resourceMapper 资源 Mapper
+     * @param resourceGroupMapper 资源组 Mapper
+     * @param calendarMapper 日历 Mapper
+     * @param setupMatrixService 换型矩阵服务
+     * @param businessTimeZone 业务时区，默认 Asia/Shanghai
+     */
+    public ScheduleProblemAssembler(
+            ScheduleRepository scheduleRepository,
+            RoutingMapper routingMapper,
+            RoutingNodeMapper routingNodeMapper,
+            RoutingEdgeMapper routingEdgeMapper,
+            OperationTemplateMapper operationTemplateMapper,
+            ResourceMapper resourceMapper,
+            ResourceGroupMapper resourceGroupMapper,
+            CalendarMapper calendarMapper,
+            SetupMatrixService setupMatrixService,
+            @Value("${aps.business.time-zone:Asia/Shanghai}") String businessTimeZone) {
+        this(scheduleRepository, routingMapper, routingNodeMapper, routingEdgeMapper,
+                operationTemplateMapper, resourceMapper, resourceGroupMapper, calendarMapper,
+                setupMatrixService, businessTimeZone, null);
+    }
+
+    /**
      * 构造装配器。
      *
      * @param scheduleRepository 排产持久层
@@ -139,7 +203,11 @@ public class ScheduleProblemAssembler {
      * @param resourceMapper 资源 Mapper
      * @param resourceGroupMapper 资源组 Mapper
      * @param calendarMapper 日历 Mapper
+     * @param setupMatrixService 换型矩阵服务
+     * @param businessTimeZone 业务时区，默认 Asia/Shanghai
+     * @param constraintDslMapper 约束 DSL Mapper
      */
+    @Autowired
     public ScheduleProblemAssembler(
             ScheduleRepository scheduleRepository,
             RoutingMapper routingMapper,
@@ -148,7 +216,10 @@ public class ScheduleProblemAssembler {
             OperationTemplateMapper operationTemplateMapper,
             ResourceMapper resourceMapper,
             ResourceGroupMapper resourceGroupMapper,
-            CalendarMapper calendarMapper) {
+            CalendarMapper calendarMapper,
+            SetupMatrixService setupMatrixService,
+            @Value("${aps.business.time-zone:Asia/Shanghai}") String businessTimeZone,
+            ConstraintDslMapper constraintDslMapper) {
         this.scheduleRepository = scheduleRepository;
         this.routingMapper = routingMapper;
         this.routingNodeMapper = routingNodeMapper;
@@ -157,12 +228,83 @@ public class ScheduleProblemAssembler {
         this.resourceMapper = resourceMapper;
         this.resourceGroupMapper = resourceGroupMapper;
         this.calendarMapper = calendarMapper;
+        this.setupMatrixService = setupMatrixService;
+        this.businessZone = ZoneId.of(businessTimeZone.trim());
+        this.constraintDslMapper = constraintDslMapper;
     }
 
     /**
      * 增量重排参数：需要以既有任务固定进题面的订单号（未受影响订单）。
      */
     public static final String PARAM_PINNED_ORDER_NOS = "pinnedOrderNos";
+
+    /**
+     * 求解参数：是否用既有排产结果作为预热初始解；缺省 {@code true}。
+     */
+    public static final String PARAM_WARM_START = "warmStart";
+
+    /**
+     * 求解基准时间锚点（{@code aps.solve.horizon-anchor}，ISO-8601）；空表示取当前时刻。
+     */
+    private volatile String horizonAnchor = "";
+
+    /**
+     * 配置求解基准时间锚点：给定后同一份数据在不同真实时刻得到同一题面。
+     *
+     * <p>只允许“过去或现在”：未来锚点会让计划的“现在线”落在真实未来，
+     * 当前至锚点之间已排的既有任务会被窗口过滤掉，产出的计划不可执行。</p>
+     *
+     * @param horizonAnchor ISO-8601 时刻，空表示取当前时刻
+     */
+    @Value("${aps.solve.horizon-anchor:}")
+    public void setHorizonAnchor(String horizonAnchor) {
+        this.horizonAnchor = horizonAnchor == null ? "" : horizonAnchor.trim();
+    }
+
+    /**
+     * ATP 假设订单描述。
+     *
+     * @param orderId 订单主键（无既有订单时为临时 UUID）
+     * @param orderNo 订单号（无既有订单时为 ATP- 前缀临时号）
+     * @param materialCode 物料编码
+     * @param productFamily 产品族，可空
+     * @param qty 数量
+     * @param dueDate 请求交期
+     * @param priority 优先级
+     * @param routingId 指定工艺路线，可空（空则取 ACTIVE 最新）
+     */
+    public record AtpOrderSpec(
+            UUID orderId,
+            String orderNo,
+            String materialCode,
+            String productFamily,
+            BigDecimal qty,
+            LocalDate dueDate,
+            String priority,
+            UUID routingId) {
+    }
+
+    /**
+     * ATP 只读题面快照。
+     *
+     * @param tenantId 租户
+     * @param sandboxId 场景（恒为 BASELINE，仅读取）
+     * @param problem 求解问题
+     * @param atpOrder 假设订单；无可用资源时为 null
+     * @param horizonStart 资源日历展开起点
+     * @param horizonEnd 资源日历展开终点
+     * @param confirmedOrderCount 参与的 CONFIRMED 订单数（FAST 为 0）
+     */
+    public record AtpSnapshot(
+            UUID tenantId,
+            UUID sandboxId,
+            ScheduleProblem problem,
+            SchedulingOrder atpOrder,
+            OffsetDateTime horizonStart,
+            OffsetDateTime horizonEnd,
+            int confirmedOrderCount) {
+    }
+
 
     /**
      * 从数据库装配求解问题。
@@ -175,27 +317,51 @@ public class ScheduleProblemAssembler {
         UUID tenantId = TenantContext.getTenantId();
         UUID sandboxId = request.sandboxId() == null
                 ? ScheduleProblem.DEFAULT_SANDBOX_ID : request.sandboxId();
+        OffsetDateTime base = resolveBaseTime();
+        OffsetDateTime horizonStart = base.minusHours(HORIZON_MARGIN_HOURS);
+        OffsetDateTime horizonEnd = horizonStart.plusHours(HORIZON_HOURS + 2 * HORIZON_MARGIN_HOURS);
 
+        LOGGER.info("求解窗口: base={}, horizonStart={}, horizonEnd={}, anchor={}",
+                base, horizonStart, horizonEnd,
+                horizonAnchor == null || horizonAnchor.isBlank() ? "<now>" : horizonAnchor);
         boolean allOrders = request.orderNos() == null || request.orderNos().isEmpty();
         List<OrderSourceRow> requestedRows = scheduleRepository.findOrders(
                 tenantId, request.orderNos(), allOrders);
         requireAllRequestedOrdersFound(request.orderNos(), requestedRows);
-        List<OrderSourceRow> pinnedRows = allOrders
-                ? List.of() : findPinnedOrders(tenantId, request.orderNos(),
-                readStringList(request.parameters() == null
-                        ? null : request.parameters().get(PARAM_PINNED_ORDER_NOS)));
-        List<OrderSourceRow> orderRows = new ArrayList<>(requestedRows);
+        List<OrderSourceRow> requestedOrderRows = requestedRows;
+        List<OrderSourceRow> pinnedRows = new ArrayList<>();
+        if (!allOrders) {
+            Map<String, Object> parameters = request.parameters();
+            Object pinnedParam = parameters == null ? null : parameters.get(PARAM_PINNED_ORDER_NOS);
+            pinnedRows.addAll(findPinnedOrders(tenantId, request.orderNos(), readStringList(pinnedParam)));
+        }
+        // 同场景内不在本次请求范围内的既有任务同样是“既有占用”，必须作为不可移动的
+        // pinned 项装入题面；否则求解器看不见别的订单已占用的资源与时段，会排出落库后
+        // 整表重叠的结果（C21 §24.3：装载范围与校验范围必须一致）。
+        Set<UUID> pinnedOrderIds = new LinkedHashSet<>();
+        for (OrderSourceRow row : pinnedRows) {
+            pinnedOrderIds.add(row.orderId());
+        }
+        for (OrderSourceRow row : scheduleRepository.findOrdersWithExistingTasks(
+                tenantId, sandboxId,
+                requestedOrderRows.stream().map(OrderSourceRow::orderId).toList(),
+                horizonStart, horizonEnd)) {
+            if (pinnedOrderIds.add(row.orderId())) {
+                pinnedRows.add(row);
+            }
+        }
+        List<OrderSourceRow> orderRows = new ArrayList<>(requestedOrderRows);
         orderRows.addAll(pinnedRows);
+        ActiveConstraintDsl activeDsl = loadActiveConstraintDsl();
+        List<ConstraintSpec> constraints = activeDsl == null ? List.of() : activeDsl.constraints();
         if (orderRows.isEmpty()) {
             return new AssembledProblem(tenantId, sandboxId, new ScheduleProblem(
                     tenantId.toString(), sandboxId, null, request.strategyId(), config.direction(),
-                    List.of(), List.of(), List.of(), List.of(), List.of()), List.of());
+                    List.of(), List.of(), List.of(), constraints, List.of(),
+                    toUtcLocal(base), List.of()), List.of(), activeDsl);
         }
-
-        OffsetDateTime horizonStart = OffsetDateTime.now(ZoneOffset.UTC)
-                .minusHours(HORIZON_MARGIN_HOURS)
-                .withMinute(0).withSecond(0).withNano(0);
-        OffsetDateTime horizonEnd = horizonStart.plusHours(HORIZON_HOURS + 2 * HORIZON_MARGIN_HOURS);
+        Map<UUID, CompletedFrozenOps> completedByOrder =
+                loadCompletedFrozenOperations(tenantId, sandboxId, horizonStart);
 
         List<SchedulingResource> resources = buildResources(horizonStart, horizonEnd);
         Map<UUID, SchedulingResource> resourceById = new LinkedHashMap<>();
@@ -208,38 +374,27 @@ public class ScheduleProblemAssembler {
 
         Map<String, OperationTemplate> templateCache = new HashMap<>();
         Map<String, List<RoutingNode>> nodeCache = new HashMap<>();
+        Set<UUID> requestedOrderIds = new LinkedHashSet<>();
+        for (OrderSourceRow order : requestedOrderRows) {
+            requestedOrderIds.add(order.orderId());
+        }
         List<SchedulingOrder> orders = new ArrayList<>();
+        List<UUID> solvedOrderIds = new ArrayList<>();
         for (OrderSourceRow order : orderRows) {
-            Routing routing = resolveRouting(order);
-            UUID routingId = requireUuid(routing.getId());
-            List<RoutingNode> nodes = nodeCache.computeIfAbsent(
-                    routingId.toString(), key -> routingNodeMapper.selectByRoutingId(routingId));
-            if (nodes.isEmpty()) {
-                throw new BusinessException(ErrorCode.UNPROCESSABLE_ENTITY,
-                        "订单 " + order.orderNo() + " 的 ACTIVE 工艺路线没有节点");
+            boolean requested = requestedOrderIds.contains(order.orderId());
+            CompletedFrozenOps completed = requested ? completedByOrder.get(order.orderId()) : null;
+            SchedulingOrder schedulingOrder = toSchedulingOrder(order, resolveRouting(order),
+                    templateCache, nodeCache, resourceById, completed);
+            if (schedulingOrder == null) {
+                // 全部工序都已在窗口外完成：该订单本次无工序可排，保留库内既有任务不删，
+                // 也不进入写入范围（orderIds），避免把已完成任务当作本次求解结果覆盖掉。
+                continue;
             }
-            List<RoutingEdge> edges = routingEdgeMapper.selectByRoutingId(routingId);
-            Map<UUID, Integer> seqByNodeId = new HashMap<>();
-            for (RoutingNode node : nodes) {
-                seqByNodeId.put(requireUuid(node.getId()), node.getSeqNo());
+            orders.add(schedulingOrder);
+            if (requested) {
+                // pinned 订单只作为约束参与题面，落库范围必须与请求订单一致。
+                solvedOrderIds.add(order.orderId());
             }
-            Map<UUID, List<OperationDependency>> dependenciesByNode = dependencies(edges, seqByNodeId, order.orderNo());
-            List<SchedulingOperation> operations = new ArrayList<>();
-            for (RoutingNode node : nodes) {
-                operations.add(toOperation(node, templateCache,
-                        dependenciesByNode.get(requireUuid(node.getId())), resourceById));
-            }
-            orders.add(new SchedulingOrder(
-                    order.orderId(),
-                    order.orderNo(),
-                    order.materialCode(),
-                    order.productFamily(),
-                    order.qty(),
-                    order.dueDate(),
-                    order.priority(),
-                    order.freezeStatus(),
-                    routingId,
-                    operations));
         }
 
         List<TaskAssignment> pinnedAssignments = buildFrozenAssignments(
@@ -247,8 +402,14 @@ public class ScheduleProblemAssembler {
                         pinnedRows.stream().map(OrderSourceRow::orderId).toList()), true);
         List<TaskAssignment> frozenAssignments = mergeAssignments(
                 pinnedAssignments,
-                buildFrozenAssignments(scheduleRepository.findFrozenTasks(tenantId, sandboxId), false));
+                buildFrozenAssignments(scheduleRepository.findFrozenTasks(
+                        tenantId, sandboxId, horizonStart, horizonEnd), false));
         validateFloatOperationDurations(orders, resourceById, frozenAssignments);
+        List<SetupMatrixEntry> setupMatrix = loadSetupMatrix();
+        List<TaskAssignment> initialAssignments = warmStartEnabled(config.parameters())
+                ? buildFrozenAssignments(scheduleRepository.findTasksByOrders(tenantId, sandboxId,
+                        requestedOrderRows.stream().map(OrderSourceRow::orderId).toList()), false)
+                : List.of();
 
         ScheduleProblem problem = new ScheduleProblem(
                 tenantId.toString(),
@@ -259,10 +420,150 @@ public class ScheduleProblemAssembler {
                 orders,
                 resources,
                 frozenAssignments,
-                List.of(),
-                List.of());
-        return new AssembledProblem(tenantId, sandboxId, problem,
-                requestedRows.stream().map(OrderSourceRow::orderId).toList());
+                constraints,
+                setupMatrix,
+                toUtcLocal(base),
+                initialAssignments);
+        return new AssembledProblem(tenantId, sandboxId, problem, solvedOrderIds, activeDsl);
+    }
+
+    /**
+     * 计算求解基准时间：配置了 {@code aps.solve.horizon-anchor} 时取锚点，否则取当前时刻；
+     * 两者都向下取整到小时，保证装配侧与求解器的开始时间候选同源。
+     *
+     * <p>拒绝未来锚点：未来锚点会把“现在”线画到真实未来，当前至锚点之间已排的既有任务
+     * 会被窗口过滤掉，产出的计划不可执行。</p>
+     *
+     * @return 基准时间（UTC，整点）
+     */
+    OffsetDateTime resolveBaseTime() {
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        if (horizonAnchor == null || horizonAnchor.isBlank()) {
+            return now.withMinute(0).withSecond(0).withNano(0);
+        }
+        OffsetDateTime anchor;
+        try {
+            anchor = OffsetDateTime.parse(horizonAnchor);
+        } catch (DateTimeParseException exception) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "aps.solve.horizon-anchor 不是合法的 ISO-8601 时刻: " + horizonAnchor);
+        }
+        if (anchor.isAfter(now)) {
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "aps.solve.horizon-anchor 不允许晚于当前时刻（会画错“现在”线）: " + horizonAnchor);
+        }
+        return anchor.withOffsetSameInstant(ZoneOffset.UTC)
+                .withMinute(0).withSecond(0).withNano(0);
+    }
+
+    /**
+     * 读取窗口外已完成的 FROZEN 工序：用于把对应工序移出题面，并为剩余工序提供订单级下界。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @param horizonStart 求解 horizon 起点
+     * @return 订单主键到已完成工序集合与最大结束时间
+     */
+    private Map<UUID, CompletedFrozenOps> loadCompletedFrozenOperations(
+            UUID tenantId, UUID sandboxId, OffsetDateTime horizonStart) {
+        Map<UUID, Set<Integer>> indicesByOrder = new LinkedHashMap<>();
+        Map<UUID, OffsetDateTime> maxEndByOrder = new LinkedHashMap<>();
+        for (CompletedFrozenOperationRow row
+                : scheduleRepository.findFrozenOperationsBeforeWindow(tenantId, sandboxId, horizonStart)) {
+            if (row.orderId() == null) {
+                continue;
+            }
+            indicesByOrder.computeIfAbsent(row.orderId(), key -> new LinkedHashSet<>())
+                    .add(row.operationIndex());
+            if (row.maxEndTime() != null) {
+                maxEndByOrder.merge(row.orderId(), row.maxEndTime(),
+                        (left, right) -> left.isAfter(right) ? left : right);
+            }
+        }
+        Map<UUID, CompletedFrozenOps> result = new LinkedHashMap<>();
+        indicesByOrder.forEach((orderId, indices) -> result.put(
+                orderId, new CompletedFrozenOps(Set.copyOf(indices), maxEndByOrder.get(orderId))));
+        return result;
+    }
+
+    /**
+     * 是否启用预热初始解；请求参数 {@code warmStart} 缺省为 {@code true}。
+     *
+     * @param parameters 求解参数，可空
+     * @return 是否启用
+     */
+    private static boolean warmStartEnabled(Map<String, Object> parameters) {
+        Object value = parameters == null ? null : parameters.get(PARAM_WARM_START);
+        if (value instanceof Boolean flag) {
+            return flag;
+        }
+        if (value instanceof String text) {
+            return Boolean.parseBoolean(text.trim());
+        }
+        return true;
+    }
+
+    private static LocalDateTime toUtcLocal(OffsetDateTime time) {
+        return time == null ? null : time.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+    }
+
+    /**
+     * 读取当前租户唯一 ACTIVE 的约束 DSL 并映射为引擎约束快照。
+     *
+     * <p>不能“挑一条最像的”静默继续：同一租户存在多条 ACTIVE（不同 code）时，
+     * 本次求解到底用哪套权重无法确定，直接以 42200 拒绝并点名全部 code；
+     * 激活行里出现引擎无法忠实执行的规则/参数时同样以 42200 拒绝并点名规则，
+     * 避免用户以为约束已生效而排产实际未变化。</p>
+     *
+     * @return 唯一 ACTIVE 的 DSL 快照；没有 ACTIVE 时返回 null
+     */
+    private ActiveConstraintDsl loadActiveConstraintDsl() {
+        if (constraintDslMapper == null) {
+            return null;
+        }
+        List<ConstraintDsl> actives = constraintDslMapper.selectList(
+                Wrappers.<ConstraintDsl>lambdaQuery().eq(ConstraintDsl::getStatus, "ACTIVE"));
+        if (actives == null || actives.isEmpty()) {
+            return null;
+        }
+        if (actives.size() > 1) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "当前租户存在 " + actives.size() + " 条 ACTIVE 约束 DSL（code="
+                            + actives.stream().map(ConstraintDsl::getCode).sorted().toList()
+                            + "），无法确定本次求解使用哪一条；请只保留一条 ACTIVE 后重试");
+        }
+        ConstraintDsl active = actives.get(0);
+        List<ConstraintSpec> specs;
+        try {
+            specs = ConstraintDslEngineMapping.fromCompiledSpec(active.compiledSpecCopy());
+        } catch (IllegalArgumentException exception) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "ACTIVE 约束 DSL code=" + active.getCode() + " v" + active.getVersionNo()
+                            + " 的 compiled_spec 无法映射到求解引擎: " + exception.getMessage());
+        }
+        ConstraintDslEngineMapping.Analysis analysis = ConstraintDslEngineMapping.analyze(specs);
+        if (!analysis.supported()) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "ACTIVE 约束 DSL code=" + active.getCode() + " v" + active.getVersionNo()
+                            + " 含求解引擎不支持的规则/参数，已拒绝求解: "
+                            + String.join("；", analysis.problems()));
+        }
+        return new ActiveConstraintDsl(
+                (UUID) active.getId(),
+                active.getCode(),
+                active.getVersionNo() == null ? 0 : active.getVersionNo(),
+                active.getChecksum(),
+                specs,
+                analysis.weights());
+    }
+
+    /**
+     * 装载租户下全部换型矩阵条目；装配器单测可不注入该依赖。
+     *
+     * @return 矩阵条目；未注入服务时为空列表
+     */
+    private List<SetupMatrixEntry> loadSetupMatrix() {
+        return setupMatrixService == null ? List.of() : setupMatrixService.loadForSolver();
     }
 
     /**
@@ -317,6 +618,25 @@ public class ScheduleProblemAssembler {
                 TenantContext.getTenantId(), request.orderNos(), false);
         requireAllRequestedOrdersFound(request.orderNos(), requestedRows);
         requireNoCancelledOrderNos(request.orderNos(), requestedRows);
+    }
+
+    /**
+     * 计算本次求解实际覆盖的订单号：显式点名时取点名集合，缺省时取场景内全部已确认订单。
+     *
+     * <p>该结果写入 {@code solve_task.config.orderNos}，供后续增量重排判定“当前版本”的订单范围，
+     * 避免缺省增量把同一场景内其他客户/批次的订单纳入重排。</p>
+     *
+     * @param request 求解请求
+     * @return 实际参与求解的订单号（保持读取顺序并去重）
+     */
+    public List<String> effectiveOrderNos(SolveRequest request) {
+        boolean allOrders = request.orderNos() == null || request.orderNos().isEmpty();
+        return scheduleRepository.findOrders(TenantContext.getTenantId(), request.orderNos(), allOrders)
+                .stream()
+                .map(OrderSourceRow::orderNo)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
     }
 
     /**
@@ -460,6 +780,158 @@ public class ScheduleProblemAssembler {
         if (actives.isEmpty()) {
             throw new BusinessException(ErrorCode.UNPROCESSABLE_ENTITY,
                     "订单 " + order.orderNo() + " 的产品 " + order.materialCode() + " 没有 ACTIVE 工艺路线");
+        }
+        return actives.get(0);
+    }
+
+    /**
+     * 把订单行与工艺路线装配为求解器订单快照。
+     *
+     * @param order 订单来源行
+     * @param routing 已解析的工艺路线
+     * @param templateCache 工序模版缓存
+     * @param nodeCache 路线节点缓存
+     * @param resourceById 场景资源
+     * @return 订单快照
+     */
+    private SchedulingOrder toSchedulingOrder(
+            OrderSourceRow order, Routing routing, Map<String, OperationTemplate> templateCache,
+            Map<String, List<RoutingNode>> nodeCache, Map<UUID, SchedulingResource> resourceById) {
+        return toSchedulingOrder(order, routing, templateCache, nodeCache, resourceById, null);
+    }
+
+    private SchedulingOrder toSchedulingOrder(
+            OrderSourceRow order, Routing routing, Map<String, OperationTemplate> templateCache,
+            Map<String, List<RoutingNode>> nodeCache, Map<UUID, SchedulingResource> resourceById,
+            CompletedFrozenOps completed) {
+        UUID routingId = requireUuid(routing.getId());
+        List<RoutingNode> nodes = nodeCache.computeIfAbsent(
+                routingId.toString(), key -> routingNodeMapper.selectByRoutingId(routingId));
+        if (nodes.isEmpty()) {
+            throw new BusinessException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "订单 " + order.orderNo() + " 的 ACTIVE 工艺路线没有节点");
+        }
+        List<RoutingEdge> edges = routingEdgeMapper.selectByRoutingId(routingId);
+        Map<UUID, Integer> seqByNodeId = new HashMap<>();
+        for (RoutingNode node : nodes) {
+            seqByNodeId.put(requireUuid(node.getId()), node.getSeqNo());
+        }
+        Map<UUID, List<OperationDependency>> dependenciesByNode =
+                dependencies(edges, seqByNodeId, order.orderNo());
+        Set<Integer> completedIndices = completed == null
+                ? Set.of() : completed.operationIndices();
+        if (!completedIndices.isEmpty()) {
+            // 窗口外已完成的 FROZEN 工序视为已完工事实，移出题面；剩余工序不得早于其结束时间。
+            // 同时剔除指向已完工工序的前序依赖，否则依赖校验会报“前序工序不存在”；
+            // 剔空后求解侧按 operationIndex 串行补默认 FS，语义仍正确。
+            dependenciesByNode.replaceAll((nodeId, deps) -> deps.stream()
+                    .filter(dependency ->
+                            !completedIndices.contains(dependency.predecessorOperationIndex()))
+                    .toList());
+        }
+        List<SchedulingOperation> operations = new ArrayList<>();
+        for (RoutingNode node : nodes) {
+            if (completedIndices.contains(node.getSeqNo())) {
+                continue;
+            }
+            operations.add(toOperation(node, templateCache,
+                    dependenciesByNode.get(requireUuid(node.getId())), resourceById));
+        }
+        if (operations.isEmpty()) {
+            return null;
+        }
+        return new SchedulingOrder(
+                order.orderId(),
+                order.orderNo(),
+                order.materialCode(),
+                order.productFamily(),
+                order.qty(),
+                order.dueDate(),
+                order.priority(),
+                order.freezeStatus(),
+                routingId,
+                operations,
+                completed == null ? null : toUtcLocal(completed.maxEndTime()));
+    }
+
+    /**
+     * ATP 只读题面装配：在 CONFIRMED 订单题面上追加一个“假设订单”，全程不写库。
+     *
+     * <p>{@code includeConfirmedOrders=false} 时只装配假设订单与资源/日历，供 FAST 使用；
+     * {@code true} 时与主排产同口径（CONFIRMED 订单 + 冻结任务），供 ACCURATE 限时求解。</p>
+     *
+     * <p>无可用资源时不抛异常，返回 {@code atpOrder=null} 的探针，让调用方按
+     * {@code INFEASIBLE} 返回“无可用资源”，而不是把只读查询变成 500/422。</p>
+     *
+     * @param spec 假设订单描述
+     * @param horizonHours 资源日历展开 horizon 小时数
+     * @param includeConfirmedOrders 是否包含 CONFIRMED 订单题面
+     * @return 只读题面快照
+     */
+    public AtpSnapshot assembleAtp(AtpOrderSpec spec, int horizonHours, boolean includeConfirmedOrders) {
+        UUID tenantId = TenantContext.getTenantId();
+        UUID sandboxId = ScheduleProblem.DEFAULT_SANDBOX_ID;
+        OffsetDateTime base = resolveBaseTime();
+        OffsetDateTime horizonStart = base.minusHours(HORIZON_MARGIN_HOURS);
+        OffsetDateTime horizonEnd = horizonStart.plusHours(horizonHours);
+        List<SchedulingResource> resources = buildResources(horizonStart, horizonEnd);
+        if (resources.isEmpty()) {
+            return new AtpSnapshot(tenantId, sandboxId, new ScheduleProblem(
+                    tenantId.toString(), sandboxId, null, null, "FORWARD",
+                    List.of(), List.of(), List.of(), List.of(), List.of(),
+                    toUtcLocal(base), List.of()),
+                    null, horizonStart, horizonEnd, 0);
+        }
+        Map<UUID, SchedulingResource> resourceById = new LinkedHashMap<>();
+        for (SchedulingResource resource : resources) {
+            resourceById.put(resource.resourceId(), resource);
+        }
+        Map<String, OperationTemplate> templateCache = new HashMap<>();
+        Map<String, List<RoutingNode>> nodeCache = new HashMap<>();
+        List<SchedulingOrder> orders = new ArrayList<>();
+        int confirmedOrderCount = 0;
+        if (includeConfirmedOrders) {
+            for (OrderSourceRow row : scheduleRepository.findOrders(tenantId, null, true)) {
+                if (spec.orderNo() != null && spec.orderNo().equals(row.orderNo())) {
+                    continue;
+                }
+                orders.add(toSchedulingOrder(row, resolveRouting(row), templateCache, nodeCache, resourceById));
+                confirmedOrderCount++;
+            }
+        }
+        Routing routing = resolveAtpRouting(spec);
+        SchedulingOrder atpOrder = toSchedulingOrder(
+                new OrderSourceRow(spec.orderId(), spec.orderNo(), null, spec.materialCode(),
+                        spec.productFamily(), spec.qty(), spec.dueDate(), spec.priority(),
+                        "UNFROZEN", spec.routingId(), "ATP"),
+                routing, templateCache, nodeCache, resourceById);
+        orders.add(atpOrder);
+        List<TaskAssignment> frozenAssignments = includeConfirmedOrders
+                ? buildFrozenAssignments(scheduleRepository.findFrozenTasks(
+                        tenantId, sandboxId, horizonStart, horizonEnd), false)
+                : List.of();
+        ScheduleProblem problem = new ScheduleProblem(
+                tenantId.toString(), sandboxId, null, null, "FORWARD",
+                orders, resources, frozenAssignments, List.of(), loadSetupMatrix(),
+                toUtcLocal(base), List.of());
+        return new AtpSnapshot(tenantId, sandboxId, problem, atpOrder,
+                horizonStart, horizonEnd, confirmedOrderCount);
+    }
+
+    private Routing resolveAtpRouting(AtpOrderSpec spec) {
+        if (spec.routingId() != null) {
+            Routing routing = routingMapper.selectById(spec.routingId());
+            if (routing != null) {
+                return routing;
+            }
+        }
+        List<Routing> actives = routingMapper.selectPageByFilter(
+                new Page<>(1, ROUTING_PAGE_SIZE), spec.materialCode(), null, "ACTIVE",
+                "effective_date", "DESC")
+                .getRecords();
+        if (actives.isEmpty()) {
+            throw new BusinessException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "物料 " + spec.materialCode() + " 没有 ACTIVE 工艺路线，无法预估交期");
         }
         return actives.get(0);
     }
@@ -727,7 +1199,7 @@ public class ScheduleProblemAssembler {
                 new Page<>(1, CALENDAR_PAGE_SIZE), null, "FACTORY", null, null);
         return calendars.stream()
                 .filter(calendar -> calendar.getEffectiveFrom() == null
-                        || !calendar.getEffectiveFrom().isAfter(LocalDate.now(ZoneOffset.UTC)))
+                        || !calendar.getEffectiveFrom().isAfter(LocalDate.now(businessZone)))
                 .max(Comparator.comparing(calendar -> calendar.getCalendarVersion() == null
                         ? 0 : calendar.getCalendarVersion()))
                 .orElse(null);
@@ -746,11 +1218,11 @@ public class ScheduleProblemAssembler {
             return List.of();
         }
         if (calendar.getEffectiveFrom() != null
-                && calendar.getEffectiveFrom().isAfter(to.withOffsetSameInstant(ZoneOffset.UTC).toLocalDate())) {
+                && calendar.getEffectiveFrom().isAfter(to.atZoneSameInstant(businessZone).toLocalDate())) {
             return List.of();
         }
-        LocalDate cursor = from.withOffsetSameInstant(ZoneOffset.UTC).toLocalDate();
-        LocalDate last = to.withOffsetSameInstant(ZoneOffset.UTC).toLocalDate();
+        LocalDate cursor = from.atZoneSameInstant(businessZone).toLocalDate();
+        LocalDate last = to.atZoneSameInstant(businessZone).toLocalDate();
         if (calendar.getEffectiveFrom() != null && calendar.getEffectiveFrom().isAfter(cursor)) {
             cursor = calendar.getEffectiveFrom();
         }
@@ -781,7 +1253,8 @@ public class ScheduleProblemAssembler {
                 LocalTime startTime = parseTime(shift.get("startTime"));
                 LocalDateTime start = date.atTime(startTime);
                 LocalDateTime end = shiftEnd(date, startTime, shift.get("endTime"));
-                addWindow(windows, start.atOffset(ZoneOffset.UTC), end.atOffset(ZoneOffset.UTC), from, to);
+                addWindow(windows, start.atZone(businessZone).toOffsetDateTime(),
+                        end.atZone(businessZone).toOffsetDateTime(), from, to);
             }
         }
         windows.sort(Comparator.comparing(AvailabilityWindow::start));
@@ -893,15 +1366,48 @@ public class ScheduleProblemAssembler {
     }
 
     /**
+     * 本次求解采用的 ACTIVE 约束 DSL 快照。
+     *
+     * @param dslId DSL 行主键
+     * @param code DSL 标识
+     * @param versionNo 版本号
+     * @param checksum YAML 校验和
+     * @param constraints 映射后的引擎约束
+     * @param weights 8 条规则权重（合计 100）
+     */
+    public record ActiveConstraintDsl(
+            UUID dslId,
+            String code,
+            int versionNo,
+            String checksum,
+            List<ConstraintSpec> constraints,
+            Map<String, Integer> weights) {
+    }
+
+    /**
      * 装配结果。
      *
      * @param tenantId 租户标识
      * @param sandboxId 场景标识
      * @param problem 求解问题
      * @param orderIds 参与订单主键
+     * @param activeConstraintDsl 本次采用的 ACTIVE 约束 DSL；无则为 null
      */
     public record AssembledProblem(UUID tenantId, UUID sandboxId, ScheduleProblem problem,
-                                   List<UUID> orderIds) {
+                                   List<UUID> orderIds, ActiveConstraintDsl activeConstraintDsl) {
+
+        /**
+         * 兼容纯硬约束装配的单测构造。
+         *
+         * @param tenantId 租户标识
+         * @param sandboxId 场景标识
+         * @param problem 求解问题
+         * @param orderIds 参与订单主键
+         */
+        public AssembledProblem(UUID tenantId, UUID sandboxId, ScheduleProblem problem,
+                                List<UUID> orderIds) {
+            this(tenantId, sandboxId, problem, orderIds, null);
+        }
 
         /**
          * 本次场景应参与排产的任务数（= 装配问题内全部订单的工序数之和）。
@@ -921,5 +1427,36 @@ public class ScheduleProblemAssembler {
             }
             return count;
         }
+
+        /**
+         * 本次实际请求重排的订单任务数（不含仅作为约束参与装配的 pinned 订单）。
+         *
+         * <p>增量重排时 {@code problem.orders()} 同时包含重排订单与 pinned 订单，
+         * 而落库只覆盖 {@code orderIds} 对应的订单；因此写入口径必须与 orderIds 对齐。</p>
+         *
+         * @return 可写入任务数
+         */
+        public int expectedWriteTaskCount() {
+            if (problem == null) {
+                return 0;
+            }
+            Set<UUID> requestedOrderIds = new HashSet<>(orderIds);
+            int count = 0;
+            for (SchedulingOrder order : problem.orders()) {
+                if (requestedOrderIds.contains(order.orderId())) {
+                    count += order.operations().size();
+                }
+            }
+            return count;
+        }
+    }
+
+    /**
+     * 订单在求解窗口起点之前已完成的 FROZEN 工序。
+     *
+     * @param operationIndices 已完工工序序号（这些工序从题面移除）
+     * @param maxEndTime 已完成工序的最大结束时间，作为剩余工序的硬下界
+     */
+    private record CompletedFrozenOps(Set<Integer> operationIndices, OffsetDateTime maxEndTime) {
     }
 }

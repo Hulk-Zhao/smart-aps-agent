@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -87,13 +88,23 @@ public class ScheduleRepository {
     }
 
     /**
-     * 查询场景内冻结任务。
+     * 查询与求解窗口相交的冻结/锁定任务。
+     *
+     * <p><b>窗口口径</b>（与 {@link #findOrdersWithExistingTasks} 完全一致）：只读取
+     * {@code end_time > horizonStart} 且 {@code coalesce(setup_start_time, start_time) < horizonEnd}
+     * 的既有任务，即“与 horizon 相交”。窗口外的既有任务不影响本次窗口内的排产，
+     * 不应作为 pinned 项进入题面——否则会出现“pinned 在窗口起点之前、日历必然违反”的
+     * 结构性不可解（{@code calendarAvailability}）。窗口外且已结束的 FROZEN 前序所代表的
+     * 先后关系，改由订单级下界 {@link #findFrozenOperationsBeforeWindow} 表达。</p>
      *
      * @param tenantId 租户标识
      * @param sandboxId 场景标识
-     * @return 冻结任务
+     * @param horizonStart 求解 horizon 起点
+     * @param horizonEnd 求解 horizon 终点
+     * @return 与窗口相交的冻结任务
      */
-    public List<FrozenTaskRow> findFrozenTasks(UUID tenantId, UUID sandboxId) {
+    public List<FrozenTaskRow> findFrozenTasks(
+            UUID tenantId, UUID sandboxId, OffsetDateTime horizonStart, OffsetDateTime horizonEnd) {
         String sql = """
                 SELECT t.id, t.order_id, o.order_no, t.operation_index, t.operation_template_id,
                        t.resource_id, r.code AS resource_code, t.secondary_resource_ids::text AS secondary_json,
@@ -105,6 +116,8 @@ public class ScheduleRepository {
                 LEFT JOIN resource r ON r.id = t.resource_id
                 WHERE t.tenant_id = ? AND t.sandbox_id = ? AND t.deleted = false
                   AND (t.status = 'FROZEN' OR t.lock_type <> 'NONE')
+                  AND t.end_time > ?
+                  AND coalesce(t.setup_start_time, t.start_time) < ?
                 ORDER BY t.start_time, t.id
                 """;
         return jdbcTemplate.query(sql, (rs, rowNum) -> new FrozenTaskRow(
@@ -127,7 +140,41 @@ public class ScheduleRepository {
                 rs.getObject("locked_from", OffsetDateTime.class),
                 rs.getObject("locked_to", OffsetDateTime.class),
                 parseUuidArray(rs.getString("locked_json")),
-                rs.getObject("created_at", OffsetDateTime.class)), tenantId, sandboxId);
+                rs.getObject("created_at", OffsetDateTime.class)),
+                tenantId, sandboxId, horizonStart, horizonEnd);
+    }
+
+    /**
+     * 查询“落在求解窗口起点之前”的 FROZEN 工序及其结束时间（按订单 + 工序）。
+     *
+     * <p>{@link #findFrozenTasks} 按窗口过滤后，这些 FROZEN 任务不会作为 pinned 项进入题面；
+     * 但它们代表已完成的工序：装配侧据此把对应工序移出题面，并用同一订单的最大结束时间
+     * 作为剩余工序的硬下界，避免求解器把后续工序排到已完工工序之前（0hard 但现实不可执行）。</p>
+     *
+     * <p>口径：仅取 {@code status='FROZEN'} 或 {@code lock_type='FROZEN'}（真正不可移动的完成事实），
+     * 且 {@code end_time <= horizonStart}（与窗口无交集）。</p>
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @param horizonStart 求解 horizon 起点
+     * @return 窗口外已完成工序行
+     */
+    public List<CompletedFrozenOperationRow> findFrozenOperationsBeforeWindow(
+            UUID tenantId, UUID sandboxId, OffsetDateTime horizonStart) {
+        String sql = """
+                SELECT t.order_id, t.operation_index, MAX(t.end_time) AS max_end_time
+                FROM task t
+                WHERE t.tenant_id = ? AND t.sandbox_id = ? AND t.deleted = false
+                  AND (t.status = 'FROZEN' OR t.lock_type = 'FROZEN')
+                  AND t.end_time <= ?
+                GROUP BY t.order_id, t.operation_index
+                ORDER BY t.order_id, t.operation_index
+                """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new CompletedFrozenOperationRow(
+                rs.getObject("order_id", UUID.class),
+                rs.getInt("operation_index"),
+                rs.getObject("max_end_time", OffsetDateTime.class)),
+                tenantId, sandboxId, horizonStart);
     }
 
     /**
@@ -185,6 +232,60 @@ public class ScheduleRepository {
     }
 
     /**
+     * 读取场景内已有任务、但不属于本次求解范围的订单。
+     *
+     * <p>这些订单的既有任务是本次求解的“既有占用”：装配时必须把它们作为不可移动的
+     * pinned 项一起装入题面，否则求解器看不见别的订单已占用的资源与时段，会排出与
+     * 库内既有任务真实重叠的结果（C21 §24.3）。</p>
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @param excludeOrderIds 本次求解的订单主键集合，可空
+     * @param horizonStart 求解 horizon 起点（早于该时点结束的任务不会与新排任务冲突）
+     * @param horizonEnd 求解 horizon 终点（起点晚于该时点的任务不会与新排任务冲突）
+     * @return 订单读取行，按交期、订单号升序
+     */
+    public List<OrderSourceRow> findOrdersWithExistingTasks(
+            UUID tenantId, UUID sandboxId, List<UUID> excludeOrderIds,
+            OffsetDateTime horizonStart, OffsetDateTime horizonEnd) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT DISTINCT o.id, o.order_no, o.product_id, m.code AS material_code,
+                       mc.code AS product_family, o.qty, o.due_date,
+                       o.priority, o.freeze_status, o.routing_id, o.status
+                FROM task t
+                JOIN orders o ON o.id = t.order_id
+                JOIN material m ON m.id = o.product_id
+                LEFT JOIN material_category mc ON mc.id = m.category_id
+                WHERE t.tenant_id = ? AND t.sandbox_id = ? AND t.deleted = false
+                  AND o.tenant_id = ? AND o.deleted = false
+                  AND t.end_time > ? AND coalesce(t.setup_start_time, t.start_time) < ?
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        args.add(sandboxId);
+        args.add(tenantId);
+        args.add(horizonStart);
+        args.add(horizonEnd);
+        if (excludeOrderIds != null && !excludeOrderIds.isEmpty()) {
+            sql.append(" AND o.id NOT IN (").append(placeholders(excludeOrderIds.size())).append(')');
+            args.addAll(excludeOrderIds);
+        }
+        sql.append(" ORDER BY o.due_date, o.order_no");
+        return jdbcTemplate.query(sql.toString(), (rs, rowNum) -> new OrderSourceRow(
+                rs.getObject("id", UUID.class),
+                rs.getString("order_no"),
+                rs.getObject("product_id", UUID.class),
+                rs.getString("material_code"),
+                rs.getString("product_family"),
+                rs.getBigDecimal("qty"),
+                rs.getObject("due_date", LocalDate.class),
+                rs.getString("priority"),
+                rs.getString("freeze_status"),
+                rs.getObject("routing_id", UUID.class),
+                rs.getString("status")), args.toArray());
+    }
+
+    /**
      * 创建处于 RUNNING 的求解任务。
      *
      * @param tenantId 租户标识
@@ -239,16 +340,32 @@ public class ScheduleRepository {
      * @param orderIds 参与订单主键
      * @return 被删除的任务主键，用于清理指向它们的归因
      */
-    public List<Long> deleteTasks(UUID tenantId, UUID sandboxId, List<UUID> orderIds) {
-        if (orderIds.isEmpty()) {
+    public List<Long> deleteTasks(UUID tenantId, UUID sandboxId,
+                                  Map<UUID, Set<Integer>> operationIndicesByOrder) {
+        if (operationIndicesByOrder.isEmpty()) {
             return List.of();
         }
-        String sql = "DELETE FROM task WHERE tenant_id = ? AND sandbox_id = ? AND order_id IN ("
-                + placeholders(orderIds.size()) + ") RETURNING id";
+        StringBuilder pairs = new StringBuilder();
         List<Object> args = new ArrayList<>();
         args.add(tenantId);
         args.add(sandboxId);
-        args.addAll(orderIds);
+        for (Map.Entry<UUID, Set<Integer>> entry : operationIndicesByOrder.entrySet()) {
+            for (Integer operationIndex : entry.getValue()) {
+                if (!pairs.isEmpty()) {
+                    pairs.append(", ");
+                }
+                pairs.append("(?, ?)");
+                args.add(entry.getKey());
+                args.add(operationIndex);
+            }
+        }
+        if (pairs.isEmpty()) {
+            return List.of();
+        }
+        // 只删除本次题面内的 (订单, 工序)，窗口外已完工的 FROZEN 工序必须原样保留，
+        // 它们是真实执行记录；按订单整删会把这类记录一并清掉。
+        String sql = "DELETE FROM task WHERE tenant_id = ? AND sandbox_id = ?"
+                + " AND (order_id, operation_index) IN (" + pairs + ") RETURNING id";
         return jdbcTemplate.queryForList(sql, Long.class, args.toArray());
     }
 
@@ -504,6 +621,8 @@ public class ScheduleRepository {
                                                   OffsetDateTime from, OffsetDateTime to) {
         StringBuilder sql = new StringBuilder("""
                 SELECT o.id AS order_id, o.order_no, m.code AS material_code,
+                       CASE WHEN m.tenant_id = ? AND m.deleted = false THEN m.name END AS material_name,
+                       CASE WHEN m.tenant_id = ? AND m.deleted = false THEN m.spec END AS material_spec,
                        mc.code AS product_family, o.due_date, o.priority, o.freeze_status,
                        o.status AS order_status,
                        t.id AS task_id, t.operation_index, ot.name AS operation_name,
@@ -520,6 +639,8 @@ public class ScheduleRepository {
                 WHERE o.tenant_id = ? AND o.deleted = false
                 """);
         List<Object> args = new ArrayList<>();
+        args.add(tenantId);
+        args.add(tenantId);
         args.add(sandboxId);
         args.add(to);
         args.add(from);
@@ -533,6 +654,8 @@ public class ScheduleRepository {
                 rs.getObject("order_id", UUID.class),
                 rs.getString("order_no"),
                 rs.getString("material_code"),
+                rs.getString("material_name"),
+                rs.getString("material_spec"),
                 rs.getString("product_family"),
                 rs.getObject("due_date", LocalDate.class),
                 rs.getString("priority"),
@@ -652,6 +775,17 @@ public class ScheduleRepository {
     public record OrderSourceRow(UUID orderId, String orderNo, UUID productId, String materialCode,
                                  String productFamily, BigDecimal qty, LocalDate dueDate,
                                  String priority, String freezeStatus, UUID routingId, String status) {
+    }
+
+    /**
+     * 窗口外已完成 FROZEN 工序行。
+     *
+     * @param orderId 订单主键
+     * @param operationIndex 工序序号
+     * @param maxEndTime 该工序的最大结束时间
+     */
+    public record CompletedFrozenOperationRow(
+            UUID orderId, int operationIndex, OffsetDateTime maxEndTime) {
     }
 
     /**
@@ -775,6 +909,8 @@ public class ScheduleRepository {
      * @param orderId 订单主键
      * @param orderNo 订单号
      * @param materialCode 产品物料编码
+     * @param materialName 产品物料名称（C50），物料缺失/已软删除时为空
+     * @param materialSpec 产品物料规格（C50），物料缺失/已软删除或规格为空时为空
      * @param productFamily 产品族（物料分类编码），可空
      * @param dueDate 交期日
      * @param priority 优先级
@@ -795,6 +931,7 @@ public class ScheduleRepository {
      * @param version 乐观锁版本，可空
      */
     public record OrderGanttRow(UUID orderId, String orderNo, String materialCode,
+                                String materialName, String materialSpec,
                                 String productFamily, LocalDate dueDate, String priority,
                                 String freezeStatus, String orderStatus, Long taskId,
                                 Integer operationIndex, String operationName, String resourceCode,

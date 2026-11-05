@@ -15,6 +15,8 @@ import net.sf.jsqlparser.expression.StringValue;
  *
  * <p>忽略表：{@code tenant} 无 tenant_id 列；{@code role_permission} / {@code user_role} 为
  * RBAC 关联表，DDL 未设 tenant_id，需显式忽略，避免 SQL 解析后被追加不存在的列。</p>
+ *
+ * <p>开关 {@code aps.tenant.filter.enabled=false} 时忽略所有表，保证关闭态下没有任何表残留谓词。</p>
  */
 public class ApsTenantLineHandler implements TenantLineHandler {
 
@@ -28,6 +30,17 @@ public class ApsTenantLineHandler implements TenantLineHandler {
      */
     public static final String TENANT_ID_COLUMN = "tenant_id";
 
+    private final ApsTenantFilterProperties properties;
+
+    /**
+     * 构造 handler。
+     *
+     * @param properties 租户过滤开关配置
+     */
+    public ApsTenantLineHandler(ApsTenantFilterProperties properties) {
+        this.properties = properties;
+    }
+
     @Override
     public Expression getTenantId() {
         return new StringValue(TenantContext.getTenantId().toString());
@@ -40,6 +53,9 @@ public class ApsTenantLineHandler implements TenantLineHandler {
 
     @Override
     public boolean ignoreTable(String tableName) {
+        if (!properties.isEnabled()) {
+            return true;
+        }
         return tableName != null && IGNORED_TABLES.contains(tableName.toLowerCase(Locale.ROOT));
     }
 }

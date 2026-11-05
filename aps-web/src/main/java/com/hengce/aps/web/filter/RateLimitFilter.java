@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hengce.aps.common.api.Result;
 import com.hengce.aps.common.constant.ApsConstants;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.web.config.ApiSecurityProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -17,6 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -24,7 +26,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * M2 限流过滤器（C27）：单实例固定窗口计数，默认 100 req/min。
  *
  * <p>计数维度为 {@code tenantId + 调用方指纹}（API Key 哈希或 Bearer 哈希，缺失时用远端地址）。
- * 认证失败不消耗额度（本过滤器排在认证过滤器之后）。多实例部署需替换为 Redis 实现，接口语义不变。
+ * 租户取自认证阶段解析出的 {@link TenantContext}，<b>不信任客户端自报的 {@code X-Tenant-Id}</b>，
+ * 否则换一个请求头即可获得新的限流额度。认证失败不消耗额度（本过滤器排在认证过滤器之后）。
+ * 多实例部署需替换为 Redis 实现，接口语义不变。
  * 与认证默认一致：未显式配置 {@code aps.security.mode} 时按 {@code prod} 处理，限流生效。</p>
  */
 @Component
@@ -101,10 +105,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     private String resolveKey(HttpServletRequest request) {
-        String tenant = request.getHeader(ApsConstants.HEADER_TENANT_ID);
-        if (tenant == null || tenant.isBlank()) {
-            tenant = ApsConstants.DEFAULT_TENANT_ID;
-        }
+        // 服务端可信来源：认证过滤器已把 JWT/dev 身份写入 TenantContext；
+        // 未认证路径（无租户上下文）回落到默认租户，绝不读取客户端自报的 X-Tenant-Id。
+        UUID tenantId = TenantContext.getTenantId();
+        String tenant = tenantId == null ? ApsConstants.DEFAULT_TENANT_ID : tenantId.toString();
         String apiKey = request.getHeader(API_KEY_HEADER);
         String authorization = request.getHeader(AUTHORIZATION_HEADER);
         String caller;

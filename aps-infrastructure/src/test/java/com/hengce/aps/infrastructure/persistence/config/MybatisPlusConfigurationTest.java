@@ -40,7 +40,8 @@ class MybatisPlusConfigurationTest {
 
     @Test
     void shouldAssembleInterceptorsInOrder() {
-        MybatisPlusInterceptor interceptor = new MybatisPlusConfiguration().mybatisPlusInterceptor();
+        MybatisPlusInterceptor interceptor =
+                new MybatisPlusConfiguration(new ApsTenantFilterProperties()).mybatisPlusInterceptor();
         List<InnerInterceptor> innerInterceptors = interceptor.getInterceptors();
 
         assertEquals(3, innerInterceptors.size());

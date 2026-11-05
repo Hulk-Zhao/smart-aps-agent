@@ -21,7 +21,7 @@ class ScheduleProblemAssemblerCalendarTest {
      * 被测装配器：展开逻辑不依赖任何 Mapper。
      */
     private final ScheduleProblemAssembler assembler = new ScheduleProblemAssembler(
-            null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, "Asia/Shanghai");
 
     @Test
     void expandSevenDayShiftsShouldMergeIntoOneWindow() {
@@ -77,6 +77,22 @@ class ScheduleProblemAssemblerCalendarTest {
     }
 
     /**
+     * 回归：东八区 08:00 早班必须落在本地 08:00，而不是被当成 UTC 后落到本地 16:00。
+     */
+    @Test
+    void expandShiftShouldLandOnBusinessLocalTime() {
+        Calendar calendar = calendar("08:00", "12:00", List.of(1, 2, 3, 4, 5));
+        OffsetDateTime from = OffsetDateTime.parse("2026-11-04T00:00:00+08:00");
+        OffsetDateTime to = OffsetDateTime.parse("2026-11-05T00:00:00+08:00");
+        OffsetDateTime expectedStart = OffsetDateTime.parse("2026-11-04T08:00:00+08:00");
+
+        List<AvailabilityWindow> windows = assembler.expand(calendar, from, to);
+
+        assertEquals(1, windows.size());
+        assertEquals(expectedStart, windows.get(0).start().withOffsetSameInstant(expectedStart.getOffset()));
+    }
+
+    /**
      * 确保 UTC 偏移参与断言，避免依赖机器时区。
      */
     @Test
@@ -88,7 +104,7 @@ class ScheduleProblemAssemblerCalendarTest {
         List<AvailabilityWindow> windows = assembler.expand(calendar, from, to);
 
         assertEquals(1, windows.size());
-        assertEquals(from.withOffsetSameInstant(ZoneOffset.UTC), windows.get(0).start());
-        assertEquals(to.withOffsetSameInstant(ZoneOffset.UTC), windows.get(0).end());
+        assertEquals(from.toInstant(), windows.get(0).start().toInstant());
+        assertEquals(to.toInstant(), windows.get(0).end().toInstant());
     }
 }

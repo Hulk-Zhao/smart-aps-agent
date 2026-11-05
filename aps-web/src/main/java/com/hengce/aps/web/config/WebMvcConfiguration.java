@@ -59,7 +59,9 @@ public class WebMvcConfiguration implements WebMvcConfigurer {
                 // C33 §25.5：下发要求重复 Idempotency-Key 返回首次 dispatchId（200），
                 // 因此由 PlanDispatchService 以确定性 dispatchId + outbox 唯一索引实现幂等，
                 // 不走全局拦截器的「重复 key → 40900」语义。
-                .excludePathPatterns("/api/v1/plans/*/dispatch");
+                // C45：Agent 事件上报要求重复 Idempotency-Key 返回既有审计行（duplicate=true），
+                // 由 AgentEventService 在 audit_log 咨询锁保护下实现，同样不走 40900。
+                .excludePathPatterns("/api/v1/plans/*/dispatch", "/api/v1/agent/events");
     }
 
     /**

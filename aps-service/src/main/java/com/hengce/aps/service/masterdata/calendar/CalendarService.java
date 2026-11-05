@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.apache.ibatis.exceptions.PersistenceException;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
@@ -62,18 +63,24 @@ public class CalendarService {
 
     private final ResourceGroupMapper resourceGroupMapper;
 
+    private final String timezone;
+
     /**
      * 构造服务。
      *
      * @param calendarMapper 工作日历 Mapper
      * @param resourceMapper 资源 Mapper，仅用于只读引用校验
      * @param resourceGroupMapper 资源组 Mapper，仅用于只读引用校验
+     * @param timezone IANA 时区；复用既有 {@code aps.business.time-zone} 口径
      */
     public CalendarService(CalendarMapper calendarMapper, ResourceMapper resourceMapper,
-                           ResourceGroupMapper resourceGroupMapper) {
+                           ResourceGroupMapper resourceGroupMapper,
+                           @Value("${aps.calendar.timezone:${aps.business.time-zone:Asia/Shanghai}}")
+                           String timezone) {
         this.calendarMapper = calendarMapper;
         this.resourceMapper = resourceMapper;
         this.resourceGroupMapper = resourceGroupMapper;
+        this.timezone = timezone == null || timezone.isBlank() ? "Asia/Shanghai" : timezone;
     }
 
     /**
@@ -380,6 +387,7 @@ public class CalendarService {
                 entity.getResourceGroupId(),
                 entity.getEffectiveFrom(),
                 entity.getEffectiveTo(),
+                timezone,
                 entity.getShifts(),
                 entity.getHolidays(),
                 entity.getVersion());

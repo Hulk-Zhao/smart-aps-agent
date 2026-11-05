@@ -24,7 +24,7 @@ class ApsTenantLineHandlerTest {
 
     @Test
     void shouldReturnDefaultTenantExpression() {
-        ApsTenantLineHandler handler = new ApsTenantLineHandler();
+        ApsTenantLineHandler handler = new ApsTenantLineHandler(new ApsTenantFilterProperties());
 
         StringValue value = (StringValue) handler.getTenantId();
 
@@ -34,7 +34,7 @@ class ApsTenantLineHandlerTest {
     @Test
     void shouldReturnExplicitTenantExpression() {
         TenantContext.setTenantId(OTHER_TENANT);
-        ApsTenantLineHandler handler = new ApsTenantLineHandler();
+        ApsTenantLineHandler handler = new ApsTenantLineHandler(new ApsTenantFilterProperties());
 
         StringValue value = (StringValue) handler.getTenantId();
 
@@ -43,7 +43,7 @@ class ApsTenantLineHandlerTest {
 
     @Test
     void shouldIgnoreTablesWithoutTenantColumn() {
-        ApsTenantLineHandler handler = new ApsTenantLineHandler();
+        ApsTenantLineHandler handler = new ApsTenantLineHandler(new ApsTenantFilterProperties());
 
         assertTrue(handler.ignoreTable("tenant"));
         assertTrue(handler.ignoreTable("ROLE_PERMISSION"));
@@ -51,5 +51,23 @@ class ApsTenantLineHandlerTest {
         assertFalse(handler.ignoreTable("orders"));
         assertFalse(handler.ignoreTable(null));
         assertEquals("tenant_id", handler.getTenantIdColumn());
+    }
+
+    @Test
+    void shouldIgnoreAllTablesWhenFilterDisabled() {
+        ApsTenantFilterProperties properties = new ApsTenantFilterProperties();
+        properties.setEnabled(false);
+        ApsTenantLineHandler handler = new ApsTenantLineHandler(properties);
+
+        assertTrue(handler.ignoreTable("orders"));
+        assertTrue(handler.ignoreTable("material"));
+        assertTrue(handler.ignoreTable("tenant"));
+        assertTrue(handler.ignoreTable("ROLE_PERMISSION"));
+        assertTrue(handler.ignoreTable(null));
+    }
+
+    @Test
+    void shouldKeepFilterEnabledByDefault() {
+        assertTrue(new ApsTenantFilterProperties().isEnabled());
     }
 }

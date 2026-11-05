@@ -146,7 +146,8 @@ public class SolveProgressWebSocketAuthInterceptor implements ChannelInterceptor
      * @param attributes 会话属性
      * @return 认证主体；非本鉴权体系返回 null
      */
-    public static StompAuthPrincipal principalOf(java.security.Principal user, java.util.Map<String, Object> attributes) {
+    public static StompAuthPrincipal principalOf(java.security.Principal user,
+                                                 java.util.Map<String, Object> attributes) {
         if (user instanceof StompAuthPrincipal principal) {
             return principal;
         }

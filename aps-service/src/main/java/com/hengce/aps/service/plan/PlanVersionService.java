@@ -73,7 +73,19 @@ public class PlanVersionService {
         if (STATUS_ARCHIVED.equals(row.status())) {
             throw new BizException(ErrorCode.STATE_CONFLICT, "已归档的计划版本不可发布");
         }
-        List<Map<String, Object>> tasks = planVersionRepository.listTasksForSnapshot(tenantId, row.sandboxId());
+        // 硬防护：增量求解异步且完成时会重建任务，未终态期间发布会把旧任务固化进正式版本。
+        List<PlanVersionRepository.ActiveSolveTask> activeSolveTasks =
+                planVersionRepository.findActiveSolveTasks(tenantId, row.sandboxId());
+        if (!activeSolveTasks.isEmpty()) {
+            String running = String.join("、", activeSolveTasks.stream()
+                    .map(task -> "solveTaskId=" + task.solveTaskId() + "/" + task.status())
+                    .toList());
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "场景内存在未完成的求解任务（" + running + "），发布被拒绝；请等待求解结束后再发布");
+        }
+        List<String> scopeOrderNos = readScopeOrderNos(row.snapshotJson());
+        List<Map<String, Object>> tasks = planVersionRepository
+                .listTasksForSnapshot(tenantId, row.sandboxId(), scopeOrderNos);
         String snapshot = toJson(buildSnapshot(row, tasks));
         UUID operator = AuditContext.getCurrentUserId();
         String effectiveApprover = trimToNull(approver);
@@ -86,7 +98,8 @@ public class PlanVersionService {
             }
             throw new BizException(ErrorCode.STATE_CONFLICT, "计划版本状态已变化，请刷新后重试");
         }
-        int affected = planVersionRepository.backfillTasks(tenantId, row.sandboxId(), planId);
+        int affected = planVersionRepository.backfillTasks(tenantId, row.sandboxId(), planId,
+                scopeOrderNos);
         PlanVersionRow published = requireVersion(tenantId, planId);
         return toAction(published, null, affected);
     }
@@ -175,6 +188,27 @@ public class PlanVersionService {
             return OBJECT_MAPPER.writeValueAsString(value);
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("计划快照序列化失败", exception);
+        }
+    }
+
+    /**
+     * 读取 DRAFT 快照里的求解范围；无范围标记时返回空列表，表示按场景全量发布。
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> readScopeOrderNos(String snapshotJson) {
+        if (snapshotJson == null || snapshotJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            Map<String, Object> snapshot = OBJECT_MAPPER.readValue(snapshotJson, Map.class);
+            Object scope = snapshot.get("scopeOrderNos");
+            if (!(scope instanceof List<?> list)) {
+                return List.of();
+            }
+            return list.stream().filter(value -> value instanceof String)
+                    .map(value -> (String) value).toList();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("计划快照解析失败", exception);
         }
     }
 

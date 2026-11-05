@@ -1,9 +1,11 @@
 package com.hengce.aps.service.audit;
 
 /**
- * 审计事件类型闭集（C31 / 25.2.1），共 16 个。
+ * 审计事件类型闭集（C31 / 25.2.1），共 17 个。
  *
- * <p>前 3 个为 M2 既有动作，名称不得修改；新增动作只对 M3 新行为启用，不追溯补写历史动作。</p>
+ * <p>前 3 个为 M2 既有动作，名称不得修改；新增动作只对 M3 新行为启用，不追溯补写历史动作。
+ * {@code AGENT_EVENT_REPORTED} 为 C45 新增，复用 {@code audit_log} 承载 Agent 事件，
+ * 资源类型闭集由 C45 扩展为 {@code USER/ROLE/ORDER/PLAN/SANDBOX/TASK/IMPORT/AGENT_EVENT}。</p>
  */
 public enum AuditEventType {
 
@@ -38,7 +40,9 @@ public enum AuditEventType {
     /** 导入执行落库成功。 */
     IMPORT_EXECUTED("IMPORT"),
     /** 任务调整（含 SPLIT/MERGE）。 */
-    TASK_ADJUSTED("TASK");
+    TASK_ADJUSTED("TASK"),
+    /** Agent 事件上报（C45 新增；resource_id 为幂等键）。 */
+    AGENT_EVENT_REPORTED("AGENT_EVENT");
 
     private final String resourceType;
 

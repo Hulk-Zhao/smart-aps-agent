@@ -36,7 +36,7 @@ class MrpSuggestionServiceTest {
     @BeforeEach
     void setUp() {
         mrpAnalysisService = mock(MrpAnalysisService.class);
-        service = new MrpSuggestionService(mrpAnalysisService);
+        service = new MrpSuggestionService(mrpAnalysisService, new MrpSuggestionCache(45));
     }
 
     @Test
@@ -49,11 +49,11 @@ class MrpSuggestionServiceTest {
         PageQuery pageQuery = new PageQuery();
         pageQuery.setSize(200);
 
-        PageResult<MrpAnalysisResponse.MrpShortage> result =
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> result =
                 service.suggest(new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), pageQuery, NOW);
 
         assertEquals(List.of("RM-0003", "RM-0004"),
-                result.items().stream().map(MrpAnalysisResponse.MrpShortage::materialCode).toList());
+                result.items().stream().map(MrpAnalysisResponse.MrpSuggestionView::materialCode).toList());
         assertEquals(2, result.total());
         assertEquals(1, result.page());
         assertEquals(200, result.size());
@@ -62,12 +62,13 @@ class MrpSuggestionServiceTest {
     @Test
     void keepsNegativeAvailableQtyAndShortageFormula() {
         MrpAnalysisResponse.MrpShortage shortage = new MrpAnalysisResponse.MrpShortage(
-                "RM-0001", "铝板", new BigDecimal("120.000000"), new BigDecimal("-30.000000"),
+                "RM-0001", "铝板", new BigDecimal("120.000000"), BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, new BigDecimal("-30.000000"),
                 new BigDecimal("120.000000"), NOW.plusDays(1), List.of("SO-001"),
-                NOW.minusDays(1), new BigDecimal("120.000000"), null);
+                NOW.minusDays(1), new BigDecimal("120.000000"), null, List.of(), null);
         stub(List.of(shortage));
 
-        PageResult<MrpAnalysisResponse.MrpShortage> result =
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> result =
                 service.suggest(new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), new PageQuery(), NOW);
 
         assertEquals(1, result.items().size());
@@ -82,11 +83,11 @@ class MrpSuggestionServiceTest {
                 item("RM-0001", NOW.plusDays(1)),
                 item("RM-0002", NOW.plusDays(1))));
 
-        PageResult<MrpAnalysisResponse.MrpShortage> result =
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> result =
                 service.suggest(new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), new PageQuery(), NOW);
 
         assertEquals(List.of("RM-0001", "RM-0002", "RM-0003"),
-                result.items().stream().map(MrpAnalysisResponse.MrpShortage::materialCode).toList());
+                result.items().stream().map(MrpAnalysisResponse.MrpSuggestionView::materialCode).toList());
     }
 
     @Test
@@ -99,7 +100,7 @@ class MrpSuggestionServiceTest {
         PageQuery tooLarge = new PageQuery();
         tooLarge.setSize(500);
 
-        PageResult<MrpAnalysisResponse.MrpShortage> clamped = service.suggest(
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> clamped = service.suggest(
                 new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), tooLarge, NOW);
         assertEquals(200, clamped.items().size(), "size 上限按契约截断为 200");
         assertEquals(200, clamped.size());
@@ -109,7 +110,7 @@ class MrpSuggestionServiceTest {
         PageQuery secondPage = new PageQuery();
         secondPage.setPage(2);
         secondPage.setSize(10);
-        PageResult<MrpAnalysisResponse.MrpShortage> page2 = service.suggest(
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> page2 = service.suggest(
                 new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), secondPage, NOW);
         assertEquals(10, page2.items().size());
         assertEquals("RM-0010", page2.items().get(0).materialCode());
@@ -120,7 +121,7 @@ class MrpSuggestionServiceTest {
     void defaultHorizonIs30Days() {
         stub(List.of(item("RM-0001", NOW.plusDays(29)), item("RM-0002", NOW.plusDays(31))));
 
-        PageResult<MrpAnalysisResponse.MrpShortage> result =
+        PageResult<MrpAnalysisResponse.MrpSuggestionView> result =
                 service.suggest(new MrpSuggestionQuery(SANDBOX_ID, List.of(), null), new PageQuery(), NOW);
 
         assertEquals(1, result.items().size());
@@ -168,8 +169,9 @@ class MrpSuggestionServiceTest {
     }
 
     private MrpAnalysisResponse.MrpShortage item(String materialCode, OffsetDateTime earliestRequiredAt) {
-        return new MrpAnalysisResponse.MrpShortage(materialCode, materialCode, BigDecimal.ONE, BigDecimal.ZERO,
+        return new MrpAnalysisResponse.MrpShortage(materialCode, materialCode, BigDecimal.ONE,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                 BigDecimal.ONE, earliestRequiredAt, List.of("SO-001"), earliestRequiredAt,
-                BigDecimal.ONE, null);
+                BigDecimal.ONE, null, List.of(), null);
     }
 }

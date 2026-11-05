@@ -43,7 +43,7 @@ final class RoutingNodeModes {
      * @param mode 原始模式，可空（旧请求）
      * @param primaryResourceId 原始主资源 UUID，可空
      * @return INHERIT/FLOAT/FIXED
-     * @throws BizException 模式非法或 FIXED 缺 UUID 返回 40000；FLOAT 带 UUID 返回 42200
+     * @throws BizException 模式非法或 FIXED 缺 UUID 返回 42200；FLOAT 带 UUID 返回 42200
      */
     static String normalize(String mode, UUID primaryResourceId) {
         if (mode == null || mode.isBlank()) {
@@ -51,10 +51,10 @@ final class RoutingNodeModes {
         }
         String normalized = mode.trim().toUpperCase(Locale.ROOT);
         if (!SUPPORTED.contains(normalized)) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "primaryResourceMode 不支持: " + mode);
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "primaryResourceMode 不支持: " + mode);
         }
         if (FIXED.equals(normalized) && primaryResourceId == null) {
-            throw new BizException(ErrorCode.BAD_REQUEST,
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
                     "primaryResourceMode=FIXED 时必须提供 primaryResourceId");
         }
         if (FLOAT.equals(normalized) && primaryResourceId != null) {

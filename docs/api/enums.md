@@ -119,3 +119,55 @@
 ```
 
 **M3 明确不新增**：`solve_task.status` 不加 `PARTIAL`（C37）；`sandbox.type` 不加新值；`orders.status`/`task.status` 不变。
+
+## 6. W1 Wave 0 新增枚举（C50–C55，2026-11-05）
+
+> 本节只增不改：第 1–5 节与既有字典一字不动；下列值均为 API/Java 枚举，不新增 DB CHECK。
+
+| 位置 | 取值 | 依据/说明 |
+|---|---|---|
+| `InfeasibilityVerdict`（API/Java） | `NO_FEASIBLE_SOLUTION_FOUND` / `NO_EVIDENCE` / `PARTIAL_EVIDENCE` | C51；禁止 `INFEASIBLE_PROVEN` |
+| `InfeasibilityReasonCode`（API/Java） | `UNASSIGNED` / `NO_ROUTING` / `NO_RESOURCE` / `RESOURCE_WINDOW_SHORT` / `FROZEN_CONFLICT` / `HORIZON_EXCEEDED` / `MATERIAL_MISSING` / `OTHER` | C51 |
+| `InfeasibilityLlmStatus`（API/Java） | `DISABLED` / `OK` / `FALLBACK` | C51 |
+| `CounterfactualKind`（API/Java） | `EXTEND_CALENDAR` / `ADD_RESOURCE` / `UNFREEZE_TASKS` / `RELAX_DUE_DATE` / `SPLIT_BATCH` / `SUBSTITUTE_MATERIAL` | C52 |
+| `CounterfactualStatus`（API/Java） | `VERIFIED_FEASIBLE` / `STILL_INFEASIBLE` / `UNVERIFIED` / `OUT_OF_BUDGET` | C52；仅第一条 `feasible=true` |
+| `CtpVerdict`（API/Java） | `UNVERIFIED` / `PROMISED` / `UNPROMISABLE` / `OUT_OF_HORIZON` / `NO_ROUTE` / `NO_MATERIAL` / `SOLVER_TIMEOUT` / `BUSY` | C53；`UNVERIFIED`=物料可齐但容量未验证，承诺日期/数量/验证时间全 null；仅 `PROMISED` 带日期 |
+| `CtpPriority`（API/Java） | `URGENT` / `HIGH` / `NORMAL` / `LOW` | C53，与 `OrderPriority` 同值 |
+| `CtpMaterialPolicy`（API/Java） | `STRICT` / `SUBSTITUTE` | C53；与 `allowSubstitute` 任一为替代即生效 |
+| `SolvePortfolioCandidateStatus`（API/Java） | `SUCCEEDED` / `FAILED` / `TIMEOUT` / `REJECTED` | C54 |
+| `SolvePortfolioFailureReason`（API/Java） | `SOLVER_BUSY` / `TIMEOUT` / `OOM` / `ENGINE_ERROR` / `REJECTED_BY_ADMISSION` | C54 |
+| `SolvePortfolioDegradedReason`（API/Java） | `DISABLED` / `TASK_SCALE` / `CPU_BUDGET` / `MEMORY_BUDGET` / `SOLVER_BUSY` / `QUEUE_FULL` / `CONFIG_ERROR` / `OOM` / `UNKNOWN` | C54 |
+
+```json
+{
+  "infeasibility.verdict": ["NO_FEASIBLE_SOLUTION_FOUND", "NO_EVIDENCE", "PARTIAL_EVIDENCE"],
+  "infeasibility.reason_code": ["UNASSIGNED", "NO_ROUTING", "NO_RESOURCE", "RESOURCE_WINDOW_SHORT", "FROZEN_CONFLICT", "HORIZON_EXCEEDED", "MATERIAL_MISSING", "OTHER"],
+  "infeasibility.llm_status": ["DISABLED", "OK", "FALLBACK"],
+  "counterfactual.kind": ["EXTEND_CALENDAR", "ADD_RESOURCE", "UNFREEZE_TASKS", "RELAX_DUE_DATE", "SPLIT_BATCH", "SUBSTITUTE_MATERIAL"],
+  "counterfactual.status": ["VERIFIED_FEASIBLE", "STILL_INFEASIBLE", "UNVERIFIED", "OUT_OF_BUDGET"],
+  "ctp.verdict": ["UNVERIFIED", "PROMISED", "UNPROMISABLE", "OUT_OF_HORIZON", "NO_ROUTE", "NO_MATERIAL", "SOLVER_TIMEOUT", "BUSY"],
+  "ctp.priority": ["URGENT", "HIGH", "NORMAL", "LOW"],
+  "ctp.material_policy": ["STRICT", "SUBSTITUTE"],
+  "portfolio.candidate.status": ["SUCCEEDED", "FAILED", "TIMEOUT", "REJECTED"],
+  "portfolio.failure_reason": ["SOLVER_BUSY", "TIMEOUT", "OOM", "ENGINE_ERROR", "REJECTED_BY_ADMISSION"],
+  "portfolio.degraded_reason": ["DISABLED", "TASK_SCALE", "CPU_BUDGET", "MEMORY_BUDGET", "SOLVER_BUSY", "QUEUE_FULL", "CONFIG_ERROR", "OOM", "UNKNOWN"]
+}
+```
+
+## 7. C28 降级枚举补登记（A0 回填，2026-11-05）
+
+> 只增不改：C28 原闭集补入 A0 新增的 `SOLVER_BUSY`；`LOCK_CONTENTION` 此前已在 `contract-freeze.md` §24.10 声明，此处同步到 API 字典与 `solve.yaml`。
+
+| 位置 | 取值 | 语义 |
+|---|---|---|
+| `engineFallbackReason`（`solve_task.metrics` / `SolveTaskDetail`） | `TIMEOUT` / `ENGINE_ERROR` / `SOLVER_UNAVAILABLE` / `SOLVER_BUSY` | 前三类为环境/引擎侧失败，**可重试**；`SOLVER_BUSY` 为求解槽位等待超时的**容量拒绝，不可重试**，调用方稍后重投 |
+| `engineFallbackDetail`（`solve_task.metrics` / `SolveTaskDetail`） | `ORTOOLS_NOT_ENABLED` / `LOCK_CONTENTION` / `SOLVER_NOT_ASSEMBLED` / `SOLVER_TIMEOUT` / `ENGINE_EXCEPTION` | 仅供运维；`LOCK_CONTENTION` 与 `engineFallbackReason=SOLVER_BUSY` 配对 |
+| `errorCode`（`SolveTaskDetail` / STOMP `SolveProgress`） | `ENGINE_ERROR` / `TIMEOUT` / `FAILED` / `CANCELLED` / `SOLVER_BUSY` | `SOLVER_BUSY` 仅由 C28 容量拒绝产生 |
+
+```json
+{
+  "engineFallbackReason": ["TIMEOUT", "ENGINE_ERROR", "SOLVER_UNAVAILABLE", "SOLVER_BUSY"],
+  "engineFallbackDetail": ["ORTOOLS_NOT_ENABLED", "LOCK_CONTENTION", "SOLVER_NOT_ASSEMBLED", "SOLVER_TIMEOUT", "ENGINE_EXCEPTION"],
+  "solveTaskDetail.errorCode": ["ENGINE_ERROR", "TIMEOUT", "FAILED", "CANCELLED", "SOLVER_BUSY"]
+}
+```

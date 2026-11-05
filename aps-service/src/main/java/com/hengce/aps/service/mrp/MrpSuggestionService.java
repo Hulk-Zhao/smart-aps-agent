@@ -4,10 +4,12 @@ import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Comparator;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 
 /**
@@ -41,13 +43,18 @@ public class MrpSuggestionService {
 
     private final MrpAnalysisService mrpAnalysisService;
 
+    private final MrpSuggestionCache suggestionCache;
+
     /**
      * 构造服务。
      *
      * @param mrpAnalysisService MRP 齐套分析服务（复用其缺料明细）
+     * @param suggestionCache 建议结果缓存（TTL 30–60 秒，按租户主动失效）
      */
-    public MrpSuggestionService(MrpAnalysisService mrpAnalysisService) {
+    public MrpSuggestionService(MrpAnalysisService mrpAnalysisService,
+                                MrpSuggestionCache suggestionCache) {
         this.mrpAnalysisService = mrpAnalysisService;
+        this.suggestionCache = suggestionCache;
     }
 
     /**
@@ -57,7 +64,8 @@ public class MrpSuggestionService {
      * @param pageQuery 分页与排序参数；{@code sort} 不开放
      * @return 按 {@code materialCode} 升序的分页建议
      */
-    public PageResult<MrpAnalysisResponse.MrpShortage> suggest(MrpSuggestionQuery query, PageQuery pageQuery) {
+    public PageResult<MrpAnalysisResponse.MrpSuggestionView> suggest(MrpSuggestionQuery query,
+                                                                    PageQuery pageQuery) {
         return suggest(query, pageQuery, OffsetDateTime.now(ZoneOffset.UTC));
     }
 
@@ -69,8 +77,8 @@ public class MrpSuggestionService {
      * @param now 当前时间（UTC），窗口上界为 {@code now + horizonDays}
      * @return 按 {@code materialCode} 升序的分页建议
      */
-    PageResult<MrpAnalysisResponse.MrpShortage> suggest(MrpSuggestionQuery query, PageQuery pageQuery,
-                                                       OffsetDateTime now) {
+    PageResult<MrpAnalysisResponse.MrpSuggestionView> suggest(MrpSuggestionQuery query, PageQuery pageQuery,
+                                                             OffsetDateTime now) {
         if (query == null || query.sandboxId() == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "sandboxId 不能为空");
         }
@@ -85,17 +93,25 @@ public class MrpSuggestionService {
         }
         normalized.normalize();
 
-        MrpAnalysisResponse analysis = mrpAnalysisService.analyze(
-                new MrpAnalysisCommand(query.sandboxId(), query.orderNos(), true, false));
-        OffsetDateTime deadline = now.plusDays(horizonDays);
-        List<MrpAnalysisResponse.MrpShortage> filtered = analysis.shortages().stream()
-                .filter(item -> item.earliestRequiredAt() != null
-                        && !item.earliestRequiredAt().isAfter(deadline))
-                .sorted(Comparator.comparing(MrpAnalysisResponse.MrpShortage::materialCode))
-                .toList();
-
+        UUID tenantId = TenantContext.getTenantId();
+        List<MrpAnalysisResponse.MrpSuggestionView> filtered = suggestionCache.getOrLoad(
+                tenantId, query.sandboxId(), horizonDays, query.orderNos(),
+                () -> computeSuggestions(query, horizonDays, now));
         int offset = Math.min(normalized.offset(), filtered.size());
         int end = Math.min(offset + normalized.getSize(), filtered.size());
         return PageResult.of(filtered.subList(offset, end), normalized, filtered.size());
+    }
+
+    private List<MrpAnalysisResponse.MrpSuggestionView> computeSuggestions(MrpSuggestionQuery query,
+                                                                           int horizonDays, OffsetDateTime now) {
+        MrpAnalysisResponse analysis = mrpAnalysisService.analyze(
+                new MrpAnalysisCommand(query.sandboxId(), query.orderNos(), true, false));
+        OffsetDateTime deadline = now.plusDays(horizonDays);
+        return analysis.shortages().stream()
+                .filter(item -> item.earliestRequiredAt() != null
+                        && !item.earliestRequiredAt().isAfter(deadline))
+                .sorted(Comparator.comparing(MrpAnalysisResponse.MrpShortage::materialCode))
+                .map(MrpAnalysisResponse.MrpSuggestionView::from)
+                .toList();
     }
 }

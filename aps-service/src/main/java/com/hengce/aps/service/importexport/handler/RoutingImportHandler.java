@@ -12,6 +12,7 @@ import com.hengce.aps.service.process.routing.RoutingCreateCommand;
 import com.hengce.aps.service.process.routing.RoutingEdgeCommand;
 import com.hengce.aps.service.process.routing.RoutingNodeCommand;
 import com.hengce.aps.service.process.routing.RoutingService;
+import com.hengce.aps.service.process.template.OperationTemplateService;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -43,11 +44,15 @@ public class RoutingImportHandler implements EntityImportHandler {
 
     private final ResourceService resourceService;
 
+    private final OperationTemplateService operationTemplateService;
+
     public RoutingImportHandler(RoutingService routingService, MaterialService materialService,
-                                ResourceService resourceService) {
+                                ResourceService resourceService,
+                                OperationTemplateService operationTemplateService) {
         this.routingService = routingService;
         this.materialService = materialService;
         this.resourceService = resourceService;
+        this.operationTemplateService = operationTemplateService;
     }
 
     @Override
@@ -83,6 +88,13 @@ public class RoutingImportHandler implements EntityImportHandler {
         if (primaryResourceCode != null && !primaryResourceCode.isBlank()) {
             primaryResourceId = resolveResource(primaryResourceCode);
         }
+        String operationTemplateCode = ImportValues.text(row, "operationTemplateCode");
+        UUID operationTemplateId = null;
+        if (operationTemplateCode != null && !operationTemplateCode.isBlank()) {
+            operationTemplateId = resolveOperationTemplate(operationTemplateCode);
+        }
+        Integer standardSeconds = ImportValues.integer(ImportValues.text(row, "standardSeconds"),
+                "standardSeconds", "标准工时(秒)", 0);
         requireMaterial(productCode, "productCode");
 
         Map<String, Object> normalized = new LinkedHashMap<>();
@@ -93,6 +105,9 @@ public class RoutingImportHandler implements EntityImportHandler {
         normalized.put("seqNo", seqNo);
         normalized.put("fromSeqNo", fromSeqNo);
         normalized.put("operationCode", operationCode);
+        normalized.put("operationTemplateCode", operationTemplateCode);
+        normalized.put("operationTemplateId", operationTemplateId);
+        normalized.put("standardSeconds", standardSeconds);
         normalized.put("primaryResourceCode", primaryResourceCode);
         normalized.put("primaryResourceId", primaryResourceId);
         return normalized;
@@ -143,8 +158,9 @@ public class RoutingImportHandler implements EntityImportHandler {
                 throw new ImportRowException("seqNo", CODE_42200, "同一路线内节点序号重复: " + seqNo);
             }
             String operationCode = (String) row.get("operationCode");
-            nodes.add(new RoutingNodeCommand(seqNo, null, operationCode, operationCode,
-                    null, null, null, (UUID) row.get("primaryResourceId"), null, List.of(), Boolean.FALSE));
+            nodes.add(new RoutingNodeCommand(seqNo, (UUID) row.get("operationTemplateId"), operationCode,
+                    operationCode, (Integer) row.get("standardSeconds"), null, null,
+                    (UUID) row.get("primaryResourceId"), null, List.of(), Boolean.FALSE));
         }
         return nodes;
     }
@@ -181,6 +197,24 @@ public class RoutingImportHandler implements EntityImportHandler {
         } catch (BizException exception) {
             throw new ImportRowException("primaryResourceCode", CODE_42200, "资源不存在: " + code);
         }
+    }
+
+    /**
+     * 按编码解析工序模版主键；同编码多版本时取默认排序（createdAt DESC）的首条。
+     *
+     * @param code 工序模版编码
+     * @return 模版主键
+     * @throws ImportRowException 编码不存在时返回 42200
+     */
+    private UUID resolveOperationTemplate(String code) {
+        PageQuery query = new PageQuery();
+        query.setSize(200);
+        return operationTemplateService.list(query, code, null, null).items().stream()
+                .filter(template -> code.equals(template.getCode()))
+                .findFirst()
+                .map(template -> (UUID) template.getId())
+                .orElseThrow(() -> new ImportRowException("operationTemplateCode", CODE_42200,
+                        "工序模版不存在: " + code));
     }
 
     private LocalDate requiredDate(Map<String, String> row, String key, String label) {

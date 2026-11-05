@@ -52,6 +52,45 @@ public class PlanVersionRepository {
     }
 
     /**
+     * 按任务主键反查这些任务所属的计划版本（Agent 归因解释的证据查询）。
+     *
+     * <p>只返回 {@code task.plan_version_id} 明确指向的版本；任务从未被发布过时为空。
+     * {@code taskIds} 由调用方截断，避免一次拼接过长的 IN 列表。</p>
+     *
+     * @param tenantId 租户标识
+     * @param taskIds 任务主键列表，不可为空
+     * @param limit 最多返回条数
+     * @return 计划版本行，按发布时间倒序
+     */
+    public List<PlanVersionRow> findByTaskIds(UUID tenantId, List<Long> taskIds, int limit) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            return List.of();
+        }
+        String inList = String.join(", ", java.util.Collections.nCopies(taskIds.size(), "?"));
+        Object[] args = new Object[taskIds.size() + 3];
+        args[0] = tenantId;
+        args[1] = tenantId;
+        for (int i = 0; i < taskIds.size(); i++) {
+            args[2 + i] = taskIds.get(i);
+        }
+        args[args.length - 1] = limit;
+        return jdbcTemplate.query("""
+                SELECT DISTINCT pv.id, pv.tenant_id, pv.sandbox_id, pv.plan_no, pv.version_no,
+                       pv.status, pv.snapshot::text AS snapshot, pv.task_count, pv.published_at,
+                       pv.published_by, pv.rollback_of, pv.reason, pv.approver, pv.version,
+                       pv.created_at
+                  FROM plan_version pv
+                  JOIN task t ON t.plan_version_id = pv.id
+                 WHERE pv.tenant_id = ? AND pv.deleted = false
+                   AND t.tenant_id = ? AND t.deleted = false
+                   AND t.id IN (""" + inList + """
+                )
+                 ORDER BY pv.published_at DESC NULLS LAST, pv.id DESC
+                 LIMIT ?
+                """, ROW_MAPPER, args);
+    }
+
+    /**
      * 查询同一场景下指定版本号的已发布版本，用于回滚定位。
      *
      * @param tenantId 租户标识
@@ -116,6 +155,26 @@ public class PlanVersionRepository {
     }
 
     /**
+     * 查询场景内未终态的求解任务（PENDING/RUNNING），用于发布前硬拦截。
+     *
+     * <p>增量求解是异步的：求解完成会重建任务，若在 {@code PENDING/RUNNING} 期间发布，
+     * 快照会固化尚未重建的旧任务，发布后再重建则 {@code task.plan_version_id} 全部落空。</p>
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @return 未终态求解任务，按主键升序
+     */
+    public List<ActiveSolveTask> findActiveSolveTasks(UUID tenantId, UUID sandboxId) {
+        return jdbcTemplate.query("""
+                SELECT id, status FROM solve_task
+                 WHERE tenant_id = ? AND sandbox_id = ? AND deleted = false
+                   AND status IN ('PENDING', 'RUNNING')
+                 ORDER BY id
+                """, (rs, rowNum) -> new ActiveSolveTask(rs.getLong("id"), rs.getString("status")),
+                tenantId, sandboxId);
+    }
+
+    /**
      * 统计场景内未删除的计划版本数，用于列表分页。
      *
      * @param tenantId 租户标识
@@ -147,19 +206,27 @@ public class PlanVersionRepository {
     }
 
     /**
-     * 读取场景内全部任务，用于发布时固化快照。
+     * 读取场景内任务，用于发布时固化快照。
      *
      * @param tenantId 租户标识
      * @param sandboxId 场景标识
+     * @param orderNos 本次求解覆盖的订单号；为空表示场景全量
      * @return 任务快照行，按订单号/工序/开始时间稳定排序
      */
-    public List<Map<String, Object>> listTasksForSnapshot(UUID tenantId, UUID sandboxId) {
+    public List<Map<String, Object>> listTasksForSnapshot(UUID tenantId, UUID sandboxId,
+                                                          List<String> orderNos) {
+        String orderFilter = orderNos == null || orderNos.isEmpty() ? ""
+                : " AND o.order_no IN (" + placeholders(orderNos.size()) + ")";
+        Object[] args = orderNos == null || orderNos.isEmpty()
+                ? new Object[]{tenantId, sandboxId}
+                : concat(new Object[]{tenantId, sandboxId}, orderNos.toArray());
         return jdbcTemplate.query("""
                 SELECT t.id::text AS task_id, o.order_no, t.operation_index, t.status,
                        t.start_time, t.end_time, CAST(t.resource_id AS text) AS resource_id, t.qty
                   FROM task t
                   LEFT JOIN orders o ON o.id = t.order_id AND o.deleted = false
                  WHERE t.tenant_id = ? AND t.sandbox_id = ? AND t.deleted = false
+                """ + orderFilter + """
                  ORDER BY o.order_no, t.operation_index, t.start_time
                 """, (rs, rowNum) -> {
                     Map<String, Object> row = new java.util.LinkedHashMap<>();
@@ -172,7 +239,7 @@ public class PlanVersionRepository {
                     row.put("resourceId", rs.getString("resource_id"));
                     row.put("qty", rs.getObject("qty"));
                     return row;
-                }, tenantId, sandboxId);
+                }, args);
     }
 
     /**
@@ -248,19 +315,29 @@ public class PlanVersionRepository {
     }
 
     /**
-     * 发布时把场景内全部任务回填到当前发布版本，使 {@code task.plan_version_id} 始终指向生效版本。
+     * 发布时把本次求解范围内的任务回填到当前发布版本。
+     *
+     * <p>范围由 DRAFT 快照里的 {@code scopeOrderNos} 决定；同一场景内属于其他客户/其他
+     * 求解批次的任务不在范围内，不得改写其 {@code plan_version_id}。</p>
      *
      * @param tenantId 租户标识
      * @param sandboxId 场景标识
      * @param planId 计划版本主键
+     * @param orderNos 本次发布覆盖的订单号；为空表示场景全量
      * @return 回填任务数
      */
-    public int backfillTasks(UUID tenantId, UUID sandboxId, UUID planId) {
+    public int backfillTasks(UUID tenantId, UUID sandboxId, UUID planId, List<String> orderNos) {
+        String scopeFilter = orderNos == null || orderNos.isEmpty() ? ""
+                : " AND order_id IN (SELECT id FROM orders WHERE tenant_id = ? AND deleted = false"
+                        + " AND order_no IN (" + placeholders(orderNos.size()) + "))";
+        Object[] args = orderNos == null || orderNos.isEmpty()
+                ? new Object[]{planId, tenantId, sandboxId}
+                : concat(new Object[]{planId, tenantId, sandboxId, tenantId}, orderNos.toArray());
         String sql = """
                 UPDATE task SET plan_version_id = ?, updated_at = CURRENT_TIMESTAMP
                  WHERE tenant_id = ? AND sandbox_id = ? AND deleted = false
-                """;
-        return jdbcTemplate.update(sql, planId, tenantId, sandboxId);
+                """ + scopeFilter;
+        return jdbcTemplate.update(sql, args);
     }
 
     /**
@@ -278,6 +355,17 @@ public class PlanVersionRepository {
                  WHERE tenant_id = ? AND sandbox_id = ? AND deleted = false AND plan_version_id = ?
                 """;
         return jdbcTemplate.update(sql, toPlanId, tenantId, sandboxId, fromPlanId);
+    }
+
+    private static String placeholders(int count) {
+        return String.join(", ", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private static Object[] concat(Object[] prefix, Object[] suffix) {
+        Object[] merged = new Object[prefix.length + suffix.length];
+        System.arraycopy(prefix, 0, merged, 0, prefix.length);
+        System.arraycopy(suffix, 0, merged, prefix.length, suffix.length);
+        return merged;
     }
 
     private static String toText(OffsetDateTime value) {
@@ -307,6 +395,15 @@ public class PlanVersionRepository {
         } catch (NumberFormatException exception) {
             return 0;
         }
+    }
+
+    /**
+     * 场景内未终态的求解任务。
+     *
+     * @param solveTaskId 求解任务主键
+     * @param status 当前状态：PENDING/RUNNING
+     */
+    public record ActiveSolveTask(long solveTaskId, String status) {
     }
 
     /**

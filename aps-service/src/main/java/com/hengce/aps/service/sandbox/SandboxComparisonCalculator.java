@@ -136,6 +136,27 @@ public final class SandboxComparisonCalculator {
     }
 
     private static double averageUtilization(List<CompareTaskRow> rows) {
+        Map<String, Double> utilization = resourceUtilization(rows);
+        if (utilization.isEmpty()) {
+            return 0.0;
+        }
+        double sum = 0.0;
+        for (Double value : utilization.values()) {
+            sum += value;
+        }
+        return sum / utilization.size();
+    }
+
+    /**
+     * 逐资源利用率，口径与本类 {@code utilizationDelta} 完全一致：
+     * 观察窗口为单侧 {@code max(end) - min(start)}，资源利用率为占用分钟 / 窗口分钟（上限 1）。
+     *
+     * <p>供 Agent what-if 的“瓶颈变化”复用，避免第二套计算口径。</p>
+     *
+     * @param rows 单侧任务行
+     * @return 资源编码 → 利用率；无任务时为空白 Map
+     */
+    public static Map<String, Double> resourceUtilization(List<CompareTaskRow> rows) {
         OffsetDateTime windowStart = null;
         OffsetDateTime windowEnd = null;
         Map<String, Long> busyMinutes = new HashMap<>();
@@ -152,17 +173,16 @@ public final class SandboxComparisonCalculator {
             }
         }
         if (busyMinutes.isEmpty() || windowStart == null || windowEnd == null) {
-            return 0.0;
+            return Map.of();
         }
         long windowMinutes = Duration.between(windowStart, windowEnd).toMinutes();
         if (windowMinutes <= 0) {
-            return 0.0;
+            return Map.of();
         }
-        double sum = 0.0;
-        for (Long busy : busyMinutes.values()) {
-            sum += Math.min(1.0, busy / (double) windowMinutes);
-        }
-        return sum / busyMinutes.size();
+        Map<String, Double> result = new HashMap<>();
+        busyMinutes.forEach((resource, busy) ->
+                result.put(resource, round3(Math.min(1.0, busy / (double) windowMinutes))));
+        return result;
     }
 
     private static int countSetup(List<CompareTaskRow> rows) {

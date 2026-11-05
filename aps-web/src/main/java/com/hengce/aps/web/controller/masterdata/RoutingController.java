@@ -162,7 +162,8 @@ public class RoutingController {
     @RequiresPermission("MD_WRITE")
     @PostMapping("/{id}/activate")
     public Result<RoutingView> activate(@PathVariable UUID id) {
-        return Result.success(toRoutingView(routingService.activate(id), null));
+        Routing routing = routingService.activate(id);
+        return Result.success(toRoutingView(routing, routingService.getGraph(id)));
     }
 
     /**

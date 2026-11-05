@@ -22,6 +22,8 @@ import java.util.UUID;
  * @param priority 优先级
  * @param source 订单来源
  * @param customerId 客户主键，可为空
+ * @param customerCode 客户编码（C50，只读），客户缺失或已软删除时为空
+ * @param customerName 客户名称（C50，只读），与 customerCode 成对为空
  * @param routingId 指定工艺路线主键，可为空
  * @param remark 备注
  * @param extAttrs 扩展属性
@@ -40,6 +42,8 @@ public record OrderView(
         OrderPriority priority,
         OrderSource source,
         UUID customerId,
+        String customerCode,
+        String customerName,
         UUID routingId,
         String remark,
         Map<String, Object> extAttrs,
@@ -58,9 +62,11 @@ public record OrderView(
      *
      * @param order 订单实体
      * @param materialCode 产品物料编码，可为空（物料已删除时）
+     * @param customerCode 客户编码（C50），可为空
+     * @param customerName 客户名称（C50），可为空
      * @return 返回视图
      */
-    public static OrderView from(Order order, String materialCode) {
+    public static OrderView from(Order order, String materialCode, String customerCode, String customerName) {
         return new OrderView(
                 order.getOrderNo(),
                 materialCode,
@@ -71,6 +77,8 @@ public record OrderView(
                 OrderPriority.valueOf(order.getPriority()),
                 OrderSource.valueOf(order.getSource()),
                 order.getCustomerId(),
+                customerCode,
+                customerName,
                 order.getRoutingId(),
                 order.getRemark(),
                 order.getExtAttrs(),

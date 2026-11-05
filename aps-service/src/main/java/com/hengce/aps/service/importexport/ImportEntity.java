@@ -86,6 +86,8 @@ public enum ImportEntity {
             ImportColumn.number("fromSeqNo", "前驱节点序号", false, ImportDataType.INTEGER, "10",
                     "可空；填写后与同路线内该序号节点建 FS 边"),
             ImportColumn.text("operationCode", "工序编码", false, "OP-0001", "有节点序号时必填"),
+            ImportColumn.text("operationTemplateCode", "工序模版编码", false, "OP-0001", "已存在的工序模版编码"),
+            ImportColumn.number("standardSeconds", "标准工时(秒)", false, ImportDataType.INTEGER, "60", "非负整数"),
             ImportColumn.text("primaryResourceCode", "主资源编码", false, "RES-0001", "已存在的资源编码"))),
 
     /** 订单。 */
@@ -98,7 +100,9 @@ public enum ImportEntity {
             ImportColumn.date("dueDate", "交期", true, "2026-12-31", "yyyy-MM-dd"),
             ImportColumn.enumOf("priority", "优先级", false, "NORMAL", "优先级",
                     "URGENT", "HIGH", "NORMAL", "LOW"),
-            ImportColumn.text("remark", "备注", false, "首单试产", "自由文本"))),
+            ImportColumn.text("remark", "备注", false, "首单试产", "自由文本"),
+            ImportColumn.text("customerCode", "客户编码", false, "CUS-0001",
+                    "可选；按 customer.code 解析，未命中整行 42200；留空=未指定客户"))),
 
     /** 策略。 */
     STRATEGIES("strategies", "策略", List.of(
@@ -117,6 +121,26 @@ public enum ImportEntity {
             ImportColumn.number("moq", "最小起订量", false, ImportDataType.DECIMAL, "1", "非负数"),
             ImportColumn.enumOf("qualityGrade", "质量等级", false, "A", "质量等级", "A", "B", "C"),
             ImportColumn.bool("blacklisted", "是否黑名单", false, "false", "true/false"))),
+
+    /**
+     * 换型矩阵（C43）：FROM/TO 产品-程序成组，支持默认值 + 同/跨系列特例，
+     * 生效范围按租户/资源组/资源三级；业务键已存在则更新。
+     */
+    SETUP_MATRICES("setupMatrices", "换型矩阵", List.of(
+            ImportColumn.enumOf("keyType", "维度", true, "PRODUCT", "PRODUCT=产品物料编码，PROGRAM=程序/工序编码",
+                    "PRODUCT", "PROGRAM"),
+            ImportColumn.text("fromKey", "FROM键", false, "MAT-0001", "为空表示通配默认；最长 64"),
+            ImportColumn.text("toKey", "TO键", false, "MAT-0002", "为空表示通配默认；最长 64"),
+            ImportColumn.enumOf("scopeType", "生效范围", false, "TENANT", "生效范围",
+                    "TENANT", "RESOURCE_GROUP", "RESOURCE"),
+            ImportColumn.text("resourceCode", "资源编码", false, "RES-0001", "RESOURCE 范围必填"),
+            ImportColumn.text("resourceGroupCode", "资源组编码", false, "GRP-0001", "RESOURCE_GROUP 范围必填"),
+            ImportColumn.number("setupSeconds", "默认换型秒数", true, ImportDataType.INTEGER, "1800", "非负整数"),
+            ImportColumn.number("sameSeriesSeconds", "同系列换型秒数", false, ImportDataType.INTEGER, "900",
+                    "可空；为空回退默认值"),
+            ImportColumn.number("crossSeriesSeconds", "跨系列换型秒数", false, ImportDataType.INTEGER, "3600",
+                    "可空；为空回退默认值"),
+            ImportColumn.text("remark", "备注", false, "同系列快速换型", "最长 255"))),
 
     /** 客户（C38，slug 为复数，与既有约定一致）。 */
     CUSTOMERS("customers", "客户", List.of(

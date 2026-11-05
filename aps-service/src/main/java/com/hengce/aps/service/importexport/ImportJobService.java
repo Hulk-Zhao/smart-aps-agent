@@ -158,7 +158,7 @@ public class ImportJobService {
      * @return 取消后的任务视图
      */
     public ImportJobView cancel(ImportEntity entity, UUID jobId) {
-        ImportJobView view = find(entity, jobId);
+        find(entity, jobId);
         UUID tenantId = TenantContext.getTenantId();
         if (!repository.cancel(tenantId, jobId)) {
             throw new BizException(ErrorCode.STATE_CONFLICT,

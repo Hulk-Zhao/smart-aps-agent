@@ -89,7 +89,21 @@ public class EntityDataExporter {
      * @return xlsx 字节
      */
     public byte[] export(ImportEntity entity) {
-        return ExcelDataWriter.write(entity, rows(entity));
+        return ExcelDataWriter.write(entity, rows(entity), extraColumns(entity));
+    }
+
+    /**
+     * 导出时追加在实体列之后的只读展示列（导入时按未知列忽略，保证导出文件可回灌）。
+     *
+     * @param entity 实体
+     * @return 追加列；无则空列表
+     */
+    private List<ImportColumn> extraColumns(ImportEntity entity) {
+        if (entity != ImportEntity.ORDERS) {
+            return List.of();
+        }
+        return List.of(ImportColumn.text("customerName", "客户名称", false, "衡策精工",
+                "只读展示列；按 customer_id 关联，导入时忽略"));
     }
 
     private List<Map<String, Object>> rows(ImportEntity entity) {
@@ -98,8 +112,7 @@ public class EntityDataExporter {
                     .map(this::materialRow).toList();
             case RESOURCES -> collect(query -> resourceService.list(query, null, null, null, null)).stream()
                     .map(this::resourceRow).toList();
-            case ORDERS -> collect(query -> orderService.list(query, null, null, null, null, null, null)).stream()
-                    .map(this::orderRow).toList();
+            case ORDERS -> orderRows();
             case STRATEGIES -> collect(query -> strategyService.list(query, null, null, null)).stream()
                     .map(this::strategyRow).toList();
             case BOMS -> bomRows();
@@ -110,7 +123,37 @@ public class EntityDataExporter {
                     .stream().map(this::operationTemplateRow).toList();
             case SUPPLIERS -> supplierRows();
             case CUSTOMERS -> customerRows();
+            case SETUP_MATRICES -> setupMatrixRows();
         };
+    }
+
+    private List<Map<String, Object>> setupMatrixRows() {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        jdbcTemplate.queryForList("select m.key_type, m.from_key, m.to_key, m.scope_type, "
+                        + "m.setup_seconds, m.same_series_setup_seconds, m.cross_series_setup_seconds, "
+                        + "m.remark, r.code as resource_code, g.code as resource_group_code "
+                        + "from setup_matrix_entry m "
+                        + "left join resource r on r.id = m.resource_id "
+                        + "left join resource_group g on g.id = m.resource_group_id "
+                        + "where m.tenant_id = ? and m.deleted = false "
+                        + "order by m.key_type, m.scope_type, m.from_key nulls first, m.to_key nulls first",
+                        TenantContext.getTenantId())
+                .forEach(record -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    String keyType = (String) record.get("key_type");
+                    row.put("keyType", "MATERIAL_CODE".equals(keyType) ? "PRODUCT" : "PROGRAM");
+                    row.put("fromKey", record.get("from_key"));
+                    row.put("toKey", record.get("to_key"));
+                    row.put("scopeType", record.get("scope_type"));
+                    row.put("resourceCode", record.get("resource_code"));
+                    row.put("resourceGroupCode", record.get("resource_group_code"));
+                    row.put("setupSeconds", record.get("setup_seconds"));
+                    row.put("sameSeriesSeconds", record.get("same_series_setup_seconds"));
+                    row.put("crossSeriesSeconds", record.get("cross_series_setup_seconds"));
+                    row.put("remark", record.get("remark"));
+                    rows.add(row);
+                });
+        return rows;
     }
 
     private List<Map<String, Object>> customerRows() {
@@ -196,7 +239,7 @@ public class EntityDataExporter {
         return row;
     }
 
-    private Map<String, Object> orderRow(OrderView view) {
+    private Map<String, Object> orderRow(OrderView view, Map<UUID, CustomerRef> customers) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("orderNo", view.orderNo());
         row.put("source", view.source() == null ? null : view.source().name());
@@ -205,7 +248,35 @@ public class EntityDataExporter {
         row.put("dueDate", view.dueDate());
         row.put("priority", view.priority() == null ? null : view.priority().name());
         row.put("remark", view.remark());
+        CustomerRef customer = view.customerId() == null ? null : customers.get(view.customerId());
+        row.put("customerCode", customer == null ? null : customer.code());
+        row.put("customerName", customer == null ? null : customer.name());
         return row;
+    }
+
+    private List<Map<String, Object>> orderRows() {
+        Map<UUID, CustomerRef> customers = customerIndex();
+        return collect(query -> orderService.list(query, null, null, null, null, null, null)).stream()
+                .map(view -> orderRow(view, customers)).toList();
+    }
+
+    private Map<UUID, CustomerRef> customerIndex() {
+        Map<UUID, CustomerRef> index = new HashMap<>();
+        jdbcTemplate.queryForList("select id, code, name from customer "
+                        + "where tenant_id = ? and deleted = false",
+                        TenantContext.getTenantId())
+                .forEach(record -> index.put((UUID) record.get("id"),
+                        new CustomerRef((String) record.get("code"), (String) record.get("name"))));
+        return index;
+    }
+
+    /**
+     * 客户编码/名称只读引用。
+     *
+     * @param code 客户编码
+     * @param name 客户名称
+     */
+    private record CustomerRef(String code, String name) {
     }
 
     private Map<String, Object> strategyRow(StrategyView view) {

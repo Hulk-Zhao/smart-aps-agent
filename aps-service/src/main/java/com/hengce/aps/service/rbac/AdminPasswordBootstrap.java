@@ -1,7 +1,6 @@
 package com.hengce.aps.service.rbac;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.infrastructure.persistence.mapper.rbac.UserMapper;
 import com.hengce.aps.infrastructure.persistence.rbac.UserEntity;
 import com.hengce.aps.service.audit.AuditEventType;

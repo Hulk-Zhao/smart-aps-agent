@@ -3,7 +3,7 @@ info:
   title: 衡策 APS - 系统管理 API
   version: 0.1.0
   description: |
-    system 分组静态契约（P0-08）。GET /health 已实现；认证、用户、角色、权限、审计代码已落地但未做制品级 HTTP 验收，标 partial；/configs 仍为占位（501）。
+    system 分组静态契约（P0-08）。GET /health 已实现；认证、用户、角色、权限、审计已完成制品级 HTTP 验收（2026-11-04），标 implemented；/configs 仍为占位（501）。
     统一约定见 ../../docs/api/conventions.md；密码、令牌禁止写入日志。
 servers:
   - url: /api/v1
@@ -38,8 +38,8 @@ paths:
       summary: 登录
       description: |
         状态：代码已落地（AuthController#login，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/AuthController.java:56-64）；
-        未做完整制品级 HTTP 验收，故标 partial。bcrypt 校验；5 次失败锁 15 分钟；返回 HS256 JWT（TTL 28800s）。
-      x-implementation-status: partial
+        已完整制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。bcrypt 校验；5 次失败锁 15 分钟；返回 HS256 JWT（TTL 28800s）。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -69,8 +69,8 @@ paths:
       summary: 当前用户
       description: |
         状态：代码已落地（MeController#me，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/MeController.java:50-57）；
-        未做制品级 HTTP 验收，故标 partial。返回用户信息 + 角色码 + 权限码并集；off 模式回落 V1 管理员（00000000-0000-0000-0000-000000000301）。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。返回用户信息 + 角色码 + 权限码并集；off 模式回落 V1 管理员（00000000-0000-0000-0000-000000000301）。
+      x-implementation-status: implemented
       responses:
         '200':
           description: 成功
@@ -88,8 +88,8 @@ paths:
       summary: 用户列表
       description: |
         状态：代码已落地（UserController#list，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/UserController.java:58-62）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_USER 权限；status 为精确过滤。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_USER 权限；status 为精确过滤。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -114,8 +114,8 @@ paths:
       summary: 创建用户
       description: |
         状态：代码已落地（UserController#create，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/UserController.java:73-77）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_USER；用户名租户内唯一；密码仅以 bcrypt 落库。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_USER；用户名租户内唯一；`password` 必填（缺失 400/40000）；密码仅以 bcrypt 落库。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -133,8 +133,6 @@ paths:
                 $ref: '#/components/schemas/ResultOfUser'
         '400':
           $ref: '#/components/responses/BadRequest'
-        '409':
-          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
   /audit-logs:
@@ -145,8 +143,8 @@ paths:
       summary: 审计日志查询
       description: |
         状态：代码已落地（AuditLogController#list，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/AuditLogController.java:56-69）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_AUDIT；过滤条件 AND；时间区间 [from, to)；sort 仅 createdAt,asc|desc。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_AUDIT；过滤条件 AND；时间区间 [from, to)；sort 仅 createdAt,asc|desc。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -197,9 +195,9 @@ paths:
       summary: 修改用户
       description: |
         状态：代码已落地（UserController#update，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/UserController.java:89-93）；
-        未做制品级 HTTP 验收，故标 partial。字段为 null 表示不改；roleCodes 非 null 时全量替换；
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。字段为 null 表示不改；roleCodes 非 null 时全量替换；
         version 缺失或不匹配由服务层返回 40901；禁止停用自己/最后一个 ADMIN。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - name: userId
           in: path
@@ -239,8 +237,8 @@ paths:
       summary: 角色列表
       description: |
         状态：代码已落地（RoleController#list，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/RoleController.java:51-54）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_USER 权限；不分页。返回 `data = {items: Role[]}`；与 /permissions 的裸数组形状不同，按代码现状保留。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_USER 权限；不分页。返回 `data = {items: Role[]}`；与 /permissions 的裸数组形状不同，按代码现状保留。
+      x-implementation-status: implemented
       responses:
         '200':
           description: 成功
@@ -256,8 +254,8 @@ paths:
       summary: 创建角色
       description: |
         状态：代码已落地（RoleController#create，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/RoleController.java:64-68）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_ROLE；code 必须匹配 `^[A-Z][A-Z0-9_]{1,31}$`；权限码必须是 V1 的 18 个闭集。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_ROLE；code 必须匹配 `^[A-Z][A-Z0-9_]{1,31}$`；权限码必须是 V1 的 18 个闭集。
+      x-implementation-status: implemented
       requestBody:
         required: true
         content:
@@ -287,8 +285,8 @@ paths:
       summary: 替换角色权限
       description: |
         状态：代码已落地（RoleController#replacePermissions，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/RoleController.java:79-83）；
-        未做制品级 HTTP 验收，故标 partial。需要 SYS_ROLE；全量替换并落审计；空数组表示清空。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。需要 SYS_ROLE；全量替换并落审计；空数组表示清空。
+      x-implementation-status: implemented
       parameters:
         - name: roleId
           in: path
@@ -326,9 +324,9 @@ paths:
       summary: 权限点列表
       description: |
         状态：代码已落地（PermissionController#list，aps-web/src/main/java/com/hengce/aps/web/controller/rbac/PermissionController.java:41-44）；
-        未做制品级 HTTP 验收，故标 partial。仅需已认证；返回 V1 的 18 个权限码。
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。仅需已认证；返回 V1 的 18 个权限码。
         注意：`data` 是**裸数组**（`Result<List<PermissionView>>`），不包 `{items}`；与 /roles 的 `{items}` 形状不一致是已知现状。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       responses:
         '200':
           description: 成功
@@ -653,7 +651,10 @@ components:
             type: string
     UserCreateRequest:
       type: object
-      required: [username]
+      required: [username, password]
+      description: |
+        C30 §25.1.4：`password` 在 M3 必填（本地 bcrypt；LDAP/SSO 不在 M3）。
+        源码 `UserCreateRequest.java` 对 `password` 标注 `@NotBlank`，缺省返回 400/40000。
       properties:
         username:
           type: string

@@ -3,6 +3,7 @@ package com.hengce.aps.service.mrp;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.infrastructure.persistence.material.Material;
 import com.hengce.aps.infrastructure.persistence.mrp.Inventory;
 import com.hengce.aps.infrastructure.persistence.mrp.InventoryMapper;
@@ -46,30 +47,33 @@ public class InventoryService {
 
     private final MrpMasterDataRepository masterDataRepository;
 
+    private final MrpSuggestionCache suggestionCache;
+
     /**
      * 构造服务。
      *
      * @param inventoryMapper 库存 Mapper
      * @param masterDataRepository 只读主数据仓库（物料编码寻址）
+     * @param suggestionCache 采购建议缓存（库存变化后主动失效）
      */
     public InventoryService(InventoryMapper inventoryMapper,
-                            MrpMasterDataRepository masterDataRepository) {
+                            MrpMasterDataRepository masterDataRepository,
+                            MrpSuggestionCache suggestionCache) {
         this.inventoryMapper = inventoryMapper;
         this.masterDataRepository = masterDataRepository;
+        this.suggestionCache = suggestionCache;
     }
 
     /**
      * 批量 upsert 库存快照。
      *
      * @param items 库存项，至少一条
-     * @return 新增/更新计数
+     * @return 契约口径的 {@code accepted}/{@code rejected} 计数
      */
     @Transactional(rollbackFor = Exception.class)
     public InventoryUpsertResult upsert(List<InventoryItemCommand> items) {
         List<InventoryItemCommand> normalized = normalize(items);
         Map<String, Material> materials = loadMaterials(normalized);
-        int created = 0;
-        int updated = 0;
         for (InventoryItemCommand item : normalized) {
             String materialCode = item.materialCode().trim();
             String warehouseCode = warehouse(item.warehouseCode());
@@ -85,16 +89,16 @@ public class InventoryService {
                 } catch (DuplicateKeyException exception) {
                     throw conflict("库存记录已被并发创建，请重试: " + materialCode + "/" + warehouseCode);
                 }
-                created++;
                 continue;
             }
             applySnapshot(item, existing, materialCode, warehouseCode);
             if (inventoryMapper.updateById(existing) == 0) {
                 throw conflict("库存记录版本已变化，请刷新后重试: " + materialCode + "/" + warehouseCode);
             }
-            updated++;
         }
-        return new InventoryUpsertResult(created, updated, normalized.size());
+        // 整体事务语义：全部条目受理成功，rejected 恒为 0；任一条失败走异常路径，不返回计数。
+        suggestionCache.invalidate(TenantContext.getTenantId());
+        return new InventoryUpsertResult(normalized.size(), 0);
     }
 
     private List<InventoryItemCommand> normalize(List<InventoryItemCommand> items) {

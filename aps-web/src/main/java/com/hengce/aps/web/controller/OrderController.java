@@ -201,6 +201,23 @@ public class OrderController {
     }
 
     /**
+     * 订单开工。
+     *
+     * @param orderNo 订单号
+     * @param request 开工请求，version 必填
+     * @return 开工后的订单
+     */
+    @Operation(summary = "订单开工",
+            description = "状态：已实现（C23）。RELEASED → IN_PROGRESS，并自动把订单下 PLANNED 任务置为 FROZEN；"
+                    + "重复开工幂等；非 RELEASED 返回 422/42200；version 冲突返回 409/40901。")
+    @RequiresPermission("OM_WRITE")
+    @PutMapping("/{orderNo}/start")
+    public Result<OrderView> start(@PathVariable String orderNo,
+                                   @Valid @RequestBody OrderStartRequest request) {
+        return Result.success(orderService.start(orderNo, request.version()));
+    }
+
+    /**
      * 新建订单请求体，字段与 orders.yaml OrderCreateRequest 对齐。
      *
      * @param orderNo 订单号
@@ -318,5 +335,13 @@ public class OrderController {
     public record OrderReleaseRequest(
             @Size(max = 500) String reason,
             @Min(1) Integer version) {
+    }
+
+    /**
+     * 开工请求体，{@code version} 为契约必填。
+     *
+     * @param version 当前乐观锁版本
+     */
+    public record OrderStartRequest(@NotNull @Min(1) Integer version) {
     }
 }

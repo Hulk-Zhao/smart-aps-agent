@@ -41,7 +41,9 @@ import org.springframework.stereotype.Service;
  *   <li>仅使用 {@code status=ACTIVE} 的 BOM；SMT 拼板、虚拟件按 {@code is_phantom} 处理：
  *       虚拟件自身不计需求，但其子件按含损耗的展开数量继续计入。</li>
  *   <li>需求数量 = 父件需求 × 单件用量 × (1 + scrapRate/100)，保留 6 位小数。</li>
- *   <li>可用量 = Σ现有库存 + Σ非 CANCELLED 在途 - Σ安全库存；安全库存视为不可动用储备。</li>
+ *   <li>可用量 = Σ现有库存 + Σ在途 - Σ安全库存；安全库存视为不可动用储备，短缺计算时可用量按 0 下限。
+ *       在途按 C25 §24.7 只计 {@code status=OPEN} 且 {@code expected_date} 不晚于该物料最早需求日；
+ *       V2 的 {@code OPEN} 等价状态为 {@code PLANNED/CONFIRMED}（V2 CHECK 不允许 OPEN/ARRIVED）。</li>
  *   <li>跨订单按“交期升序 → 优先级 → 订单号”顺序分配可用量，再据此判定每张订单是否齐套：
  *       全部齐套 = FULL，全部缺料 = SHORTAGE，其余 = PARTIAL。</li>
  *   <li>BOM 深度上限 10 层，检测到环或超深只记 warning，不中断整次分析。</li>
@@ -121,8 +123,9 @@ public class MrpAnalysisService {
         List<Order> orders = loadOrders(command.orderNos());
         Set<String> warnings = new LinkedHashSet<>();
         Map<String, Map<UUID, BigDecimal>> demandByOrder = new LinkedHashMap<>();
+        Map<UUID, Map<String, SubstituteCandidate>> substitutesByMaterial = new HashMap<>();
         for (Order order : orders) {
-            ExpansionContext context = new ExpansionContext(warnings);
+            ExpansionContext context = new ExpansionContext(warnings, substitutesByMaterial);
             context.path.add(order.getProductId());
             expand(context, order.getProductId(), qty(order.getQty()), 1);
             demandByOrder.put(order.getOrderNo(), context.demand);
@@ -145,23 +148,46 @@ public class MrpAnalysisService {
             }
         }
 
+        // C49：替代料仍需按“父件最早需求日”裁剪在途，故把替代料主键并入库存查询集合，
+        // 并把父件的最早需求日映射给替代料，避免晚于缺料时点的在途被误算为可用。
+        Map<String, Material> substituteMaterials = loadSubstituteMaterials(substitutesByMaterial, warnings);
+        Set<UUID> inventoryIds = new LinkedHashSet<>(gross.keySet());
+        Map<UUID, LocalDate> inventoryDue = new HashMap<>(earliestDue);
+        for (Map.Entry<UUID, Map<String, SubstituteCandidate>> entry : substitutesByMaterial.entrySet()) {
+            LocalDate parentDue = earliestDue.get(entry.getKey());
+            for (String substituteCode : entry.getValue().keySet()) {
+                Material substitute = substituteMaterials.get(substituteCode);
+                if (substitute == null || substitute.getId() == null) {
+                    continue;
+                }
+                UUID substituteId = (UUID) substitute.getId();
+                inventoryIds.add(substituteId);
+                if (parentDue != null) {
+                    inventoryDue.merge(substituteId, parentDue, (left, right) ->
+                            left.isBefore(right) ? left : right);
+                }
+            }
+        }
+
         Map<UUID, BigDecimal> onHand = new HashMap<>();
         Map<UUID, BigDecimal> safetyStock = new HashMap<>();
         Map<UUID, BigDecimal> transit = new HashMap<>();
-        if (inventoryEnabled && !gross.isEmpty()) {
-            loadInventory(gross.keySet(), onHand, safetyStock, transit);
+        Map<UUID, LocalDate> earliestArrival = new HashMap<>();
+        if (inventoryEnabled && !inventoryIds.isEmpty()) {
+            loadInventory(inventoryIds, inventoryDue, onHand, safetyStock, transit, earliestArrival);
         } else if (!inventoryEnabled) {
             warnings.add("库存读取开关 aps.mrp.inventory-enabled=false，可用量按 0 计算");
         }
 
         Map<UUID, BigDecimal> available = new HashMap<>();
-        for (UUID materialId : gross.keySet()) {
+        for (UUID materialId : inventoryIds) {
             available.put(materialId, onHand.getOrDefault(materialId, ZERO)
                     .add(transit.getOrDefault(materialId, ZERO))
                     .subtract(safetyStock.getOrDefault(materialId, ZERO)));
         }
 
         Map<UUID, Material> materials = loadMaterials(gross.keySet(), orders);
+        Map<UUID, String> supplierCodes = loadSupplierCodes(materials);
         List<Order> sortedOrders = new ArrayList<>(orders);
         sortedOrders.sort(Comparator.comparing(Order::getDueDate)
                 .thenComparingInt(order -> order.getPriority() == null ? 2
@@ -173,8 +199,9 @@ public class MrpAnalysisService {
                 buildOrderResults(sortedOrders, demandByOrder, allocated, materials);
         int kittedCount = (int) orderResults.stream().filter(MrpAnalysisResponse.MrpOrderResult::kitted).count();
         MrpStatus status = resolveStatus(orderResults.size(), kittedCount);
-        List<MrpAnalysisResponse.MrpShortage> shortages = buildShortages(gross, available, earliestDue,
-                affectedOrders, materials, command.includeSuggestions());
+        List<MrpAnalysisResponse.MrpShortage> shortages = buildShortages(gross, onHand, safetyStock, transit,
+                available, earliestDue, earliestArrival, affectedOrders, materials, supplierCodes,
+                substitutesByMaterial, substituteMaterials, command.includeSuggestions());
         boolean blocked = command.blocking() && status != MrpStatus.FULL && !orderResults.isEmpty();
 
         return new MrpAnalysisResponse(command.sandboxId(), OffsetDateTime.now(ZoneOffset.UTC), status,
@@ -233,6 +260,7 @@ public class MrpAnalysisService {
             BigDecimal required = qty(parentQty.multiply(item.getQtyPerUnit()).multiply(factor));
             if (!Boolean.TRUE.equals(item.getIsPhantom())) {
                 context.demand.merge(childId, required, BigDecimal::add);
+                registerSubstitutes(context, childId, item);
             }
             if (context.path.contains(childId)) {
                 context.warnings.add("BOM 存在循环引用已跳过: "
@@ -293,18 +321,40 @@ public class MrpAnalysisService {
             }
             shortages.sort(Comparator.comparing(MrpAnalysisResponse.MrpOrderShortage::materialCode));
             Material product = materials.get(order.getProductId());
+            int totalItemCount = demand.size();
+            int shortageItemCount = shortages.size();
             results.add(new MrpAnalysisResponse.MrpOrderResult(order.getOrderNo(),
                     codeOf(product, order.getProductId()), qty(order.getQty()), order.getDueDate(),
-                    shortages.isEmpty(), shortages));
+                    shortageItemCount == 0, resolveKittingStatus(totalItemCount, shortageItemCount),
+                    shortageItemCount, totalItemCount, shortages));
         }
         return results;
     }
 
+    /**
+     * 订单级三态齐套：无缺料 = FULL；缺料项数等于物料项数 = SHORTAGE；其余 = PARTIAL。
+     *
+     * <p>{@code kitted} 布尔语义保持不变（{@code shortageItemCount == 0}），本方法只补充三态细分。</p>
+     */
+    private MrpStatus resolveKittingStatus(int totalItemCount, int shortageItemCount) {
+        if (shortageItemCount <= 0) {
+            return MrpStatus.FULL;
+        }
+        return shortageItemCount >= totalItemCount ? MrpStatus.SHORTAGE : MrpStatus.PARTIAL;
+    }
+
     private List<MrpAnalysisResponse.MrpShortage> buildShortages(Map<UUID, BigDecimal> gross,
+                                                                Map<UUID, BigDecimal> onHand,
+                                                                Map<UUID, BigDecimal> safetyStock,
+                                                                Map<UUID, BigDecimal> transit,
                                                                 Map<UUID, BigDecimal> available,
                                                                 Map<UUID, LocalDate> earliestDue,
+                                                                Map<UUID, LocalDate> earliestArrival,
                                                                 Map<UUID, Set<String>> affectedOrders,
                                                                 Map<UUID, Material> materials,
+                                                                Map<UUID, String> supplierCodes,
+                                                                Map<UUID, Map<String, SubstituteCandidate>> substitutesByMaterial,
+                                                                Map<String, Material> substituteMaterials,
                                                                 boolean includeSuggestions) {
         List<MrpAnalysisResponse.MrpShortage> shortages = new ArrayList<>();
         for (Map.Entry<UUID, BigDecimal> entry : gross.entrySet()) {
@@ -329,16 +379,53 @@ public class MrpAnalysisService {
                 suggestedPurchaseDate = earliestRequiredAt.minusDays(leadTimeDays);
                 suggestedQty = qty(shortage);
             }
+            LocalDate arrivalDate = earliestArrival.get(materialId);
+            OffsetDateTime expectedArrival = arrivalDate == null ? null
+                    : OffsetDateTime.of(arrivalDate, LocalTime.MIDNIGHT, ZoneOffset.UTC);
+            String supplierCode = material == null || material.getDefaultSupplierId() == null
+                    ? null : supplierCodes.get(material.getDefaultSupplierId());
+            List<MrpAnalysisResponse.MrpSubstitute> substitutes = buildSubstitutes(
+                    substitutesByMaterial.get(materialId), substituteMaterials, available);
             shortages.add(new MrpAnalysisResponse.MrpShortage(codeOf(material, materialId), nameOf(material),
-                    qty(required), qty(availableQty), qty(shortage), earliestRequiredAt, orderNos,
-                    suggestedPurchaseDate, suggestedQty, null));
+                    qty(required), qty(onHand.getOrDefault(materialId, ZERO)),
+                    qty(transit.getOrDefault(materialId, ZERO)),
+                    qty(safetyStock.getOrDefault(materialId, ZERO)),
+                    qty(availableQty), qty(shortage), earliestRequiredAt, orderNos,
+                    suggestedPurchaseDate, suggestedQty, supplierCode, substitutes, expectedArrival));
         }
         shortages.sort(Comparator.comparing(MrpAnalysisResponse.MrpShortage::materialCode));
         return shortages;
     }
 
-    private void loadInventory(Set<UUID> materialIds, Map<UUID, BigDecimal> onHand,
-                               Map<UUID, BigDecimal> safetyStock, Map<UUID, BigDecimal> transit) {
+    /**
+     * 组装替代料候选：编码/优先级/比例来自 BOM 明细的 substitutes JSONB，
+     * 可用量取与主物料同口径的 max(0, onHand + transit - safetyStock)。
+     */
+    private List<MrpAnalysisResponse.MrpSubstitute> buildSubstitutes(
+            Map<String, SubstituteCandidate> candidates, Map<String, Material> substituteMaterials,
+            Map<UUID, BigDecimal> available) {
+        if (candidates == null || candidates.isEmpty()) {
+            return List.of();
+        }
+        List<MrpAnalysisResponse.MrpSubstitute> substitutes = new ArrayList<>();
+        for (SubstituteCandidate candidate : candidates.values()) {
+            Material material = substituteMaterials.get(candidate.materialCode());
+            if (material == null || material.getId() == null) {
+                continue;
+            }
+            BigDecimal substituteAvailable = available.getOrDefault((UUID) material.getId(), ZERO).max(ZERO);
+            substitutes.add(new MrpAnalysisResponse.MrpSubstitute(candidate.materialCode(),
+                    candidate.priority(), candidate.ratio(), qty(substituteAvailable)));
+        }
+        Comparator<Integer> priorityComparator = Comparator.nullsLast(Comparator.naturalOrder());
+        substitutes.sort(Comparator.comparing(MrpAnalysisResponse.MrpSubstitute::priority, priorityComparator)
+                .thenComparing(MrpAnalysisResponse.MrpSubstitute::materialCode));
+        return substitutes;
+    }
+
+    private void loadInventory(Set<UUID> materialIds, Map<UUID, LocalDate> earliestDue,
+                               Map<UUID, BigDecimal> onHand, Map<UUID, BigDecimal> safetyStock,
+                               Map<UUID, BigDecimal> transit, Map<UUID, LocalDate> earliestArrival) {
         List<Inventory> inventories = inventoryMapper.selectList(Wrappers.<Inventory>lambdaQuery()
                 .in(Inventory::getMaterialId, materialIds));
         for (Inventory inventory : inventories) {
@@ -346,12 +433,114 @@ public class MrpAnalysisService {
             safetyStock.merge(inventory.getMaterialId(), nullSafe(inventory.getSafetyStock()),
                     BigDecimal::add);
         }
+        // C25 §24.7：只计需求时点前可到货的在途。V2 的 CHECK 不允许 OPEN/ARRIVED，
+        // PLANNED/CONFIRMED 即等价于契约中的 OPEN；CANCELLED 一律不计入。
         List<InventoryTransit> transits = inventoryTransitMapper.selectList(
                 Wrappers.<InventoryTransit>lambdaQuery()
                         .in(InventoryTransit::getMaterialId, materialIds)
                         .ne(InventoryTransit::getStatus, TRANSIT_CANCELLED));
         for (InventoryTransit record : transits) {
+            LocalDate expectedDate = record.getExpectedDate();
+            // C49：expectedArrival 取最早的非取消在途日期，晚于需求日也给出（仅作预告，不冲抵）。
+            if (expectedDate != null) {
+                earliestArrival.merge(record.getMaterialId(), expectedDate, (left, right) ->
+                        left.isBefore(right) ? left : right);
+            }
+            LocalDate requiredDate = earliestDue.get(record.getMaterialId());
+            if (requiredDate != null && expectedDate != null && expectedDate.isAfter(requiredDate)) {
+                continue;
+            }
             transit.merge(record.getMaterialId(), nullSafe(record.getQty()), BigDecimal::add);
+        }
+    }
+
+    private Map<String, Material> loadSubstituteMaterials(
+            Map<UUID, Map<String, SubstituteCandidate>> substitutesByMaterial, Set<String> warnings) {
+        Set<String> codes = new HashSet<>();
+        for (Map<String, SubstituteCandidate> candidates : substitutesByMaterial.values()) {
+            codes.addAll(candidates.keySet());
+        }
+        Map<String, Material> materials = masterDataRepository.findMaterialsByCodes(codes);
+        if (materials == null) {
+            return Map.of();
+        }
+        for (String code : codes) {
+            if (!materials.containsKey(code)) {
+                warnings.add("BOM substitutes 引用的替代料不存在: " + code);
+            }
+        }
+        return materials;
+    }
+
+    private Map<UUID, String> loadSupplierCodes(Map<UUID, Material> materials) {
+        Set<UUID> supplierIds = new HashSet<>();
+        for (Material material : materials.values()) {
+            if (material != null && material.getDefaultSupplierId() != null) {
+                supplierIds.add(material.getDefaultSupplierId());
+            }
+        }
+        Map<UUID, String> codes = masterDataRepository.findSupplierCodes(supplierIds);
+        return codes == null ? Map.of() : codes;
+    }
+
+    private void registerSubstitutes(ExpansionContext context, UUID childId, BomItem item) {
+        List<Map<String, Object>> rawSubstitutes = item.getSubstitutes();
+        if (rawSubstitutes == null || rawSubstitutes.isEmpty()) {
+            return;
+        }
+        Map<String, SubstituteCandidate> candidates = context.substitutes
+                .computeIfAbsent(childId, key -> new LinkedHashMap<>());
+        for (Map<String, Object> raw : rawSubstitutes) {
+            if (raw == null) {
+                continue;
+            }
+            String code = asText(raw.get("materialCode"));
+            if (code == null || code.isBlank()) {
+                continue;
+            }
+            Integer priority = asInteger(raw.get("priority"));
+            String ratio = asText(raw.get("ratio"));
+            SubstituteCandidate existing = candidates.get(code);
+            if (existing == null || comparePriority(priority, existing.priority()) < 0) {
+                candidates.put(code, new SubstituteCandidate(code, priority, ratio));
+            }
+        }
+    }
+
+    private int comparePriority(Integer left, Integer right) {
+        if (left == null && right == null) {
+            return 0;
+        }
+        if (left == null) {
+            return 1;
+        }
+        if (right == null) {
+            return -1;
+        }
+        return Integer.compare(left, right);
+    }
+
+    private String asText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof BigDecimal decimal) {
+            return decimal.stripTrailingZeros().toPlainString();
+        }
+        return String.valueOf(value).trim();
+    }
+
+    private Integer asInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 
@@ -436,8 +625,18 @@ public class MrpAnalysisService {
 
         private final Map<UUID, List<BomItem>> items = new HashMap<>();
 
-        private ExpansionContext(Set<String> warnings) {
+        private final Map<UUID, Map<String, SubstituteCandidate>> substitutes;
+
+        private ExpansionContext(Set<String> warnings,
+                                 Map<UUID, Map<String, SubstituteCandidate>> substitutes) {
             this.warnings = warnings;
+            this.substitutes = substitutes;
         }
+    }
+
+    /**
+     * BOM 明细 substitutes JSONB 中的一条替代料候选。
+     */
+    private record SubstituteCandidate(String materialCode, Integer priority, String ratio) {
     }
 }

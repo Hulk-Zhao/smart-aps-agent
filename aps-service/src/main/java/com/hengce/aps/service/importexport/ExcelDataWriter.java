@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.apache.poi.ss.usermodel.Cell;
@@ -31,12 +32,26 @@ public final class ExcelDataWriter {
      * @return xlsx 字节
      */
     public static byte[] write(ImportEntity entity, List<Map<String, Object>> rows) {
+        return write(entity, rows, List.of());
+    }
+
+    /**
+     * 生成数据 xlsx，并在实体列之后追加只读展示列。
+     *
+     * @param entity 实体
+     * @param rows 行数据，键为列键
+     * @param extraColumns 追加在末尾的只读展示列（导入时按未知列忽略）
+     * @return xlsx 字节
+     */
+    public static byte[] write(ImportEntity entity, List<Map<String, Object>> rows,
+                               List<ImportColumn> extraColumns) {
         try (XSSFWorkbook workbook = new XSSFWorkbook();
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = workbook.createSheet("数据");
             CellStyle headerStyle = headerStyle(workbook);
             Row headerRow = sheet.createRow(0);
-            List<ImportColumn> columns = entity.columns();
+            List<ImportColumn> columns = new ArrayList<>(entity.columns());
+            columns.addAll(extraColumns);
             for (int index = 0; index < columns.size(); index++) {
                 ImportColumn column = columns.get(index);
                 Cell cell = headerRow.createCell(index);

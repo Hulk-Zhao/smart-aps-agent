@@ -31,18 +31,22 @@ public class MrpMasterDataRepository {
 
     private final MaterialMapper materialMapper;
 
+    private final SupplierRefMapper supplierRefMapper;
+
     /**
      * 构造仓库。
      *
      * @param bomMapper BOM 主表 Mapper
      * @param bomItemMapper BOM 明细 Mapper
      * @param materialMapper 物料 Mapper
+     * @param supplierRefMapper 供应商只读 Mapper
      */
     public MrpMasterDataRepository(BomMapper bomMapper, BomItemMapper bomItemMapper,
-                                   MaterialMapper materialMapper) {
+                                   MaterialMapper materialMapper, SupplierRefMapper supplierRefMapper) {
         this.bomMapper = bomMapper;
         this.bomItemMapper = bomItemMapper;
         this.materialMapper = materialMapper;
+        this.supplierRefMapper = supplierRefMapper;
     }
 
     /**
@@ -113,5 +117,22 @@ public class MrpMasterDataRepository {
             materials.put(material.getCode(), material);
         }
         return materials;
+    }
+
+    /**
+     * 按主键批量查询供应商编码。
+     *
+     * @param supplierIds 供应商主键集合
+     * @return 主键到供应商编码的映射
+     */
+    public Map<UUID, String> findSupplierCodes(Collection<UUID> supplierIds) {
+        Map<UUID, String> codes = new HashMap<>();
+        if (supplierIds == null || supplierIds.isEmpty()) {
+            return codes;
+        }
+        for (SupplierRef supplier : supplierRefMapper.selectBatchIds(supplierIds)) {
+            codes.put((UUID) supplier.getId(), supplier.getCode());
+        }
+        return codes;
     }
 }

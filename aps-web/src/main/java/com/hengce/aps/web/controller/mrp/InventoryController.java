@@ -46,10 +46,11 @@ public class InventoryController {
      * 批量 upsert 库存快照。
      *
      * @param request 库存请求
-     * @return 新增/更新计数
+     * @return 契约口径的 {@code accepted}/{@code rejected} 计数
      */
     @Operation(summary = "库存批量 upsert",
-            description = "状态：已实现。幂等键 materialCode+warehouseCode；onHandQty/safetyStock 不允许为负。")
+            description = "状态：已实现。幂等键 materialCode+warehouseCode；onHandQty/safetyStock 不允许为负；"
+                    + "响应为 {accepted, rejected}。")
     @RequiresPermission("MD_WRITE")
     @PutMapping("/inventory")
     public Result<InventoryUpsertResult> upsert(@Valid @RequestBody InventoryUpsertRequest request) {

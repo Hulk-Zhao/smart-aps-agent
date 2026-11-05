@@ -104,6 +104,7 @@ class MrpAnalysisServiceTest {
         assertEquals(MrpStatus.SHORTAGE, response.status());
         assertEquals(1, response.orderCount());
         assertFalse(response.orders().get(0).kitted());
+        assertEquals(2, response.orders().get(0).shortages().size());
         assertEquals(2, response.shortages().size());
         MrpAnalysisResponse.MrpShortage rawShortage = response.shortages().get(0);
         assertEquals("RM-01", rawShortage.materialCode());
@@ -168,8 +169,72 @@ class MrpAnalysisServiceTest {
         assertEquals(MrpStatus.PARTIAL, response.status());
         assertTrue(response.orders().get(0).kitted());
         assertFalse(response.orders().get(1).kitted());
+        assertEquals(MrpStatus.FULL, response.orders().get(0).kittingStatus());
+        assertEquals(MrpStatus.SHORTAGE, response.orders().get(1).kittingStatus());
+        assertEquals(0, response.orders().get(0).shortageItemCount());
+        assertEquals(1, response.orders().get(0).totalItemCount());
+        assertEquals(1, response.orders().get(1).shortageItemCount());
+        assertEquals(1, response.orders().get(1).totalItemCount());
+        assertEquals(1, response.orders().get(1).shortages().size());
         assertEquals(1, response.shortages().size());
         assertEquals(0, new BigDecimal("10").compareTo(response.shortages().get(0).shortageQty()));
+    }
+
+    @Test
+    void marksOrderPartialWhenOnlySomeItemsShort() {
+        UUID fg = material("FG-06", "成品", 0);
+        UUID covered = material("RM-09", "已覆盖料", 0);
+        UUID shortMaterial = material("RM-10", "缺料", 0);
+        link(fg, covered, "1", "0", false);
+        link(fg, shortMaterial, "1", "0", false);
+        order("SO-009", fg, "10", LocalDate.of(2026, 11, 10));
+        inventory(covered, "100", "0");
+        inventory(shortMaterial, "0", "0");
+
+        MrpAnalysisResponse response = service.analyze(
+                new MrpAnalysisCommand(UUID.randomUUID(), List.of("SO-009"), false, false));
+
+        MrpAnalysisResponse.MrpOrderResult order = response.orders().get(0);
+        assertFalse(order.kitted());
+        assertEquals(MrpStatus.PARTIAL, order.kittingStatus());
+        assertEquals(1, order.shortageItemCount());
+        assertEquals(2, order.totalItemCount());
+    }
+
+    @Test
+    void reportsSubstitutesSupplierAndExpectedArrivalBeyondDueDate() {
+        UUID fg = material("FG-07", "成品", 0);
+        UUID raw = material("RM-07", "原料", 0);
+        UUID alternate = material("RM-08", "替代料", 0);
+        link(fg, raw, "1", "0", false);
+        substitute(raw, "RM-08", 1, "1:1");
+        order("SO-008", fg, "10", LocalDate.of(2026, 11, 10));
+        inventory(raw, "0", "0");
+        inventory(alternate, "50", "10");
+        transit(raw, "10", LocalDate.of(2026, 11, 20));
+        UUID supplierId = UUID.randomUUID();
+        supplier(raw, supplierId);
+        when(masterDataRepository.findSupplierCodes(any())).thenReturn(Map.of(supplierId, "SUP-D02"));
+
+        MrpAnalysisResponse response = service.analyze(
+                new MrpAnalysisCommand(UUID.randomUUID(), List.of("SO-008"), false, false));
+
+        MrpAnalysisResponse.MrpShortage shortage = response.shortages().get(0);
+        assertEquals("RM-07", shortage.materialCode());
+        assertEquals("SUP-D02", shortage.supplierCode());
+        assertEquals(1, shortage.substitutes().size());
+        MrpAnalysisResponse.MrpSubstitute substitute = shortage.substitutes().get(0);
+        assertEquals("RM-08", substitute.materialCode());
+        assertEquals(1, substitute.priority());
+        assertEquals("1:1", substitute.ratio());
+        assertEquals(0, new BigDecimal("40").compareTo(substitute.availableQty()));
+        // 在途 +20 晚于交期 +10：给出日期但不冲抵缺口（transitQty=0）。
+        assertEquals(0, BigDecimal.ZERO.compareTo(shortage.transitQty()));
+        assertEquals(OffsetDateTime.of(2026, 11, 20, 0, 0, 0, 0, ZoneOffset.UTC),
+                shortage.expectedArrival());
+        assertEquals(MrpStatus.SHORTAGE, response.orders().get(0).kittingStatus());
+        assertEquals(1, response.orders().get(0).shortageItemCount());
+        assertEquals(1, response.orders().get(0).totalItemCount());
     }
 
     @Test
@@ -223,6 +288,16 @@ class MrpAnalysisServiceTest {
         when(masterDataRepository.findActiveBoms(any())).thenAnswer(invocation -> {
             UUID parentId = invocation.getArgument(0);
             return boms.stream().filter(bom -> bom.getParentMaterialId().equals(parentId)).toList();
+        });
+        when(masterDataRepository.findMaterialsByCodes(any())).thenAnswer(invocation -> {
+            Collection<String> codes = invocation.getArgument(0);
+            Map<String, Material> found = new HashMap<>();
+            for (Material material : materials.values()) {
+                if (codes.contains(material.getCode())) {
+                    found.put(material.getCode(), material);
+                }
+            }
+            return found;
         });
         when(masterDataRepository.findItems(any())).thenAnswer(invocation -> {
             UUID bomId = invocation.getArgument(0);
@@ -292,13 +367,32 @@ class MrpAnalysisServiceTest {
     }
 
     private void transit(UUID materialId, String qty) {
+        transit(materialId, qty, LocalDate.of(2026, 11, 9));
+    }
+
+    private void transit(UUID materialId, String qty, LocalDate expectedDate) {
         InventoryTransit record = new InventoryTransit();
         record.setId(UUID.randomUUID());
         record.setMaterialId(materialId);
         record.setQty(new BigDecimal(qty));
-        record.setExpectedDate(LocalDate.of(2026, 11, 9));
+        record.setExpectedDate(expectedDate);
         record.setSourceType("PURCHASE");
         record.setStatus("CONFIRMED");
         transits.add(record);
+    }
+
+    private void substitute(UUID childId, String materialCode, int priority, String ratio) {
+        BomItem item = bomItems.stream()
+                .filter(candidate -> candidate.getChildMaterialId().equals(childId))
+                .findFirst().orElseThrow();
+        Map<String, Object> substitute = new HashMap<>();
+        substitute.put("materialCode", materialCode);
+        substitute.put("priority", priority);
+        substitute.put("ratio", ratio);
+        item.setSubstitutes(List.of(substitute));
+    }
+
+    private void supplier(UUID materialId, UUID supplierId) {
+        materials.get(materialId).setDefaultSupplierId(supplierId);
     }
 }

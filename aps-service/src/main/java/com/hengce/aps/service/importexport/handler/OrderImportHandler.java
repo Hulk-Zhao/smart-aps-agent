@@ -1,7 +1,9 @@
 package com.hengce.aps.service.importexport.handler;
 
+import com.hengce.aps.common.constant.ApsConstants;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.service.importexport.EntityImportHandler;
 import com.hengce.aps.service.importexport.ImportEntity;
 import com.hengce.aps.service.importexport.ImportRowException;
@@ -13,7 +15,10 @@ import com.hengce.aps.service.masterdata.order.OrderSource;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,13 +29,17 @@ public class OrderImportHandler implements EntityImportHandler {
 
     private final OrderService orderService;
 
+    private final JdbcTemplate jdbcTemplate;
+
     /**
      * 构造订单导入器。
      *
      * @param orderService 订单服务
+     * @param jdbcTemplate JDBC 模板
      */
-    public OrderImportHandler(OrderService orderService) {
+    public OrderImportHandler(OrderService orderService, JdbcTemplate jdbcTemplate) {
         this.orderService = orderService;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Override
@@ -58,7 +67,23 @@ public class OrderImportHandler implements EntityImportHandler {
         normalized.put("priority", ImportValues.enumValue(ImportValues.text(row, "priority"), "priority",
                 entity().column("priority").allowedValues(), "NORMAL"));
         normalized.put("remark", ImportValues.optionalText(row, "remark", 2000));
+        String customerCode = ImportValues.optionalText(row, "customerCode", 64);
+        if (customerCode != null) {
+            List<UUID> customerIds = jdbcTemplate.query(
+                    "select id from customer where tenant_id = ? and code = ? and deleted = false",
+                    (rs, index) -> (UUID) rs.getObject(1), tenantId(), customerCode);
+            if (customerIds.isEmpty()) {
+                throw new ImportRowException("customerCode", 42200,
+                        "客户编码不存在: " + customerCode + "（列 客户编码）");
+            }
+            normalized.put("customerId", customerIds.get(0));
+        }
         return normalized;
+    }
+
+    private UUID tenantId() {
+        UUID tenantId = TenantContext.getTenantId();
+        return tenantId == null ? UUID.fromString(ApsConstants.DEFAULT_TENANT_ID) : tenantId;
     }
 
     @Override
@@ -79,7 +104,7 @@ public class OrderImportHandler implements EntityImportHandler {
                     (BigDecimal) normalized.get("qty"),
                     (LocalDate) normalized.get("dueDate"),
                     OrderPriority.valueOf((String) normalized.get("priority")),
-                    null, null, (String) normalized.get("remark"), null));
+                    (UUID) normalized.get("customerId"), null, (String) normalized.get("remark"), null));
             return WriteOutcome.INSERTED;
         } catch (BizException exception) {
             throw new ImportRowException("orderNo", exception.getErrorCode().getCode(), exception.getMessage());

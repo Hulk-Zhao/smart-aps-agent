@@ -62,6 +62,7 @@ paths:
         late = 任务 endTime 超过订单 dueDate 当日 UTC 23:59:59；订单级 lateMinutes 为整数分钟，
         仅 late=true 时给出，late=false 时省略或 null（不得填 0 冒充）。
         订单行额外返回 orderId、productFamily、dueDateLine、orderStatus、lateTaskCount（见 GanttOrderRow）。
+        C50 起订单行再返回 materialName/materialSpec（只读展示字段，来源 material.name/spec）。
         任务 lockType：M2 由 task.status 推导 FROZEN|NONE，V5 生效后回读 task.lock_type（可扩展 TIME_WINDOW|RESOURCE）。
         非分页结构，排序固定为 orderNo, operationIndex，不按交期；from/to 只做窗口过滤不改排序。
       x-implementation-status: implemented
@@ -97,11 +98,12 @@ paths:
       tags: [计划]
       summary: 人工调整任务
       description: |
-        状态：代码已落地（C22，W4）；未做制品级 HTTP 验收，故标 partial。
-        operation=MOVE/LOCK/FREEZE/UNFREEZE；SPLIT/MERGE 枚举已冻结但 M2 返回 50100。
+        状态：已实现（2026-11-04 制品级 HTTP 验收：MOVE/LOCK/FREEZE/UNFREEZE 与 SPLIT/MERGE 均 200/code 0）。
+        C36（第二批，2026-11-04 冻结）已放行 SPLIT/MERGE；本 yaml 早前“SPLIT/MERGE 返回 50100”与契约冲突，以 C36 为准。
+        实测 SPLIT 100→40/60（新增 1 行、原行 qty=40）；MERGE 50+50→100（合并行软删除，task_adjustment 记 MERGE）。
         version 与 task.version 不一致返回 40901；FROZEN 任务 MOVE 返回 42201；dryRun=true 只校验不落库。
         目标任务是 IN_PROGRESS/COMPLETED → 409/40903（任务级：只判目标任务；与 C21/C24 同一语义，不得拆码）。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -145,15 +147,15 @@ paths:
       operationId: undoTaskAdjustment
       tags: [计划]
       summary: 撤销任务调整
-      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。按任务栈撤销最近一次调整；每任务最多 50 步。
-      x-implementation-status: partial
+      description: 状态：已实现（2026-11-04 制品级 HTTP 验收：POST /tasks/adjustments/6/undo → 200/code 0，task.status=FROZEN/version=8，adjustment.undone=true）。按任务栈撤销最近一次调整；每任务最多 50 步。
+      x-implementation-status: implemented
       parameters:
         - name: adjustmentId
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            type: integer
+            format: int64
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
@@ -171,15 +173,15 @@ paths:
       operationId: redoTaskAdjustment
       tags: [计划]
       summary: 重做任务调整
-      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。重做被撤销的调整。
-      x-implementation-status: partial
+      description: 状态：已实现（2026-11-04 制品级 HTTP 验收：POST /tasks/adjustments/6/redo → 200/code 0，task.status=PLANNED/version=9，adjustment.undone=false）。重做被撤销的调整。
+      x-implementation-status: implemented
       parameters:
         - name: adjustmentId
           in: path
           required: true
           schema:
-            type: string
-            format: uuid
+            type: integer
+            format: int64
         - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
@@ -197,8 +199,8 @@ paths:
       operationId: listTaskAdjustments
       tags: [计划]
       summary: 任务调整历史
-      description: 状态：代码已落地（C22）；未做制品级 HTTP 验收，故标 partial。分页返回该任务的调整记录。
-      x-implementation-status: partial
+      description: 状态：已实现（2026-11-04 制品级 HTTP 验收：GET /tasks/900001/adjustments → 200/code 0，分页返回该任务的调整记录）。分页返回该任务的调整记录。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -280,9 +282,9 @@ paths:
       tags: [计划]
       summary: 计划版本详情
       description: |
-        状态：代码已落地（C24，W5）；尚未做制品级 HTTP 验收，故标 partial。
+        状态：已实现（2026-11-04 制品级 HTTP 验收：GET /plans/{id} → 200/code 0，action.taskCount=6，tasks 返回快照 6 条）。
         返回版本元信息与该版本不可变快照任务（来自 plan_version.snapshot，不随 task 表变化）。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -307,10 +309,10 @@ paths:
       tags: [计划下发]
       summary: 计划下发
       description: |
-        状态：代码已落地（PlanDispatchController#dispatch，aps-web/src/main/java/com/hengce/aps/web/controller/plan/PlanDispatchController.java:59-68）；
-        未做制品级 HTTP 验收，故标 partial（C33）。仅 PUBLISHED 生效；只写 outbox（QUEUED），不真实发送；
-        重复 Idempotency-Key 返回首次 dispatchId。字段取自 DispatchRequest/DispatchResultView，形状未经制品级验收。
-      x-implementation-status: partial
+        状态：已实现（2026-11-04 制品级 HTTP 验收：POST /plans/{id}/dispatch → 200/code 0，dispatchId=de263c05…，status=QUEUED/targetCount=2；
+        notification_outbox 落 2 行（EMAIL/FEISHU）并推送为 SENT/attempts=1）。
+        仅 PUBLISHED 生效；重复 Idempotency-Key 返回首次 dispatchId（实测同键返回同一 dispatchId）。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -354,10 +356,9 @@ paths:
       tags: [计划下发]
       summary: 下发状态
       description: |
-        状态：代码已落地（PlanDispatchController#dispatches，aps-web/src/main/java/com/hengce/aps/web/controller/plan/PlanDispatchController.java:80-85）；
-        未做制品级 HTTP 验收，故标 partial（C33）。按 createdAt 倒序；返回 QUEUED/SENT/PARTIAL/FAILED 聚合；
-        不扩展 PlanDetailView。字段取自 DispatchSummaryView，形状未经制品级验收。
-      x-implementation-status: partial
+        状态：已实现（2026-11-04 制品级 HTTP 验收：GET /plans/{id}/dispatches → 200/code 0，total=1，status=SENT/sentCount=2/failedCount=0）。
+        按 createdAt 倒序；返回 QUEUED/SENT/PARTIAL/FAILED 聚合；不扩展 PlanDetailView。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -679,6 +680,26 @@ components:
           type: string
         materialCode:
           type: string
+        materialName:
+          type: string
+          maxLength: 256
+          nullable: true
+          readOnly: true
+          x-contract-id: C50
+          description: |
+            C50 新增只读展示字段。来源 orders.product_id → material.name（同一 tenant_id、deleted=false）。
+            物料缺失/已软删除时为 null；不得用 materialCode 冒充名称。
+          example: 储能电池模组
+        materialSpec:
+          type: string
+          maxLength: 512
+          nullable: true
+          readOnly: true
+          x-contract-id: C50
+          description: |
+            C50 新增只读展示字段。来源 orders.product_id → material.spec（同一 tenant_id、deleted=false）。
+            物料缺失/已软删除或 spec 为空时为 null；不得用“—”冒充规格。
+          example: 48V/100Ah
         productFamily:
           type: string
           nullable: true
@@ -771,8 +792,9 @@ components:
       type: object
       properties:
         adjustmentId:
-          type: string
-          format: uuid
+          type: integer
+          format: int64
+          description: task_adjustment.id（BIGSERIAL，对齐 C22 与实现）
         applied:
           type: boolean
         dryRun:

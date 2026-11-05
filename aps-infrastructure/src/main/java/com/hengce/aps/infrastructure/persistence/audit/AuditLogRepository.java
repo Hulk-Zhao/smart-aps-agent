@@ -146,6 +146,39 @@ public class AuditLogRepository {
         return new AuditLogPage(items, total == null ? 0L : total);
     }
 
+    /**
+     * 按动作与资源标识查找一条已存在的审计记录，用于 Agent 事件上报的幂等判重。
+     *
+     * <p>调用方需先持有 {@link #lockIdempotencyKey(UUID, String)} 的咨询锁，
+     * 才能保证“判重 + 写入”在并发下不产生重复行。</p>
+     *
+     * @param tenantId 租户标识
+     * @param action 动作编码
+     * @param resourceId 资源标识
+     * @return 最早的一条记录
+     */
+    public java.util.Optional<AuditLogRow> findFirstByResource(UUID tenantId, String action, String resourceId) {
+        return jdbcTemplate.query(
+                SELECT_COLUMNS + " WHERE tenant_id = ? AND action = ? AND resource_id = ?"
+                        + " ORDER BY id ASC LIMIT 1",
+                ROW_MAPPER, tenantId, action, resourceId).stream().findFirst();
+    }
+
+    /**
+     * 在当前事务内获取按“租户 + 幂等键”串行化的 Postgres 咨询锁。
+     *
+     * <p>不新增唯一索引即可保证判重写入的并发安全；锁随事务结束自动释放。</p>
+     *
+     * @param tenantId 租户标识
+     * @param idempotencyKey 幂等键
+     */
+    public void lockIdempotencyKey(UUID tenantId, String idempotencyKey) {
+        jdbcTemplate.queryForObject(
+                "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+                (rs, rowNum) -> (Void) null,
+                tenantId + ":agent-event:" + idempotencyKey);
+    }
+
     private static void appendEquals(StringBuilder where, List<Object> args, String column, String value) {
         if (value != null && !value.isBlank()) {
             where.append(" AND ").append(column).append(" = ?");

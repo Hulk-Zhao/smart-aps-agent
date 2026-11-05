@@ -11,6 +11,7 @@ import com.hengce.aps.infrastructure.persistence.bom.BomItemMapper;
 import com.hengce.aps.infrastructure.persistence.bom.BomMapper;
 import com.hengce.aps.infrastructure.persistence.material.Material;
 import com.hengce.aps.infrastructure.persistence.material.MaterialMapper;
+import com.hengce.aps.service.mrp.MrpSuggestionCache;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.sql.SQLException;
@@ -66,7 +67,8 @@ class BomServiceTest {
         bomMapper = mock(BomMapper.class);
         bomItemMapper = mock(BomItemMapper.class);
         materialMapper = mock(MaterialMapper.class);
-        bomService = new BomService(bomMapper, bomItemMapper, materialMapper);
+        bomService = new BomService(bomMapper, bomItemMapper, materialMapper,
+                new MrpSuggestionCache(45));
     }
 
     @Test

@@ -162,11 +162,11 @@ class RoutingGraphValidatorTest {
     }
 
     @Test
-    void fixedModeWithoutPrimaryResourceShouldReturn40000() {
+    void fixedModeWithoutPrimaryResourceShouldReturn42200() {
         BizException exception = assertThrows(BizException.class, () -> validator.validate(
                 List.of(node(1, TEMPLATE_ID, null, "FIXED", null)), List.of()));
-        assertEquals(ErrorCode.BAD_REQUEST, exception.getErrorCode());
-        assertEquals(40000, exception.getErrorCode().getCode());
+        assertEquals(ErrorCode.UNPROCESSABLE_ENTITY, exception.getErrorCode());
+        assertEquals(42200, exception.getErrorCode().getCode());
     }
 
     @Test
@@ -191,10 +191,10 @@ class RoutingGraphValidatorTest {
     }
 
     @Test
-    void unsupportedModeShouldReturn40000() {
+    void unsupportedModeShouldReturn42200() {
         BizException exception = assertThrows(BizException.class, () -> validator.validate(
                 List.of(node(1, TEMPLATE_ID, RESOURCE_ID, "AUTO", RESOURCE_ID)), List.of()));
-        assertEquals(ErrorCode.BAD_REQUEST, exception.getErrorCode());
+        assertEquals(ErrorCode.UNPROCESSABLE_ENTITY, exception.getErrorCode());
         assertTrue(exception.getMessage().contains("primaryResourceMode"));
     }
 

@@ -52,7 +52,8 @@ class InventoryServiceTest {
         TableInfoHelper.initTableInfo(assistant, Material.class);
         inventoryMapper = mock(InventoryMapper.class);
         masterDataRepository = mock(MrpMasterDataRepository.class);
-        inventoryService = new InventoryService(inventoryMapper, masterDataRepository);
+        inventoryService = new InventoryService(inventoryMapper, masterDataRepository,
+                new MrpSuggestionCache(45));
         material = new Material();
         material.setId(UUID.randomUUID());
         material.setCode("RM-01");
@@ -78,10 +79,10 @@ class InventoryServiceTest {
                 new BigDecimal("10"), new BigDecimal("2"),
                 OffsetDateTime.of(2026, 11, 4, 0, 0, 0, 0, ZoneOffset.UTC));
         InventoryUpsertResult first = inventoryService.upsert(List.of(command));
-        assertEquals(new InventoryUpsertResult(1, 0, 1), first);
+        assertEquals(new InventoryUpsertResult(1, 0), first);
         InventoryUpsertResult second = inventoryService.upsert(List.of(command));
 
-        assertEquals(new InventoryUpsertResult(0, 1, 1), second);
+        assertEquals(new InventoryUpsertResult(1, 0), second);
         verify(inventoryMapper, org.mockito.Mockito.times(1)).insert(any(Inventory.class));
         verify(inventoryMapper, org.mockito.Mockito.times(1)).updateById(any(Inventory.class));
         assertEquals(0, new BigDecimal("10").compareTo(existing.getOnHandQty()));

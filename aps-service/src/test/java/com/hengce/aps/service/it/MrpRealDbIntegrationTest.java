@@ -104,12 +104,12 @@ class MrpRealDbIntegrationTest extends AbstractRealDbIntegrationTest {
         InventoryUpsertResult first = inventoryService.upsert(List.of(
                 new InventoryItemCommand(tag("MRP-RM"), "WH1", new BigDecimal("50"),
                         new BigDecimal("5"), snapshot)));
-        assertEquals(new InventoryUpsertResult(1, 0, 1), first);
+        assertEquals(new InventoryUpsertResult(1, 0), first);
 
         InventoryUpsertResult second = inventoryService.upsert(List.of(
                 new InventoryItemCommand(tag("MRP-RM"), "WH1", new BigDecimal("60"),
                         new BigDecimal("5"), snapshot.plusHours(1))));
-        assertEquals(new InventoryUpsertResult(0, 1, 1), second);
+        assertEquals(new InventoryUpsertResult(1, 0), second);
         long rows = count("SELECT count(*) FROM inventory WHERE material_id = ? AND warehouse_code = 'WH1'",
                 rawId);
         assertEquals(1L, rows, "重复 PUT /inventory 不应产生重复行");
@@ -126,6 +126,7 @@ class MrpRealDbIntegrationTest extends AbstractRealDbIntegrationTest {
         assertEquals(0, new BigDecimal("65").compareTo(rawShortage.availableQty()));
         assertEquals(0, new BigDecimal("1").compareTo(rawShortage.shortageQty()));
         assertFalse(analysis.orders().get(0).kitted());
+        assertEquals(2, analysis.orders().get(0).shortages().size());
         evidence("MRP 分析(缺料): " + analysis);
 
         MrpBlockingChecker checker = new MrpBlockingChecker(mrpAnalysisService, true);
@@ -143,6 +144,7 @@ class MrpRealDbIntegrationTest extends AbstractRealDbIntegrationTest {
                 UUID.randomUUID(), List.of(orderNo), false, true));
         assertEquals(MrpStatus.FULL, covered.status());
         assertTrue(covered.orders().get(0).kitted());
+        assertEquals(0, covered.orders().get(0).shortages().size());
         assertFalse(covered.blocked());
         evidence("MRP 分析(齐套): " + covered);
     }

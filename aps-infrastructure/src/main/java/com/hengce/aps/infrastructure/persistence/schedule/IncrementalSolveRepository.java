@@ -1,6 +1,10 @@
 package com.hengce.aps.infrastructure.persistence.schedule;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -87,23 +91,38 @@ public class IncrementalSolveRepository {
     /**
      * 写入新的 DRAFT 计划版本；不触碰任何已 PUBLISHED 快照。
      *
+     * <p>快照占位 JSON 记录本次求解范围 {@code scopeOrderNos}，发布时据此只固化/回填
+     * 范围内任务，避免同一场景内其他客户的订单被改写版本号。</p>
+     *
      * @param tenantId 租户标识
      * @param sandboxId 场景标识
      * @param planNo 计划业务号
      * @param versionNo 版本号
      * @param reason 原因
      * @param operatorId 操作人，可空
+     * @param scopeOrderNos 本次增量求解覆盖的订单号；空列表表示按场景全量
      * @return 新版本主键（对外 planId）
      */
     public UUID insertDraftVersion(UUID tenantId, UUID sandboxId, String planNo, int versionNo,
-                                   String reason, UUID operatorId) {
+                                   String reason, UUID operatorId, List<String> scopeOrderNos) {
         UUID planId = UUID.randomUUID();
         jdbcTemplate.update("""
                 INSERT INTO plan_version (id, tenant_id, sandbox_id, plan_no, version_no, status,
                                           snapshot, task_count, reason, created_by)
-                VALUES (?, ?, ?, ?, ?, 'DRAFT', '{}'::jsonb, 0, ?, ?)
-                """, planId, tenantId, sandboxId, planNo, String.valueOf(versionNo), reason, operatorId);
+                VALUES (?, ?, ?, ?, ?, 'DRAFT', ?::jsonb, 0, ?, ?)
+                """, planId, tenantId, sandboxId, planNo, String.valueOf(versionNo),
+                scopeJson(scopeOrderNos), reason, operatorId);
         return planId;
+    }
+
+    private static String scopeJson(List<String> scopeOrderNos) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("scopeOrderNos", scopeOrderNos == null ? List.of() : scopeOrderNos);
+        try {
+            return new ObjectMapper().writeValueAsString(snapshot);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("增量计划范围序列化失败", exception);
+        }
     }
 
     private static final org.springframework.jdbc.core.RowMapper<TaskRef> TASK_MAPPER =

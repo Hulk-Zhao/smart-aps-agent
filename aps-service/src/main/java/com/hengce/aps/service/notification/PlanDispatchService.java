@@ -5,12 +5,12 @@ import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.common.tenant.TenantContext;
-import com.hengce.aps.infrastructure.persistence.audit.AuditContext;
 import com.hengce.aps.infrastructure.persistence.audit.AuditLogRepository;
 import com.hengce.aps.infrastructure.persistence.notification.NotificationOutboxRepository;
 import com.hengce.aps.infrastructure.persistence.notification.NotificationOutboxRepository.DispatchAggregateRow;
 import com.hengce.aps.infrastructure.persistence.plan.PlanVersionRepository;
 import com.hengce.aps.infrastructure.persistence.plan.PlanVersionRepository.PlanVersionRow;
+import com.hengce.aps.service.audit.AuditValues;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -118,7 +118,8 @@ public class PlanDispatchService {
         after.put("channels", new ArrayList<>(new LinkedHashSet<>(
                 normalized.stream().map(DispatchTargetCommand::channel).toList())));
         after.put("targetCount", inserted);
-        auditLogRepository.record(tenantId, "PLAN_DISPATCHED", "PLAN", planId.toString(), null, after);
+        auditLogRepository.record(tenantId, "PLAN_DISPATCHED", "PLAN", planId.toString(), null,
+                AuditValues.redact(after));
 
         return new DispatchResultView(dispatchId, planId, STATUS_QUEUED, inserted, queuedAt);
     }

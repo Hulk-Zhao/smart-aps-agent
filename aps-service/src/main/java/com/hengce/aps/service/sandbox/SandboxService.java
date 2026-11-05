@@ -11,6 +11,7 @@ import com.hengce.aps.infrastructure.persistence.plan.PlanVersionRepository;
 import com.hengce.aps.infrastructure.persistence.sandbox.SandboxRepository;
 import com.hengce.aps.infrastructure.persistence.sandbox.SandboxRepository.CompareTaskRow;
 import com.hengce.aps.infrastructure.persistence.sandbox.SandboxRepository.SandboxRow;
+import com.hengce.aps.service.audit.AuditValues;
 import com.hengce.aps.service.plan.PlanActionView;
 import com.hengce.aps.service.plan.PlanVersionService;
 import java.time.LocalDate;
@@ -175,7 +176,8 @@ public class SandboxService {
         after.put("planId", published.planId().toString());
         after.put("planVersion", published.version());
         after.put("archivedSandboxId", oldBaseline.id().toString());
-        auditLogRepository.record(tenantId, "SANDBOX_APPLIED", "SANDBOX", sandboxId.toString(), null, after);
+        auditLogRepository.record(tenantId, "SANDBOX_APPLIED", "SANDBOX", sandboxId.toString(), null,
+                AuditValues.redact(after));
 
         return new SandboxApplyResultView(toSummary(requireSandbox(tenantId, sandboxId)), published);
     }

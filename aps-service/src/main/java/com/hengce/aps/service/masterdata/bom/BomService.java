@@ -8,12 +8,14 @@ import com.hengce.aps.common.api.PageQuery;
 import com.hengce.aps.common.api.PageResult;
 import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
+import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.infrastructure.persistence.bom.Bom;
 import com.hengce.aps.infrastructure.persistence.bom.BomItem;
 import com.hengce.aps.infrastructure.persistence.bom.BomItemMapper;
 import com.hengce.aps.infrastructure.persistence.bom.BomMapper;
 import com.hengce.aps.infrastructure.persistence.material.Material;
 import com.hengce.aps.infrastructure.persistence.material.MaterialMapper;
+import com.hengce.aps.service.mrp.MrpSuggestionCache;
 import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
@@ -71,17 +73,22 @@ public class BomService {
 
     private final MaterialMapper materialMapper;
 
+    private final MrpSuggestionCache suggestionCache;
+
     /**
      * 构造服务。
      *
      * @param bomMapper BOM 主表 Mapper
      * @param bomItemMapper BOM 子件 Mapper
      * @param materialMapper 物料 Mapper（只读，用于编码寻址与响应补全）
+     * @param suggestionCache 采购建议缓存（BOM 变化后主动失效）
      */
-    public BomService(BomMapper bomMapper, BomItemMapper bomItemMapper, MaterialMapper materialMapper) {
+    public BomService(BomMapper bomMapper, BomItemMapper bomItemMapper, MaterialMapper materialMapper,
+                      MrpSuggestionCache suggestionCache) {
         this.bomMapper = bomMapper;
         this.bomItemMapper = bomItemMapper;
         this.materialMapper = materialMapper;
+        this.suggestionCache = suggestionCache;
     }
 
     /**
@@ -187,6 +194,7 @@ public class BomService {
         for (BomItem item : itemEntities) {
             bomItemMapper.insert(item);
         }
+        suggestionCache.invalidate(TenantContext.getTenantId());
         return buildView(bom, itemEntities, codes);
     }
 
@@ -226,6 +234,7 @@ public class BomService {
             }
             throw activeConflict(bomId);
         }
+        suggestionCache.invalidate(TenantContext.getTenantId());
         return get(bomId);
     }
 
@@ -267,6 +276,7 @@ public class BomService {
         }
         bomItemMapper.delete(Wrappers.<BomItem>lambdaQuery().eq(BomItem::getBomId, bomId));
         bomMapper.deleteById(bomId);
+        suggestionCache.invalidate(TenantContext.getTenantId());
     }
 
     /**

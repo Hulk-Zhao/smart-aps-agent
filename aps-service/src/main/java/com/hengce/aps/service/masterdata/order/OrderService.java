@@ -18,8 +18,12 @@ import com.hengce.aps.infrastructure.persistence.order.Order;
 import com.hengce.aps.infrastructure.persistence.order.OrderMapper;
 import com.hengce.aps.infrastructure.persistence.order.OrderTaskFreezeRepository;
 import com.hengce.aps.infrastructure.persistence.process.routing.Routing;
+import com.hengce.aps.infrastructure.persistence.resource.Resource;
+import com.hengce.aps.infrastructure.persistence.resource.ResourceMapper;
+import com.hengce.aps.service.audit.AuditValues;
 import com.hengce.aps.service.masterdata.bom.BomService;
 import com.hengce.aps.service.masterdata.bom.BomStatus;
+import com.hengce.aps.service.mrp.MrpSuggestionCache;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -70,6 +74,11 @@ public class OrderService {
     private static final String AUDIT_ORDER_RELEASED = "ORDER_RELEASED";
 
     /**
+     * 订单开工的审计动作编码。
+     */
+    private static final String AUDIT_ORDER_STARTED = "ORDER_STARTED";
+
+    /**
      * 审计资源类型。
      */
     private static final String AUDIT_RESOURCE_ORDER = "ORDER";
@@ -91,16 +100,23 @@ public class OrderService {
 
     private final OrderTaskFreezeRepository orderTaskFreezeRepository;
 
+    private final ResourceMapper resourceMapper;
+
+    private final MrpSuggestionCache suggestionCache;
+
     public OrderService(OrderMapper orderMapper, MaterialMapper materialMapper,
                         RoutingMapper routingMapper, BomService bomService,
                         AuditLogRepository auditLogRepository,
-                        OrderTaskFreezeRepository orderTaskFreezeRepository) {
+                        OrderTaskFreezeRepository orderTaskFreezeRepository,
+                        ResourceMapper resourceMapper, MrpSuggestionCache suggestionCache) {
         this.orderMapper = orderMapper;
         this.materialMapper = materialMapper;
         this.routingMapper = routingMapper;
         this.bomService = bomService;
         this.auditLogRepository = auditLogRepository;
         this.orderTaskFreezeRepository = orderTaskFreezeRepository;
+        this.resourceMapper = resourceMapper;
+        this.suggestionCache = suggestionCache;
     }
 
     /**
@@ -181,7 +197,8 @@ public class OrderService {
         } catch (DuplicateKeyException exception) {
             throw new BizException(ErrorCode.IDEMPOTENCY_CONFLICT, DUPLICATE_ORDER_NO_MESSAGE + orderNo);
         }
-        return OrderView.from(order, product.getCode());
+        suggestionCache.invalidate(TenantContext.getTenantId());
+        return toView(order, product.getCode());
     }
 
     /**
@@ -236,6 +253,7 @@ public class OrderService {
             throw new BizException(ErrorCode.STATE_CONFLICT, VERSION_CONFLICT_MESSAGE);
         }
         Order latest = findByOrderNo(orderNo);
+        suggestionCache.invalidate(TenantContext.getTenantId());
         return toView(latest == null ? existing : latest, newProduct == null ? null : newProduct.getCode());
     }
 
@@ -284,6 +302,7 @@ public class OrderService {
             throw new BizException(ErrorCode.STATE_CONFLICT, VERSION_CONFLICT_MESSAGE);
         }
         Order latest = findByOrderNo(orderNo);
+        suggestionCache.invalidate(TenantContext.getTenantId());
         return toView(latest == null ? existing : latest, null);
     }
 
@@ -338,7 +357,8 @@ public class OrderService {
         }
         auditLogRepository.record(TenantContext.getTenantId(), AUDIT_ORDER_FROZEN,
                 AUDIT_RESOURCE_ORDER, orderNo,
-                freezeSnapshot(current, currentLock), freezeSnapshot(target, targetLock));
+                AuditValues.redact(freezeSnapshot(current, currentLock)),
+                AuditValues.redact(freezeSnapshot(target, targetLock)));
         Order latest = findByOrderNo(orderNo);
         return toView(latest == null ? existing : latest, null);
     }
@@ -380,7 +400,7 @@ public class OrderService {
         Map<String, Object> after = new LinkedHashMap<>();
         after.put("priority", priority.name());
         auditLogRepository.record(TenantContext.getTenantId(), AUDIT_ORDER_PRIORITY,
-                AUDIT_RESOURCE_ORDER, orderNo, before, after);
+                AUDIT_RESOURCE_ORDER, orderNo, AuditValues.redact(before), AuditValues.redact(after));
         Order latest = findByOrderNo(orderNo);
         return toView(latest == null ? existing : latest, null);
     }
@@ -433,7 +453,55 @@ public class OrderService {
         after.put("autoFrozenTaskCount", frozenTasks);
         after.put("reason", reason);
         auditLogRepository.record(TenantContext.getTenantId(), AUDIT_ORDER_RELEASED,
-                AUDIT_RESOURCE_ORDER, orderNo, before, after);
+                AUDIT_RESOURCE_ORDER, orderNo, AuditValues.redact(before), AuditValues.redact(after));
+        Order latest = findByOrderNo(orderNo);
+        return toView(latest == null ? existing : latest, null);
+    }
+
+    /**
+     * 订单开工（C23）：{@code RELEASED → IN_PROGRESS}，并自动冻结仍为 {@code PLANNED} 的任务。
+     *
+     * <p>重复开工幂等，不重复写审计；{@code version} 为契约必填，不匹配返回 {@code 40901}。</p>
+     *
+     * @param orderNo 订单业务编码
+     * @param version 当前乐观锁版本
+     * @return 更新后的订单视图
+     */
+    public OrderView start(String orderNo, Integer version) {
+        Order existing = findByOrderNoOrThrow(orderNo);
+        String status = existing.getStatus();
+        if (OrderStatus.IN_PROGRESS.name().equals(status)) {
+            return toView(existing, null);
+        }
+        if (!OrderStatus.RELEASED.name().equals(status)) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "只有 RELEASED 状态的订单可开工，当前状态为 " + status);
+        }
+        if (version == null) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "开工请求缺少 version");
+        }
+        if (!Objects.equals(existing.getVersion(), version)) {
+            throw new BizException(ErrorCode.STATE_CONFLICT, VERSION_CONFLICT_MESSAGE);
+        }
+        Order update = new Order();
+        update.setId(existing.getId());
+        update.setVersion(existing.getVersion());
+        update.setStatus(OrderStatus.IN_PROGRESS.name());
+        int rows = orderMapper.updateById(update);
+        if (rows == 0) {
+            throw new BizException(ErrorCode.STATE_CONFLICT, VERSION_CONFLICT_MESSAGE);
+        }
+        int frozenTasks = orderTaskFreezeRepository.freezePlannedTasks(
+                TenantContext.getTenantId(), (UUID) existing.getId());
+        Map<String, Object> before = new LinkedHashMap<>();
+        before.put("status", status);
+        before.put("freezeStatus", existing.getFreezeStatus());
+        Map<String, Object> after = new LinkedHashMap<>();
+        after.put("status", OrderStatus.IN_PROGRESS.name());
+        after.put("freezeStatus", existing.getFreezeStatus());
+        after.put("autoFrozenTaskCount", frozenTasks);
+        auditLogRepository.record(TenantContext.getTenantId(), AUDIT_ORDER_STARTED,
+                AUDIT_RESOURCE_ORDER, orderNo, AuditValues.redact(before), AuditValues.redact(after));
         Order latest = findByOrderNo(orderNo);
         return toView(latest == null ? existing : latest, null);
     }
@@ -462,7 +530,16 @@ public class OrderService {
             FreezeLock lock = new FreezeLock(null, null, resourceCodes);
             List<String> codes = lock.normalizedResourceCodes();
             if (codes.isEmpty()) {
-                throw new BizException(ErrorCode.BAD_REQUEST, "LOCKED_RESOURCE 需要至少一个 lockedResourceCodes");
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                        "LOCKED_RESOURCE 需要至少一个 lockedResourceCodes");
+            }
+            List<Resource> found = resourceMapper.selectList(Wrappers.<Resource>lambdaQuery()
+                    .in(Resource::getCode, codes));
+            List<String> missing = codes.stream()
+                    .filter(code -> found.stream().noneMatch(resource -> code.equals(resource.getCode())))
+                    .toList();
+            if (!missing.isEmpty()) {
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, "锁定资源不存在: " + missing);
             }
             return new FreezeLock(null, null, codes);
         }
@@ -654,8 +731,16 @@ public class OrderService {
                 codes.put((UUID) material.getId(), material.getCode());
             }
         }
+        Map<UUID, OrderMapper.CustomerSummaryRow> customers = findCustomerSummaries(
+                orders.stream()
+                        .map(Order::getCustomerId)
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .toList());
         return orders.stream()
-                .map(order -> OrderView.from(order, codes.get(order.getProductId())))
+                .map(order -> OrderView.from(order, codes.get(order.getProductId()),
+                        customerCode(customers, order.getCustomerId()),
+                        customerName(customers, order.getCustomerId())))
                 .toList();
     }
 
@@ -665,7 +750,39 @@ public class OrderService {
             Material material = materialMapper.selectById(order.getProductId());
             code = material == null ? null : material.getCode();
         }
-        return OrderView.from(order, code);
+        Map<UUID, OrderMapper.CustomerSummaryRow> customers = findCustomerSummaries(
+                order.getCustomerId() == null ? List.of() : List.of(order.getCustomerId()));
+        return OrderView.from(order, code,
+                customerCode(customers, order.getCustomerId()),
+                customerName(customers, order.getCustomerId()));
+    }
+
+    /**
+     * 按客户主键集合一次性读取客户编码/名称（C50），避免列表逐条查询造成 N+1。
+     *
+     * @param customerIds 去重后的客户主键，可为空集合
+     * @return 客户主键到摘要的映射；未命中/已软删除的客户不在映射中
+     */
+    private Map<UUID, OrderMapper.CustomerSummaryRow> findCustomerSummaries(List<UUID> customerIds) {
+        if (customerIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, OrderMapper.CustomerSummaryRow> summaries = new LinkedHashMap<>();
+        for (OrderMapper.CustomerSummaryRow row
+                : orderMapper.selectCustomerSummaries(TenantContext.getTenantId(), customerIds)) {
+            summaries.put(row.customerId(), row);
+        }
+        return summaries;
+    }
+
+    private static String customerCode(Map<UUID, OrderMapper.CustomerSummaryRow> customers, UUID customerId) {
+        OrderMapper.CustomerSummaryRow customer = customerId == null ? null : customers.get(customerId);
+        return customer == null ? null : customer.code();
+    }
+
+    private static String customerName(Map<UUID, OrderMapper.CustomerSummaryRow> customers, UUID customerId) {
+        OrderMapper.CustomerSummaryRow customer = customerId == null ? null : customers.get(customerId);
+        return customer == null ? null : customer.name();
     }
 
     private void applySort(LambdaQueryWrapper<Order> wrapper, String sort) {

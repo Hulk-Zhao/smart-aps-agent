@@ -3,9 +3,9 @@ info:
   title: 衡策 APS - Excel 导入导出 API
   version: 0.1.0
   description: |
-    C26 通用导入导出（M2）。实现实体集合以 ImportEntity 为准：
-    materials / boms / resources / calendars / operationTemplates / routings / orders / strategies / suppliers。
-    注意：C26 拟定名单写 customers 而未写 strategies，与实现不一致，最终名单待用户点名（见 contract-freeze §24.12）。
+    C26 通用导入导出（M2）。实现实体集合以 `ImportEntity` 为准，共 10 类：
+    materials / boms / resources / calendars / operationTemplates / routings / orders / strategies / suppliers / customers。
+    `customers` 由 §25.9 C38 冻结（slug 复数）；C26 原拟名单只提 customers 未提 strategies，以 §25.9 与本枚举为准（见 contract-freeze §24.12）。
     兼容别名（用于绕开 M1 遗留的 /materials/import 占位映射）：GET /import/{entity}/template、POST /import/{entity}、GET /export/{entity}，
     不重复登记为独立 path。异步导入任务端点 GET/POST /{entity}/import/jobs/{jobId}[/cancel] 返回裸 ImportJobView（不包 Result）。统一约定见 ../../docs/api/conventions.md。
 servers:
@@ -19,8 +19,8 @@ paths:
       operationId: downloadImportTemplate
       tags: [导入导出]
       summary: 下载导入模板
-      description: 状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。返回可直接被 Excel 打开的 xlsx。
-      x-implementation-status: partial
+      description: 状态：已制品级验收（2026-11-04，车道C）。原 9 类实体均返回 200 + xlsx（魔数 50-4B-03-04）与 Content-Disposition；未知实体 404/40400。`customers` 已按 §25.9 C38 补入枚举（`ImportEntity.java#L122`），其制品级证据待补。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/ImportEntity'
       responses:
@@ -47,12 +47,12 @@ paths:
       tags: [导入导出]
       summary: 导入 Excel
       description: |
-        状态：代码已落地（C26，W9；ImportExportController#importFile，
-        aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:108-136）；
-        未做制品级 HTTP 验收，故标 partial。
+        状态：已制品级验收（2026-11-04，车道C；ImportExportController#importFile，
+        aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:108-136）。
+        preview 返回逐行错误明细（row/field/code/message）；execute 全量合法才 committed=true，非法行 0 落库；async 返回 202 + 裸 ImportJobView。
         mode=preview 只校验并返回规范化样例；mode=execute 全部行通过后落库；mode=async 受理后返回 202 + ImportJobView（裸对象，不包 Result）。
         X-Import-Token 幂等：执行模式下重复提交同一令牌返回首次结果（replayed=true）。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/ImportEntity'
         - name: mode
@@ -104,10 +104,10 @@ paths:
       tags: [导入导出]
       summary: 查询异步导入任务
       description: |
-        状态：代码已落地（ImportExportController#importJob，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:146-151）；
-        未做制品级 HTTP 验收，故标 partial。**响应是裸 ImportJobView，不包 Result**。
-        跨实体查询（job 不属于该 entity）按 40400 处理。字段取自 ImportJobView，形状未经制品级验收。
-      x-implementation-status: partial
+        状态：已制品级验收（2026-11-04，车道C；ImportExportController#importJob）。**响应是裸 ImportJobView，不包 Result**。
+        跨实体查询（job 不属于该 entity）按 40400 处理。已验证明细字段：status/totalRows/processedRows/inserted/updated/committed/errors，
+        与 import_job 表行字段一致；SUCCEEDED 任务落库行数一致。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/ImportEntity'
         - name: jobId
@@ -133,10 +133,10 @@ paths:
       tags: [导入导出]
       summary: 取消异步导入任务
       description: |
-        状态：代码已落地（ImportExportController#cancelImportJob，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:162-168）；
-        未做制品级 HTTP 验收，故标 partial。**响应为 202 + 裸 ImportJobView，不包 Result**。
-        仅 PENDING/RUNNING 可取消，其他状态 40901。字段取自 ImportJobView，形状未经制品级验收。
-      x-implementation-status: partial
+        状态：已制品级验收（2026-11-04，车道C；ImportExportController#cancelImportJob）。**响应为 202 + 裸 ImportJobView，不包 Result**。
+        仅 PENDING/RUNNING 可取消，其他状态 40901。验收：取消后 status=CANCELLED、committed=false，import_job 行同步；
+        4000 行异步任务取消后业务表 0 行写入。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/ImportEntity'
         - name: jobId
@@ -163,8 +163,9 @@ paths:
       operationId: exportEntityData
       tags: [导入导出]
       summary: 导出数据
-      description: 状态：代码已落地（C26，W9）；未做制品级 HTTP 验收，故标 partial。列顺序与导入模板一致，可直接回填导入。
-      x-implementation-status: partial
+      description: 状态：已制品级验收（2026-11-04，车道C）。9 个实体导出均为真实 xlsx（魔数 50-4B-03-04），行数与库内业务行一致；列顺序与导入模板一致，可直接回填导入。
+        `orders` 自 2026-11-05（C48 / §25.23）在既有 7 列后输出 `客户编码`，并追加只读 `客户名称`（无客户时两列留空）；真实 HTTP 验收 200，traceId `2afe47b5220b4d7fa7f05c5135926dd9`。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/ImportEntity'
       responses:
@@ -190,7 +191,33 @@ components:
       description: 实体 slug
       schema:
         type: string
-        enum: [materials, boms, resources, calendars, operationTemplates, routings, orders, strategies, suppliers]
+        enum: [materials, boms, resources, calendars, operationTemplates, routings, orders, strategies, suppliers, customers]
+      x-import-columns:
+        orders:
+          description: |
+            C48 / §25.23 追加式列定义（2026-11-05）：前 7 列顺序与语义不变，第 8 列 customerCode 可选。
+            旧 7 列模板仍可导入（缺列=未指定客户）；customerCode 未命中 customer.code 时整行 42200，不自动建客户。
+            导出在同 7 列后补 客户编码，并追加只读 客户名称。
+          columns:
+            - { key: orderNo, header: 订单号, required: true }
+            - { key: source, header: 订单来源, required: false, enum: [ERP_SYNC, MANUAL, AGENT] }
+            - { key: materialCode, header: 产品物料编码, required: true }
+            - { key: qty, header: 数量, required: true }
+            - { key: dueDate, header: 交期, required: true }
+            - { key: priority, header: 优先级, required: false, enum: [URGENT, HIGH, NORMAL, LOW] }
+            - { key: remark, header: 备注, required: false }
+            - key: customerCode
+              header: 客户编码
+              required: false
+              description: 可选；按 customer.code 解析，未命中整行 42200；留空=未指定客户
+          x-implementation-status: implemented
+          x-verified-at: '2026-11-05'
+          x-verification:
+            template: 'HTTP 200, 8 columns, traceId 9f0fc5227e604d30aa0806f9a83e62c8'
+            old7Import: 'HTTP 200 / code=0 inserted=2, traceId 0bce91f2043b47e58c060bd6874df931'
+            new8Import: 'HTTP 200 / code=0 inserted=2, traceId 0f01b8379d294626a402cf4f459f4be7'
+            badCustomerCode: 'HTTP 200 / code=0 invalidRows=1 code 42200 row=3, traceId 131b68e8d5fe4e07a366f29382423410'
+            export: 'HTTP 200, headers 客户编码/客户名称, traceId 2afe47b5220b4d7fa7f05c5135926dd9'
   schemas:
     Result:
       type: object

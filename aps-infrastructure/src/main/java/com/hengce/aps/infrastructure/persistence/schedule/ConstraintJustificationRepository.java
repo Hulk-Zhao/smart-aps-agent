@@ -71,6 +71,38 @@ public class ConstraintJustificationRepository {
     }
 
     /**
+     * 归因按 solve_task 持久化，契约只给 taskId：本方法用
+     * {@code implicated_facts} 反查“哪些求解任务的归因包含该任务”。
+     *
+     * @param tenantId 租户标识
+     * @param taskId 任务主键
+     * @return 归因行；可能来自多个 solve_task，由调用方判定歧义
+     */
+    public List<JustificationRow> findByAffectedTaskId(UUID tenantId, long taskId) {
+        String sql = """
+                SELECT id, solve_task_id, constraint_id, constraint_name, score_impact,
+                       implicated_facts::text AS facts_json, explanation_zh,
+                       weight, deduction, created_at
+                  FROM constraint_justification
+                 WHERE tenant_id = ? AND deleted = false
+                   AND (implicated_facts @> ?::jsonb OR implicated_facts @> ?::jsonb)
+                 ORDER BY deduction DESC, constraint_id ASC
+                """;
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new JustificationRow(
+                rs.getObject("id", UUID.class),
+                rs.getLong("solve_task_id"),
+                rs.getString("constraint_id"),
+                rs.getString("constraint_name"),
+                rs.getString("score_impact"),
+                parseTaskIds(rs.getString("facts_json")),
+                rs.getString("explanation_zh"),
+                rs.getObject("weight", Integer.class),
+                rs.getBigDecimal("deduction"),
+                rs.getObject("created_at", OffsetDateTime.class)),
+                tenantId, "[{\"id\":" + taskId + "}]", "[{\"taskId\":" + taskId + "}]");
+    }
+
+    /**
      * 归因是否已带 task_ids。
      *
      * @param tenantId 租户标识

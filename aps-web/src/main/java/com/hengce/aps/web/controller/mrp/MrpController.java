@@ -80,9 +80,10 @@ public class MrpController {
      */
     @RequiresPermission("MD_READ")
     @Operation(summary = "MRP 采购建议",
-            description = "状态：已实现（C34）。复用 MrpShortage 字段；固定 materialCode ASC；sort 传值返回 40000。")
+            description = "状态：已实现（C34）。字段与 MrpShortage 一致但不含库存明细；"
+                    + "固定 materialCode ASC；sort 传值返回 40000。")
     @GetMapping("/suggestions")
-    public Result<PageResult<MrpAnalysisResponse.MrpShortage>> suggestions(
+    public Result<PageResult<MrpAnalysisResponse.MrpSuggestionView>> suggestions(
             @RequestParam(required = false) String sandboxId,
             @RequestParam(required = false) String orderNos,
             @RequestParam(required = false) Integer horizonDays,

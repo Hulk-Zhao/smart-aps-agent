@@ -14,6 +14,7 @@ tags:
   - name: 日历
   - name: 工艺路线
   - name: MRP
+  - name: 换型矩阵
 paths:
   /materials:
     get:
@@ -182,9 +183,26 @@ paths:
       summary: 导入物料
       description: |
         状态：代码已落地（ImportExportController#importFile，aps-web/src/main/java/com/hengce/aps/web/controller/importexport/ImportExportController.java:108-136）；
-        未做制品级 HTTP 验收，故标 partial。multipart/form-data，字段 file（Excel/CSV）。
-        本路径是 /{entity}/import 的旧别名（entity=materials），由同一处理方法承接；响应为 ImportResult。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。multipart/form-data，字段 file（Excel/CSV）。
+        本路径是 /{entity}/import 的旧别名（entity=materials），由同一处理方法承接。
+        参数以 §25.10 C39 为准：`mode=preview|execute|async` + `X-Import-Token`（C26 的 dryRun/Idempotency-Key 已废弃）。
+        同步模式返回 Result<ImportResult>；async 返回 202 + 裸 ImportJobView。
+      x-implementation-status: implemented
+      parameters:
+        - name: mode
+          in: query
+          required: false
+          description: preview（默认，只校验）/ execute（全量通过才落库）/ async（受理后后台执行）
+          schema:
+            type: string
+            enum: [preview, execute, async]
+            default: preview
+        - name: X-Import-Token
+          in: header
+          required: false
+          description: 幂等令牌，8-128 位；执行模式重复令牌返回首次结果（replayed=true）
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -198,11 +216,18 @@ paths:
                   format: binary
       responses:
         '200':
-          description: 成功，data 为导入统计
+          description: 同步导入结果（data 为 ImportResult）
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ImportResult'
+                $ref: '#/components/schemas/ResultOfImportResult'
+        '202':
+          description: 异步受理（裸 ImportJobView，不包 Result；字段见 import-export.yaml 的 `/{entity}/import` 202）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '422':
@@ -842,9 +867,9 @@ paths:
       summary: 工艺路线列表
       description: |
         状态：代码已落地（RoutingController#list，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:80-91）；
-        未做制品级 HTTP 验收，故标 partial。分页查询工艺路线。
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。分页查询工艺路线。
         筛选条件之间为 **AND**：`productCode` 精确匹配 material.code，`version` 为业务版本号（routing_version），`status` 精确匹配。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/Page'
         - $ref: '#/components/parameters/Size'
@@ -882,8 +907,8 @@ paths:
       summary: 创建工艺路线
       description: |
         状态：代码已落地（RoutingController#create，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:115-120）；
-        未做制品级 HTTP 验收，故标 partial。工序节点构成 DAG，不允许环。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。工序节点构成 DAG，不允许环。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -910,9 +935,9 @@ paths:
       summary: 工艺路线详情
       description: |
         状态：代码已落地（RoutingController#detail，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:101-105）；
-        未做制品级 HTTP 验收，故标 partial。返回 RoutingView（含 nodes/edges）。
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。返回 RoutingView（含 nodes/edges）。
         域内 `/{id}` 已加正则排除 export/import 保留段（C38），导出路径按原路径使用即可。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -935,8 +960,8 @@ paths:
       summary: 删除工艺路线
       description: |
         状态：代码已落地（RoutingController#delete，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:176-180）；
-        未做制品级 HTTP 验收，故标 partial。被订单/任务引用时返回 42200；响应 `data` 为 null。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。被订单/任务引用时返回 42200；响应 `data` 为 null。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -966,8 +991,8 @@ paths:
       summary: 工艺路线 DAG
       description: |
         状态：代码已落地（RoutingController#graph，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:129-132）；
-        未做制品级 HTTP 验收，故标 partial。边由 node UUID 映射为 fromSeqNo/toSeqNo。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。边由 node UUID 映射为 fromSeqNo/toSeqNo。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -990,11 +1015,11 @@ paths:
       summary: 保存工艺路线 DAG
       description: |
         状态：代码已落地（RoutingController#updateGraph，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:143-153）；
-        未做制品级 HTTP 验收，故标 partial。整体替换 nodes/edges；`nodes.edges` 为事实来源，同时刷新 routing.nodes/edges 快照。
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。整体替换 nodes/edges；`nodes.edges` 为事实来源，同时刷新 routing.nodes/edges 快照。
         约束：seqNo 在路线内唯一；边使用 fromSeqNo/toSeqNo；dependType 仅 FS/SS/FF；保存时做 DAG 环检测。
         资源引用使用 `primaryResourceId`（UUID），不再接受 code；服务端校验资源存在。
         `version` 必填用于乐观锁，不一致返回 40901。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -1039,8 +1064,8 @@ paths:
       summary: 激活工艺路线
       description: |
         状态：代码已落地（RoutingController#activate，aps-web/src/main/java/com/hengce/aps/web/controller/masterdata/RoutingController.java:163-166）；
-        未做制品级 HTTP 验收，故标 partial（契约外补充）。同产品其他 ACTIVE 自动收敛；并发冲突 40901。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat；契约外补充）。同产品其他 ACTIVE 自动收敛；并发冲突 40901。
+      x-implementation-status: implemented
       parameters:
         - name: id
           in: path
@@ -1251,11 +1276,14 @@ paths:
       tags: [MRP]
       summary: 批量写入库存
       description: |
-        状态：代码已落地（InventoryController#upsert，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/InventoryController.java:54-57）；
-        未做制品级 HTTP 验收，故标 partial。
+        状态：代码与实现均已落地（InventoryController#upsert，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/InventoryController.java:54-57）；
+        已制品级 HTTP 验收（2026-11-04 修复批次收口）。
+        验收证据：同一行连续两次 PUT（onHand 20 → 25）均 HTTP 200 / code 0 / data {"accepted":1,"rejected":0}；
+        响应外壳完整，且同一 (materialCode,warehouseCode) 仅更新、未重复插入（inventory 行数不变）。
+        修复说明：实现已由 {created,updated,total} 改为 C25 冻结的 {accepted, rejected}。
         按 materialCode + warehouseCode upsert；snapshotAt 缺省当前 UTC。
         物料不存在 40400；数量为负 42200；并发版本冲突 40901。
-      x-implementation-status: partial
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1285,11 +1313,18 @@ paths:
       tags: [MRP]
       summary: MRP 齐套分析
       description: |
-        状态：代码已落地（MrpController#analyze，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/MrpController.java:67-70）；
-        未做制品级 HTTP 验收，故标 partial。
+        状态：代码与实现均已落地（MrpController#analyze，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/MrpController.java:67-70）；
+        已制品级 HTTP 验收（2026-11-04 修复批次收口）。
+        验收证据：HTTP 200 / code 0，status=SHORTAGE、blocked=true；shortages 原文含
+        "onHandQty":10.0,"transitQty":10.0,"safetyStock":5.0,"availableQty":15,"shortageQty":5，缺料 175 计算正确。
+        修复说明：修复批次已恢复 shortages 的 onHandQty/transitQty/safetyStock；
+        orders[] 使用 kitted/shortages，映射 `status ← kitted`、`shortageCount ← shortages.length`（冻结见 §25.16）。
+        C49 §25.24 增补订单级三态 kittingStatus 与 shortageItemCount/totalItemCount；kitted 原样保留。
+        shortages[] 增补 substitutes（来自 BOM 明细 substitutes JSONB）与 expectedArrival（来自 inventory_transit.expected_date），
+        supplierCode 取自物料主数据默认供应商。expectedArrival 晚于需求日时只作到货预告，不计入 transitQty。
         blocking=true（默认）时，status != FULL 将阻止排产提交（42200 + 缺料明细）。
-        availableQty = onHandQty + transitQty - safetyStock，下限 0。
-      x-implementation-status: partial
+        availableQty = onHandQty + transitQty - safetyStock（可为负）；shortageQty = requiredQty - max(availableQty, 0)。
+      x-implementation-status: implemented
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -1317,8 +1352,8 @@ paths:
       summary: MRP 补料建议
       description: |
         状态：代码已落地（MrpController#suggestions，aps-web/src/main/java/com/hengce/aps/web/controller/mrp/MrpController.java:84-93）；
-        未做制品级 HTTP 验收，故标 partial。sandboxId 必填；orderNos 逗号分隔；horizonDays 1–365 默认 30；固定 materialCode ASC，sort 传值返回 40000。
-      x-implementation-status: partial
+        已制品级 HTTP 验收（2026-11-04，端口 18193 / 库 aps_verify_sysmat）。sandboxId 必填；orderNos 逗号分隔；horizonDays 1–365 默认 30；固定 materialCode ASC，sort 传值返回 40000。
+      x-implementation-status: implemented
       parameters:
         - name: sandboxId
           in: query
@@ -1350,6 +1385,151 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ResultOfMrpSuggestionPage'
+  /setup-matrix:
+    x-milestone: V05-08
+    get:
+      operationId: listSetupMatrix
+      tags: [换型矩阵]
+      summary: 换型矩阵列表
+      description: |
+        状态：已实现（V05-08 / C44）。FROM/TO 产品-程序换型时间成组，支持默认值 + 同/跨系列特例，
+        生效范围 TENANT/RESOURCE_GROUP/RESOURCE。固定按 keyType、scopeType、created_at DESC 排序。
+      x-implementation-status: implemented
+      parameters:
+        - name: keyType
+          in: query
+          description: PRODUCT/PROGRAM（兼容 MATERIAL_CODE/OPERATION_CODE）
+          schema:
+            type: string
+        - name: scopeType
+          in: query
+          description: TENANT/RESOURCE_GROUP/RESOURCE
+          schema:
+            type: string
+        - name: resourceId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: resourceGroupId
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: fromKey
+          in: query
+          schema:
+            type: string
+        - name: toKey
+          in: query
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSetupMatrixEntryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      operationId: createSetupMatrix
+      tags: [换型矩阵]
+      summary: 创建换型矩阵条目
+      description: |
+        状态：已实现（V05-08 / C44）。keyType 取值 PRODUCT/PROGRAM；
+        fromKey/toKey 为空表示通配默认；setupSeconds 必填；
+        业务键 (keyType, fromKey, toKey, scopeType, resourceId, resourceGroupId) 重复返回 409/40901。
+      x-implementation-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupMatrixRequest'
+      responses:
+        '200':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSetupMatrixEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+  /setup-matrix/{id}:
+    x-milestone: V05-08
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getSetupMatrix
+      tags: [换型矩阵]
+      summary: 换型矩阵详情
+      description: 状态：已实现（V05-08 / C44）。不存在返回 404/40400。
+      x-implementation-status: implemented
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSetupMatrixEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      operationId: updateSetupMatrix
+      tags: [换型矩阵]
+      summary: 更新换型矩阵条目
+      description: |
+        状态：已实现（V05-08 / C44）。version 必填；版本冲突或业务键重复返回 409/40901。
+      x-implementation-status: implemented
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetupMatrixRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultOfSetupMatrixEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      operationId: deleteSetupMatrix
+      tags: [换型矩阵]
+      summary: 删除换型矩阵条目
+      description: 状态：已实现（V05-08 / C44）。软删除；不存在返回 404/40400。
+      x-implementation-status: implemented
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Result'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   parameters:
     Page:
@@ -1537,22 +1717,57 @@ components:
               description: 乐观锁版本
     ImportResult:
       type: object
+      description: 与 import-export.yaml 的 ImportResult 一致（ImportExportService#result 实际形状）。
+      required: [entity, mode, totalRows, validRows, invalidRows, inserted, updated, skipped, committed,
+                 replayed, errors, preview]
       properties:
-        successCount:
+        entity:
+          type: string
+        mode:
+          type: string
+          enum: [PREVIEW, EXECUTE]
+        totalRows:
           type: integer
-        failureCount:
+        validRows:
           type: integer
+        invalidRows:
+          type: integer
+        inserted:
+          type: integer
+        updated:
+          type: integer
+        skipped:
+          type: integer
+        committed:
+          type: boolean
+        replayed:
+          type: boolean
         errors:
           type: array
           items:
             type: object
+            required: [row, field, code, message]
             properties:
               row:
                 type: integer
-              code:
+              field:
                 type: string
+              code:
+                type: integer
               message:
                 type: string
+        preview:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    ResultOfImportResult:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/ImportResult'
     BomStatus:
       type: string
       enum: [DRAFT, ACTIVE, INACTIVE]
@@ -2370,26 +2585,18 @@ components:
                 nullable: true
     InventoryUpsertResult:
       type: object
+      description: C25 §24.7 冻结形状；当前实现仍返回 {created,updated,total}，由并行修复批次对齐。
+      required: [accepted, rejected]
       properties:
         accepted:
           type: integer
+          description: 写入成功（新增或更新）的行数
         rejected:
           type: integer
-        errors:
-          type: array
-          items:
-            type: object
-            properties:
-              materialCode:
-                type: string
-              warehouseCode:
-                type: string
-              code:
-                type: integer
-              message:
-                type: string
+          description: 被拒绝的行数
     MrpAnalysis:
       type: object
+      description: 实现为 MrpAnalysisResponse；顶层追加 blocked/inventoryEnabled/orderCount/warnings（实现已返回，yaml 此前缺省）。
       properties:
         sandboxId:
           type: string
@@ -2403,34 +2610,255 @@ components:
           description: C25 齐套结论
         blocking:
           type: boolean
+        blocked:
+          type: boolean
+          description: 实际是否阻塞（blocking=true 且存在缺料）
+        inventoryEnabled:
+          type: boolean
+          description: 是否从 inventory 表读取库存（aps.mrp.inventory-enabled）
+        orderCount:
+          type: integer
+          description: 参与分析的订单数
+        warnings:
+          type: array
+          description: 展开过程中的非致命提示（无 ACTIVE BOM、环引用等）
+          items:
+            type: string
         orders:
           type: array
           items:
-            type: object
-            properties:
-              orderNo:
-                type: string
-              status:
-                type: string
-                enum: [FULL, PARTIAL, SHORTAGE]
-              shortageCount:
-                type: integer
+            $ref: '#/components/schemas/MrpOrderResult'
         shortages:
           type: array
           items:
-            $ref: '#/components/schemas/MrpSuggestion'
-    MrpSuggestion:
+            $ref: '#/components/schemas/MrpShortage'
+      example:
+        sandboxId: 00000000-0000-0000-0000-000000000401
+        analyzedAt: '2026-11-05T02:00:00Z'
+        status: SHORTAGE
+        blocking: false
+        blocked: false
+        inventoryEnabled: true
+        orderCount: 1
+        warnings: []
+        orders:
+          - orderNo: SO-1009
+            productCode: FG-ESS-005
+            qty: 30.0
+            dueDate: '2026-12-28'
+            kitted: false
+            kittingStatus: PARTIAL
+            shortageItemCount: 2
+            totalItemCount: 16
+            shortages:
+              - materialCode: RAW-THM-001
+                materialName: EC 离心散热风机模组 48V
+                requiredQty: 60.6
+                allocatedQty: 0.0
+                shortageQty: 60.6
+              - materialCode: RAW-BMS-002
+                materialName: 电池管理系统
+                requiredQty: 30.0
+                allocatedQty: 0.0
+                shortageQty: 30.0
+        shortages:
+          - materialCode: RAW-THM-001
+            materialName: EC 离心散热风机模组 48V
+            requiredQty: 60.6
+            onHandQty: 0.0
+            transitQty: 0.0
+            safetyStock: 10.0
+            availableQty: -10.0
+            shortageQty: 60.6
+            earliestRequiredAt: '2026-12-28T00:00:00Z'
+            affectedOrderNos: [SO-1009]
+            suggestedPurchaseDate: null
+            suggestedQty: null
+            supplierCode: SUP-D04
+            substitutes:
+              - materialCode: RAW-THM-002
+                priority: 1
+                ratio: '1:1'
+                availableQty: 100.0
+            expectedArrival: null
+          - materialCode: RAW-BMS-002
+            materialName: 电池管理系统
+            requiredQty: 30.0
+            onHandQty: 0.0
+            transitQty: 0.0
+            safetyStock: 0.0
+            availableQty: 0.0
+            shortageQty: 30.0
+            earliestRequiredAt: '2026-12-28T00:00:00Z'
+            affectedOrderNos: [SO-1009]
+            suggestedPurchaseDate: null
+            suggestedQty: null
+            supplierCode: SUP-D02
+            substitutes:
+              - materialCode: RAW-BMS-003
+                priority: 1
+                ratio: '1:1'
+                availableQty: 30.0
+            expectedArrival: '2027-01-04T00:00:00Z'
+    MrpOrderResult:
       type: object
+      description: |
+        单张订单齐套结果（实现 MrpAnalysisResponse.MrpOrderResult）。
+        §25.16 冻结：对外使用 kitted/shortages，不再返回旧 status/shortageCount。
+      properties:
+        orderNo:
+          type: string
+        productCode:
+          type: string
+        qty:
+          type: number
+        dueDate:
+          type: string
+          format: date
+        kitted:
+          type: boolean
+          description: 是否齐套（既有布尔语义不变：shortages 为空即 true）；映射旧 status：true→FULL，false→SHORTAGE/PARTIAL
+        kittingStatus:
+          type: string
+          enum: [FULL, PARTIAL, SHORTAGE]
+          description: |
+            C49 §25.24 订单级三态：shortageItemCount=0 → FULL；
+            shortageItemCount=totalItemCount 且 >0 → SHORTAGE；其余（部分缺料）→ PARTIAL。
+            与 kitted 的对应关系：kitted=true ⇔ kittingStatus=FULL；kitted=false ⇔ PARTIAL 或 SHORTAGE。
+          example: PARTIAL
+        shortageItemCount:
+          type: integer
+          description: 该订单的缺料物料项数（= shortages.length）
+          example: 2
+        totalItemCount:
+          type: integer
+          description: 该订单展开后的物料项总数（去重后的物料口径）
+          example: 16
+        shortages:
+          type: array
+          description: 该订单的缺料明细；长度映射旧 shortageCount
+          items:
+            $ref: '#/components/schemas/MrpOrderShortage'
+    MrpOrderShortage:
+      type: object
+      description: 订单级缺料明细（实现 MrpAnalysisResponse.MrpOrderShortage）。
       properties:
         materialCode:
           type: string
+        materialName:
+          type: string
         requiredQty:
           type: number
+          description: 该订单需求数量（已含 BOM 损耗）
+        allocatedQty:
+          type: number
+          description: 分配到该订单的可用数量
+        shortageQty:
+          type: number
+    MrpShortage:
+      type: object
+      description: |
+        按物料聚合的缺料行（实现 MrpAnalysisResponse.MrpShortage，C25 §24.7）。
+        与 `/mrp/suggestions` 的 MrpSuggestionView 不同：本形状必须暴露 onHandQty/transitQty/safetyStock。
+      properties:
+        materialCode:
+          type: string
+        materialName:
+          type: string
+        requiredQty:
+          type: number
+          description: 跨订单毛需求合计
         onHandQty:
           type: number
+          description: 现有库存合计
         transitQty:
           type: number
+          description: 在途库存合计（仅计入需求时点前的 OPEN 在途）
         safetyStock:
+          type: number
+          description: 安全库存合计
+        availableQty:
+          type: number
+          description: onHand + transit − safetyStock，可为负
+        shortageQty:
+          type: number
+        earliestRequiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        affectedOrderNos:
+          type: array
+          items:
+            type: string
+        suggestedPurchaseDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: includeSuggestions=true 时输出
+        suggestedQty:
+          type: number
+          nullable: true
+          description: includeSuggestions=true 时输出
+        supplierCode:
+          type: string
+          nullable: true
+          description: C49 §25.24 物料主数据 default_supplier_id 对应的 supplier.code；无默认供应商时为 null
+          example: SUP-D04
+        substitutes:
+          type: array
+          description: |
+            C49 §25.24 替代料候选，来源为 BOM 明细 substitutes JSONB（不硬编码）；
+            按 priority 升序、同优先级按 materialCode 升序；无替代关系时为空数组。
+          items:
+            $ref: '#/components/schemas/MrpSubstitute'
+          example:
+            - materialCode: RAW-THM-002
+              priority: 1
+              ratio: '1:1'
+              availableQty: 100.0
+        expectedArrival:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            C49 §25.24：只要有未取消的在途，就返回最早一条 inventory_transit.expected_date（00:00 UTC），
+            无论是否晚于需求日；无在途时为 null。只有当该日期不晚于需求日时，才把数量计入
+            transitQty / availableQty。两者可同时成立：日期给了、缺口仍在（expectedArrival 有值而 transitQty=0）。
+            验收样本：RAW-BMS-002 在途锚点 +60（2027-01-04）、1009 交期 +53（2026-12-28），返回该日期且 transitQty=0。
+          example: '2027-01-04T00:00:00Z'
+    MrpSubstitute:
+      type: object
+      description: C49 §25.24 替代料候选（实现 MrpAnalysisResponse.MrpSubstitute）。
+      properties:
+        materialCode:
+          type: string
+          description: 替代料物料编码
+          example: RAW-THM-002
+        priority:
+          type: integer
+          nullable: true
+          description: 替代优先级（数值越小越优先），来自 BOM substitutes JSONB
+          example: 1
+        ratio:
+          type: string
+          nullable: true
+          description: 替代比例（原样输出 BOM substitutes JSONB 的 ratio，如 1:1）
+          example: '1:1'
+        availableQty:
+          type: number
+          description: 替代料可用量 = max(0, 现有库存 + 父件需求时点前在途 − 安全库存)
+          example: 100.0
+    MrpSuggestionView:
+      type: object
+      description: |
+        采购建议项（实现 MrpAnalysisResponse.MrpSuggestionView，§25.6 C34）。
+        由 MrpShortage 投影而来，刻意不携带 onHandQty/transitQty/safetyStock 库存明细。
+      properties:
+        materialCode:
+          type: string
+        materialName:
+          type: string
+        requiredQty:
           type: number
         availableQty:
           type: number
@@ -2447,6 +2875,10 @@ components:
         suggestedPurchaseDate:
           type: string
           format: date-time
+          nullable: true
+        suggestedQty:
+          type: number
+          nullable: true
         supplierCode:
           type: string
           nullable: true
@@ -2664,7 +3096,127 @@ components:
                 items:
                   type: array
                   items:
-                    $ref: '#/components/schemas/MrpSuggestion'
+                    $ref: '#/components/schemas/MrpSuggestionView'
+                page:
+                  type: integer
+                size:
+                  type: integer
+                total:
+                  type: integer
+                  format: int64
+                totalPages:
+                  type: integer
+    SetupMatrixRequest:
+      type: object
+      required: [keyType, setupSeconds]
+      properties:
+        keyType:
+          type: string
+          description: PRODUCT/PROGRAM（兼容 MATERIAL_CODE/OPERATION_CODE）
+          enum: [PRODUCT, PROGRAM, MATERIAL_CODE, OPERATION_CODE]
+        fromKey:
+          type: string
+          maxLength: 64
+          description: 前序维度键；为空表示通配默认
+        toKey:
+          type: string
+          maxLength: 64
+          description: 当前维度键；为空表示通配默认
+        resourceId:
+          type: string
+          format: uuid
+          description: 资源级范围；与 resourceGroupId 互斥
+        resourceGroupId:
+          type: string
+          format: uuid
+          description: 资源组级范围；与 resourceId 互斥
+        setupSeconds:
+          type: integer
+          minimum: 0
+          description: 默认换型秒数
+        sameSeriesSeconds:
+          type: integer
+          minimum: 0
+          description: 同系列特例秒数，空表示回退默认值
+        crossSeriesSeconds:
+          type: integer
+          minimum: 0
+          description: 跨系列特例秒数，空表示回退默认值
+        remark:
+          type: string
+          maxLength: 255
+        version:
+          type: integer
+          minimum: 1
+          description: 更新时必填（乐观锁）
+    SetupMatrixEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        keyType:
+          type: string
+          enum: [MATERIAL_CODE, OPERATION_CODE]
+          description: MATERIAL_CODE=产品，OPERATION_CODE=程序
+        fromKey:
+          type: string
+          nullable: true
+        toKey:
+          type: string
+          nullable: true
+        scopeType:
+          type: string
+          enum: [TENANT, RESOURCE_GROUP, RESOURCE]
+        resourceId:
+          type: string
+          format: uuid
+          nullable: true
+        resourceGroupId:
+          type: string
+          format: uuid
+          nullable: true
+        setupSeconds:
+          type: integer
+          minimum: 0
+        sameSeriesSeconds:
+          type: integer
+          minimum: 0
+          nullable: true
+        crossSeriesSeconds:
+          type: integer
+          minimum: 0
+          nullable: true
+        remark:
+          type: string
+          nullable: true
+        version:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ResultOfSetupMatrixEntry:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/SetupMatrixEntry'
+    ResultOfSetupMatrixEntryPage:
+      allOf:
+        - $ref: '#/components/schemas/Result'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                items:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SetupMatrixEntry'
                 page:
                   type: integer
                 size:

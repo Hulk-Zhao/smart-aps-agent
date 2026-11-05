@@ -2,16 +2,16 @@ import type { RouterModule } from '../types'
 
 export const dashboardModule: RouterModule = {
   key: 'dashboard',
-  label: '总览',
+  label: '工作台',
   menuPath: '/',
-  order: 10,
+  order: 90,
   menu: true,
   routes: [
     {
       path: '',
       name: 'dashboard',
       component: () => import('@/views/DashboardView.vue'),
-      meta: { title: '总览' }
+      meta: { title: '工作台' }
     }
   ]
 }

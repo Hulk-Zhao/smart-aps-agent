@@ -3,8 +3,9 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 
-import { login } from '@/api/system'
 import { ApiError } from '@/api/http'
+import { login } from '@/api/system'
+import ThemeToggle from '@/components/common/ThemeToggle.vue'
 import { isMockEnabled } from '@/mocks'
 
 const router = useRouter()
@@ -73,6 +74,9 @@ onMounted(() => {
 
 <template>
   <div class="login-page">
+    <div class="login-theme">
+      <ThemeToggle />
+    </div>
     <div class="login-brand">
       <span class="brand-mark">APS</span>
       <div>
@@ -142,6 +146,7 @@ onMounted(() => {
 
 <style scoped>
 .login-page {
+  position: relative;
   min-height: 100vh;
   padding: var(--space-10) var(--space-6);
   display: flex;
@@ -150,6 +155,12 @@ onMounted(() => {
   justify-content: center;
   gap: var(--space-6);
   background: radial-gradient(circle at 20% 0%, var(--primary-bg), transparent 46%), var(--bg);
+}
+
+.login-theme {
+  position: absolute;
+  top: var(--space-5);
+  right: var(--space-5);
 }
 
 .login-brand {

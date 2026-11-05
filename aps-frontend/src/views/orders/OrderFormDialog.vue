@@ -166,7 +166,7 @@ async function submit() {
           placeholder="租户内唯一，如 SO-20261104-0010"
         />
       </el-form-item>
-      <el-form-item label="产品物料" prop="materialCode">
+      <el-form-item label="物料" prop="materialCode">
         <MaterialSelect v-model="form.materialCode" />
       </el-form-item>
       <el-form-item label="数量" prop="qty">
@@ -191,8 +191,8 @@ async function submit() {
           />
         </el-select>
       </el-form-item>
-      <el-form-item label="客户 ID" prop="customerId">
-        <el-input v-model="form.customerId" clearable placeholder="客户 UUID（可空）" />
+      <el-form-item label="客户" prop="customerId">
+        <el-input v-model="form.customerId" clearable placeholder="客户 ID（可空）" />
       </el-form-item>
       <el-form-item label="备注" prop="remark">
         <el-input v-model="form.remark" type="textarea" :rows="2" maxlength="200" show-word-limit />

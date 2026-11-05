@@ -28,7 +28,7 @@ const recommended = computed(() => {
 })
 
 function formatScore(value: number | null): string {
-  return value === null || value === undefined ? '—' : String(value)
+  return value === null || value === undefined ? '无' : String(value)
 }
 
 /**
@@ -108,7 +108,7 @@ onMounted(() => {
         </div>
       </template>
       <div class="toolbar-row">
-        <el-input v-model="sandboxId" placeholder="sandboxId（UUID）" style="max-width: 460px" @keyup.enter="loadPlans" />
+        <el-input v-model="sandboxId" placeholder="排产场景 ID" style="max-width: 460px" @keyup.enter="loadPlans" />
         <el-button type="primary" :loading="listLoading" @click="loadPlans">加载版本</el-button>
       </div>
       <el-alert v-if="listError" type="warning" :closable="false" :title="listError" class="inline-alert" />
@@ -129,7 +129,7 @@ onMounted(() => {
         </el-table-column>
         <el-table-column prop="status" label="状态" width="110" />
         <el-table-column label="发布时间" min-width="170">
-          <template #default="{ row }">{{ row.publishedAt || '—' }}</template>
+          <template #default="{ row }">{{ row.publishedAt || '无' }}</template>
         </el-table-column>
         <el-table-column prop="taskCount" label="快照任务数" width="110" />
       </el-table>
@@ -159,7 +159,7 @@ onMounted(() => {
         show-icon
         class="inline-alert"
         :title="`推荐计划：${recommended.planNo}（v${recommended.version}）`"
-        :description="`recommendedPlanId = ${recommended.planId}`"
+        description="按硬约束、软约束得分与快照任务数综合推荐，仅供决策参考。"
       />
 
       <el-table
@@ -173,15 +173,12 @@ onMounted(() => {
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="metrics-panel">
-              <p class="metrics-title">metrics（原样展示，不重排键）</p>
+              <p class="metrics-title">指标明细（原始数据）</p>
               <pre class="metrics-json">{{ rawMetrics(row.metrics) }}</pre>
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="planId" min-width="300" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.planId }}</template>
-        </el-table-column>
-        <el-table-column label="计划号" min-width="170">
+        <el-table-column label="计划号" min-width="200">
           <template #default="{ row }">
             {{ row.planNo }}
             <el-tag v-if="row.planId === result.recommendedPlanId" type="success" size="small" class="recommend-tag">
@@ -192,13 +189,13 @@ onMounted(() => {
         <el-table-column label="版本" width="90">
           <template #default="{ row }">v{{ row.version }}</template>
         </el-table-column>
-        <el-table-column label="scoreHard" width="110">
+        <el-table-column label="硬约束得分" width="120">
           <template #default="{ row }">{{ formatScore(row.scoreHard) }}</template>
         </el-table-column>
-        <el-table-column label="scoreSoft" width="110">
+        <el-table-column label="软约束得分" width="120">
           <template #default="{ row }">{{ formatScore(row.scoreSoft) }}</template>
         </el-table-column>
-        <el-table-column prop="taskCount" label="taskCount" width="110" />
+        <el-table-column prop="taskCount" label="快照任务数" width="110" />
       </el-table>
     </el-card>
   </div>

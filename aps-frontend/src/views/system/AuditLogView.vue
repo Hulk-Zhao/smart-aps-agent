@@ -2,10 +2,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 
-import { listAuditLogs } from '@/api/system'
+import { listAuditLogs, listUsers } from '@/api/system'
 import { DataTable } from '@/components/common'
 import { AUDIT_ACTIONS, AUDIT_RESOURCE_TYPES, auditActionLabel, auditResourceLabel } from '@/constants/audit'
-import type { AuditLog, AuditLogQuery } from '@/types/system'
+import type { AuditLog, AuditLogQuery, User } from '@/types/system'
 
 const rows = ref<AuditLog[]>([])
 const page = ref(1)
@@ -13,6 +13,8 @@ const size = ref(20)
 const total = ref(0)
 const loading = ref(false)
 const error = ref('')
+/** 用户 UUID → 用户名，审计页展示“谁操作的”而不是裸 UUID。 */
+const userMap = ref<Record<string, User>>({})
 
 const filters = reactive({
   action: '',
@@ -25,7 +27,7 @@ const filters = reactive({
 
 function formatTime(value?: string | null): string {
   if (!value) {
-    return '—'
+    return '无'
   }
   const parsed = dayjs(value)
   return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
@@ -33,9 +35,30 @@ function formatTime(value?: string | null): string {
 
 function prettyJson(value: Record<string, unknown> | null | undefined): string {
   if (value === null || value === undefined) {
-    return '—'
+    return '无'
   }
   return JSON.stringify(value, null, 2)
+}
+
+function userLabel(userId?: string | null): string {
+  if (!userId) {
+    return '无'
+  }
+  const user = userMap.value[userId]
+  return user ? user.displayName || user.username : '用户名称待接入'
+}
+
+async function loadUsers() {
+  try {
+    const page = await listUsers({ page: 1, size: 100 })
+    const map: Record<string, User> = {}
+    page.items.forEach((item) => {
+      map[item.id] = item
+    })
+    userMap.value = map
+  } catch {
+    // 用户列表不可用时退回业务标签，不展示原始 UUID
+  }
 }
 
 async function loadAuditLogs() {
@@ -88,6 +111,7 @@ function resetFilters() {
 }
 
 onMounted(() => {
+  void loadUsers()
   void loadAuditLogs()
 })
 </script>
@@ -101,16 +125,16 @@ onMounted(() => {
       :closable="false"
       show-icon
       class="hint-alert"
-      title="id 为 int64：前端以字符串承载并只做展示，不参与数值运算"
-      description="过滤条件为 AND 组合，时间区间固定 [from, to)；action 取 16 个闭集值，resourceType 取 7 个闭集值。默认展示最新在前（created_at DESC, id DESC）。"
+      title="记录 ID 为 int64：前端以字符串承载并只做展示，不参与数值运算"
+      description="过滤条件按 AND 组合，时间区间固定为 [开始时间, 结束时间)；操作类型取 16 个闭集值，对象类型取 7 个闭集值。默认按操作时间与记录 ID 倒序展示。"
     />
 
     <el-card shadow="never" class="section">
       <template #header>筛选</template>
       <div class="filter-grid">
         <div class="filter-field">
-          <label class="field-label" for="audit-action">action</label>
-          <el-select id="audit-action" v-model="filters.action" clearable placeholder="全部 action" style="width: 100%">
+          <label class="field-label" for="audit-action">操作类型</label>
+          <el-select id="audit-action" v-model="filters.action" clearable placeholder="全部操作类型" style="width: 100%">
             <el-option
               v-for="option in AUDIT_ACTIONS"
               :key="option.value"
@@ -120,12 +144,12 @@ onMounted(() => {
           </el-select>
         </div>
         <div class="filter-field">
-          <label class="field-label" for="audit-resource-type">resourceType</label>
+          <label class="field-label" for="audit-resource-type">对象类型</label>
           <el-select
             id="audit-resource-type"
             v-model="filters.resourceType"
             clearable
-            placeholder="全部 resourceType"
+            placeholder="全部对象类型"
             style="width: 100%"
           >
             <el-option
@@ -137,15 +161,15 @@ onMounted(() => {
           </el-select>
         </div>
         <div class="filter-field">
-          <label class="field-label" for="audit-resource-id">resourceId</label>
+          <label class="field-label" for="audit-resource-id">对象标识</label>
           <el-input id="audit-resource-id" v-model="filters.resourceId" clearable placeholder="精确匹配" @keyup.enter="search" />
         </div>
         <div class="filter-field">
-          <label class="field-label" for="audit-user-id">userId</label>
+          <label class="field-label" for="audit-user-id">用户标识</label>
           <el-input id="audit-user-id" v-model="filters.userId" clearable placeholder="精确匹配" @keyup.enter="search" />
         </div>
         <div class="filter-field">
-          <label class="field-label" for="audit-from">from（含）</label>
+          <label class="field-label" for="audit-from">开始时间（含）</label>
           <el-date-picker
             id="audit-from"
             v-model="filters.from"
@@ -156,7 +180,7 @@ onMounted(() => {
           />
         </div>
         <div class="filter-field">
-          <label class="field-label" for="audit-to">to（不含）</label>
+          <label class="field-label" for="audit-to">结束时间（不含）</label>
           <el-date-picker
             id="audit-to"
             v-model="filters.to"
@@ -203,28 +227,30 @@ onMounted(() => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="id (int64)" width="120">
+      <el-table-column label="记录 ID" width="120">
         <template #default="{ row }">{{ String(row.id) }}</template>
       </el-table-column>
-      <el-table-column label="时间" min-width="170">
+      <el-table-column label="操作时间" min-width="170">
         <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="action" min-width="190">
+      <el-table-column label="操作类型" min-width="190">
         <template #default="{ row }">
           <el-tooltip :content="row.action" placement="top">
             <el-tag size="small">{{ auditActionLabel(row.action) }}</el-tag>
           </el-tooltip>
         </template>
       </el-table-column>
-      <el-table-column label="resourceType" width="130">
+      <el-table-column label="对象类型" width="130">
         <template #default="{ row }">{{ auditResourceLabel(row.resourceType) }}</template>
       </el-table-column>
-      <el-table-column prop="resourceId" label="resourceId" min-width="230" show-overflow-tooltip />
-      <el-table-column prop="userId" label="userId" min-width="230" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.userId || '—' }}</template>
+      <el-table-column prop="resourceId" label="对象标识" min-width="230" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.resourceId || '无' }}</template>
       </el-table-column>
-      <el-table-column prop="clientIp" label="clientIp" width="130">
-        <template #default="{ row }">{{ row.clientIp || '—' }}</template>
+      <el-table-column label="操作用户" min-width="160" show-overflow-tooltip>
+        <template #default="{ row }">{{ userLabel(row.userId) }}</template>
+      </el-table-column>
+      <el-table-column label="客户端 IP" width="140">
+        <template #default="{ row }">{{ row.clientIp || '无' }}</template>
       </el-table-column>
     </DataTable>
   </div>

@@ -46,6 +46,10 @@ export interface GanttOrderRow {
   orderId?: string
   orderNo: string
   materialCode: string
+  /** 后端 C50 增量字段：产品物料名称；物料缺失/已软删除时为 null，不得用 materialCode 冒充。 */
+  materialName?: string | null
+  /** 后端 C50 增量字段：产品物料规格；物料缺失/已软删除或规格为空时为 null。 */
+  materialSpec?: string | null
   dueDate: string
   /** 后端 C29 增量字段：交期线时间点（dueDate 当日 UTC 23:59:59）；缺失时前端按 dueDate 推导。 */
   dueDateLine?: string

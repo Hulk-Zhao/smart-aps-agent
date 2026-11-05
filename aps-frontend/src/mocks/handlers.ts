@@ -1754,7 +1754,7 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       feasible: true,
       earliestDate: '2026-11-12',
       leadTimeDays: 8,
-      bottleneckResourceCode: 'RES-AGE-01'
+      bottleneckResourceCode: 'RES-AGING-01'
     })
   }
 
@@ -2079,11 +2079,11 @@ export function handleMockRequest(config: InternalAxiosRequestConfig): MockReply
       removedTaskCount: 90,
       movedTaskCount: 30,
       changedTasks: [
-        { taskId: 2101, orderNo: 'SO-20261101-0001', resourceCode: 'RES-SMT-01', changeType: 'MOVED' },
-        { taskId: 2102, orderNo: 'SO-20261101-0001', resourceCode: 'RES-ASSY-01', changeType: 'MOVED' },
-        { taskId: 2103, orderNo: 'SO-20261102-0003', resourceCode: 'RES-AGE-01', changeType: 'ADDED' },
-        { taskId: 2104, orderNo: 'SO-20261103-0004', resourceCode: 'RES-SMT-01', changeType: 'REMOVED' },
-        { taskId: 2105, orderNo: 'SO-20261104-0008', resourceCode: 'RES-ASSY-01', changeType: 'ADDED' }
+        { taskId: 2101, orderNo: 'DM-SO-1001', resourceCode: 'RES-SMT-01', changeType: 'MOVED' },
+        { taskId: 2102, orderNo: 'DM-SO-1001', resourceCode: 'RES-PACK-01', changeType: 'MOVED' },
+        { taskId: 2103, orderNo: 'DM-SO-1003', resourceCode: 'RES-AGING-01', changeType: 'ADDED' },
+        { taskId: 2104, orderNo: 'DM-SO-1004', resourceCode: 'RES-SMT-01', changeType: 'REMOVED' },
+        { taskId: 2105, orderNo: 'DM-SO-1008', resourceCode: 'RES-PACK-01', changeType: 'ADDED' }
       ],
       truncated: true
     }

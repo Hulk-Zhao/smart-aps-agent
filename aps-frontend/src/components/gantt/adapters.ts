@@ -77,7 +77,12 @@ export function mapResourceGanttData(data: ResourceGanttData): GanttDataset {
     })
     return {
       key: resource.resourceCode,
-      label: resource.resourceName || resource.resourceCode,
+      // 资源名称本身已带短编码（如“高速贴片线 SMT-01”）时不再重复追加完整编码。
+      label: resource.resourceName
+        ? resource.resourceName.includes(resource.resourceCode.replace(/^RES-/, ''))
+          ? resource.resourceName
+          : `${resource.resourceName}（${resource.resourceCode}）`
+        : resource.resourceCode,
       subLabel: getEnumLabel('resourceType', resource.resourceType),
       resourceType: resource.resourceType,
       bars

@@ -1,22 +1,31 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
+import { listMaterials } from '@/api/materials'
 import { runMrpAnalysis } from '@/api/mrp'
+import { listSandboxes } from '@/api/orders'
 import { PageState } from '@/components/common'
 import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
+import type { Material } from '@/types/materials'
 import type { MrpOrderResult } from '@/types/mrp'
+import type { Sandbox } from '@/types/orders'
 
 import {
   affectedOrdersOf,
+  arrivalText,
   displayOrDash,
   formatDate,
   formatDateTime,
   formatQty,
   isSandboxId,
+  orderKittingCount,
+  orderKittingMeta,
   parseOrderNos,
+  remainingAfterSubstitutes,
   resolveMrpStatusMeta,
-  shortagesOf
+  shortagesOf,
+  substitutesOf
 } from './mrp-utils'
 
 interface ResultAlert {
@@ -29,6 +38,8 @@ const sandboxId = ref(DEFAULT_SANDBOX_ID)
 const orderNosText = ref('')
 const includeSuggestions = ref(true)
 const blocking = ref(false)
+const sandboxes = ref<Sandbox[]>([])
+const materialMap = ref<Record<string, Material>>({})
 
 const loading = ref(false)
 const error = ref('')
@@ -36,12 +47,51 @@ const result = ref<Awaited<ReturnType<typeof runMrpAnalysis>> | null>(null)
 const activeTab = ref<'orders' | 'materials'>('orders')
 const lastIncludeSuggestions = ref(true)
 
-const statusMeta = computed(() => resolveMrpStatusMeta(result.value?.status))
+/** 顶层 status 是整批汇总；订单行三态以 orders[].kittingStatus 为准。 */
+const batchStatusMeta = computed(() => resolveMrpStatusMeta(result.value?.status))
 const orders = computed(() => result.value?.orders ?? [])
 const shortages = computed(() => result.value?.shortages ?? [])
 const warnings = computed(() => result.value?.warnings ?? [])
 const analyzedAtText = computed(() => formatDateTime(result.value?.analyzedAt))
-const sandboxText = computed(() => displayOrDash(result.value?.sandboxId))
+const sandboxText = computed(() => {
+  const id = result.value?.sandboxId
+  if (!id) {
+    return '无'
+  }
+  const matched = sandboxes.value.find((item) => item.id === id)
+  return matched ? matched.name : '场景名称待接入'
+})
+
+function materialDisplay(code?: string | null): string {
+  if (!code) {
+    return '无'
+  }
+  const name = materialMap.value[code]?.name
+  return name ? `${name}（${code}）` : code
+}
+
+async function loadLookups() {
+  try {
+    const materials = await listMaterials({ page: 1, size: 200, sort: 'code,asc' })
+    const map: Record<string, Material> = {}
+    materials.items.forEach((item) => {
+      map[item.code] = item
+    })
+    materialMap.value = map
+  } catch {
+    // 主数据不可用不影响 MRP 分析，名称列退回后端已返回的 materialName
+  }
+  try {
+    const page = await listSandboxes({ page: 1, size: 100 })
+    sandboxes.value = page.items
+  } catch {
+    // 场景列表不可用时退回手输场景 ID
+  }
+}
+
+onMounted(() => {
+  void loadLookups()
+})
 const inventoryEnabled = computed(() => result.value?.inventoryEnabled ?? true)
 const noOrders = computed(() => result.value !== null && (result.value.orderCount ?? 0) === 0)
 
@@ -108,11 +158,26 @@ async function analyze() {
 
     <el-card shadow="never" class="page-card">
       <el-form :inline="true" @submit.prevent="analyze">
-        <el-form-item label="场景 ID">
+        <el-form-item label="排产场景">
+          <el-select
+            v-if="sandboxes.length"
+            v-model="sandboxId"
+            filterable
+            placeholder="选择排产场景"
+            style="width: 320px"
+          >
+            <el-option
+              v-for="item in sandboxes"
+              :key="item.id"
+              :label="item.name"
+              :value="item.id"
+            />
+          </el-select>
           <el-input
+            v-else
             v-model="sandboxId"
             clearable
-            placeholder="排产场景 UUID"
+            placeholder="场景 ID"
             style="width: 320px"
           />
         </el-form-item>
@@ -136,8 +201,8 @@ async function analyze() {
         </el-form-item>
       </el-form>
       <div class="form-hint">
-        可用量 availableQty = 现有库存 onHand + 在途 transit - 安全库存 safetyStock；数量按
-        NUMERIC(18,4) 展示，不做整数舍入。切换 blocking 或采购建议后需重新分析生效。
+        可用量 = 现有库存 + 在途数量 − 安全库存；数量按 NUMERIC(18,4) 展示，不做整数舍入。
+        切换“锁定缺料阻塞排产”或“输出采购建议”后需重新分析生效。
       </div>
     </el-card>
 
@@ -153,9 +218,11 @@ async function analyze() {
 
     <el-card v-if="result" v-loading="loading" shadow="never" class="page-card">
       <div class="result-head">
-        <el-tag :type="statusMeta.tagType" size="large" effect="dark">
-          {{ statusMeta.label }}
+        <span class="result-meta">整批汇总</span>
+        <el-tag :type="batchStatusMeta.tagType" size="large" effect="dark">
+          {{ batchStatusMeta.label }}
         </el-tag>
+        <span class="result-meta result-hint">订单级三态见下表</span>
         <span class="result-meta">分析时间：{{ analyzedAtText }}</span>
         <span class="result-meta">订单数：{{ result.orderCount }}</span>
         <span class="result-meta">缺料物料：{{ shortages.length }}</span>
@@ -249,8 +316,8 @@ async function analyze() {
               </template>
             </el-table-column>
             <el-table-column prop="orderNo" label="订单号" min-width="170" />
-            <el-table-column label="产品编码" min-width="150">
-              <template #default="{ row }">{{ displayOrDash(row.productCode) }}</template>
+            <el-table-column label="产品物料" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">{{ materialDisplay(row.productCode) }}</template>
             </el-table-column>
             <el-table-column label="订单数量" width="150" align="right">
               <template #default="{ row }">{{ formatQty(row.qty) }}</template>
@@ -260,13 +327,13 @@ async function analyze() {
             </el-table-column>
             <el-table-column label="齐套状态" width="110">
               <template #default="{ row }">
-                <el-tag :type="row.kitted ? 'success' : 'danger'" size="small">
-                  {{ row.kitted ? '齐套' : '缺料' }}
+                <el-tag :type="orderKittingMeta(row).tagType" size="small">
+                  {{ orderKittingMeta(row).label }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="缺料项" width="100" align="right">
-              <template #default="{ row }">{{ orderShortages(row).length }}</template>
+            <el-table-column label="缺料项（缺/总）" width="140" align="right">
+              <template #default="{ row }">{{ orderKittingCount(row) }}</template>
             </el-table-column>
           </el-table>
         </el-tab-pane>
@@ -280,9 +347,15 @@ async function analyze() {
             max-height="460"
             empty-text="本次分析没有缺料物料"
           >
-            <el-table-column prop="materialCode" label="物料编码" min-width="160" />
-            <el-table-column label="物料名称" min-width="170">
-              <template #default="{ row }">{{ displayOrDash(row.materialName) }}</template>
+            <el-table-column label="物料名称" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                {{ displayOrDash(row.materialName) }}
+              </template>
+            </el-table-column>
+            <el-table-column prop="materialCode" label="物料编码" min-width="160">
+              <template #default="{ row }">
+                <span class="secondary-text">{{ row.materialCode }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="需求数量" width="150" align="right">
               <template #default="{ row }">{{ formatQty(row.requiredQty) }}</template>
@@ -298,6 +371,32 @@ async function analyze() {
               <template #default="{ row }">
                 <span class="shortage-qty">{{ formatQty(row.shortageQty) }}</span>
               </template>
+            </el-table-column>
+            <el-table-column label="替代料（可用量）" min-width="240">
+              <template #default="{ row }">
+                <div v-if="substitutesOf(row).length > 0" class="substitute-list">
+                  <div
+                    v-for="substitute in substitutesOf(row)"
+                    :key="substitute.materialCode"
+                    class="substitute-line"
+                  >
+                    <span class="substitute-code">{{ materialDisplay(substitute.materialCode) }}</span>
+                    <span class="substitute-avail">
+                      可用 {{ formatQty(substitute.availableQty) }}
+                    </span>
+                    <el-tag v-if="substitute.ratio" size="small" type="info">
+                      {{ substitute.ratio }}
+                    </el-tag>
+                  </div>
+                </div>
+                <span v-else class="none-text">无</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="替代后缺口" width="190">
+              <template #default="{ row }">{{ remainingAfterSubstitutes(row) }}</template>
+            </el-table-column>
+            <el-table-column label="预计到货" width="120">
+              <template #default="{ row }">{{ arrivalText(row) }}</template>
             </el-table-column>
             <el-table-column label="最早需求时间" width="170">
               <template #default="{ row }">{{ formatDateTime(row.earliestRequiredAt) }}</template>
@@ -368,6 +467,42 @@ async function analyze() {
 .result-meta {
   color: var(--text-2);
   font-size: 13px;
+}
+
+.result-hint {
+  color: var(--text-3);
+}
+
+.substitute-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.substitute-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.substitute-code {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.substitute-avail {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.none-text,
+.secondary-text {
+  color: var(--text-3);
+}
+
+.secondary-text {
+  font-size: 12px;
 }
 
 .result-tabs {

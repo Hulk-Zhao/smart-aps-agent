@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import PageSkeleton from './PageSkeleton.vue'
 import PageState from './PageState.vue'
 
 const props = withDefaults(
@@ -56,6 +57,9 @@ function onSizeChange(size: number) {
     </div>
 
     <PageState v-if="error" state="error" :description="error" @retry="emit('retry')" />
+
+    <!-- 首次加载且无数据时用骨架屏替代空白表格，避免白屏（M3 性能整改）。 -->
+    <PageSkeleton v-else-if="loading && tableData.length === 0" :rows="8" :show-title="false" />
 
     <el-table v-else v-loading="loading" :data="tableData" :row-key="rowKey" border stripe>
       <slot />

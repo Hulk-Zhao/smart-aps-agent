@@ -7,7 +7,7 @@ import { listMaterials } from '@/api/materials'
 import { StatusTag } from '@/components/common'
 import DataTable from '@/components/common/DataTable.vue'
 import MaterialSelect from '@/components/master-data/MaterialSelect.vue'
-import { getEnumOptions } from '@/constants/enums'
+import { getEnumLabel, getEnumOptions } from '@/constants/enums'
 import type { Bom, BomStatus } from '@/types/boms'
 import type { Material } from '@/types/materials'
 
@@ -77,6 +77,10 @@ async function loadMaterialNames() {
   } catch {
     // 名称缺失时表格回退显示编码，不影响主流程
   }
+}
+
+function materialNameOf(code: string): string {
+  return materialNames.value[code] || '物料名称待接入'
 }
 
 function search() {
@@ -210,15 +214,20 @@ onMounted(() => {
             <el-button type="primary" @click="openCreate">新建 BOM</el-button>
           </template>
 
-          <el-table-column prop="bomVersion" label="版本" width="100" />
+          <el-table-column label="父件物料" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">
+              <div class="primary-text">{{ materialNameOf(row.parentMaterialCode) }}</div>
+              <div class="secondary-text">{{ row.parentMaterialCode }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="bomVersion" label="BOM 版本" width="110" />
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
               <StatusTag enum-key="bomStatus" :value="row.status" />
             </template>
           </el-table-column>
-          <el-table-column prop="parentMaterialCode" label="父件编码" min-width="140" />
           <el-table-column prop="effectiveDate" label="生效日期" width="120" />
-          <el-table-column label="明细" width="80">
+          <el-table-column label="组件数" width="90">
             <template #default="{ row }">{{ row.items.length }}</template>
           </el-table-column>
           <el-table-column label="操作" width="250" fixed="right">
@@ -247,9 +256,9 @@ onMounted(() => {
     <div class="selected-hint">
       当前选中：
       <span v-if="selectedBom">
-        {{ selectedBom.parentMaterialCode }} / {{ selectedBom.bomVersion }}（{{
-          selectedBom.status
-        }}）
+        {{ materialNameOf(selectedBom.parentMaterialCode) }}（{{
+          selectedBom.parentMaterialCode
+        }}） / {{ selectedBom.bomVersion }} / {{ getEnumLabel('bomStatus', selectedBom.status) }}
       </span>
       <span v-else>未选择 BOM 版本</span>
     </div>
@@ -270,5 +279,14 @@ onMounted(() => {
   margin-top: 12px;
   color: var(--text-2);
   font-size: 13px;
+}
+
+.primary-text {
+  color: var(--text);
+}
+
+.secondary-text {
+  color: var(--text-3);
+  font-size: var(--font-xs);
 }
 </style>

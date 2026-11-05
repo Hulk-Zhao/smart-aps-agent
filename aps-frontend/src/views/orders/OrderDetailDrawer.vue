@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import dayjs from 'dayjs'
 
 import { StatusTag } from '@/components/common'
+import AiExplain from '@/components/orders/AiExplain.vue'
+import AtpEstimate from '@/components/orders/AtpEstimate.vue'
 import type { Order } from '@/types/orders'
 
 const props = withDefaults(
   defineProps<{
     modelValue: boolean
     order?: Order | null
+    /** 物料业务名称与规格型号；由列表统一解析，避免抽屉内再硬编码名称。 */
+    materialName?: string
+    materialSpec?: string
   }>(),
   {
-    order: null
+    order: null,
+    materialName: '',
+    materialSpec: ''
   }
 )
 
@@ -28,8 +36,36 @@ const frozen = computed(() => props.order?.freezeStatus !== 'UNFROZEN')
 const extAttrsText = computed(() =>
   props.order?.extAttrs && Object.keys(props.order.extAttrs).length > 0
     ? JSON.stringify(props.order.extAttrs, null, 2)
-    : '—'
+    : '无'
 )
+
+const customerText = computed(() => {
+  const order = props.order
+  if (!order) {
+    return '无'
+  }
+  if (order.customerName?.trim()) {
+    return order.customerCode?.trim()
+      ? `${order.customerName.trim()}（${order.customerCode.trim()}）`
+      : order.customerName.trim()
+  }
+  return order.customerId ? '已关联客户（客户档案名称待后端补齐）' : '未指定客户'
+})
+
+function formatTime(value?: string | null): string {
+  if (!value) {
+    return '无'
+  }
+  const parsed = dayjs(value)
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value
+}
+
+const materialText = computed(() => {
+  const name = props.materialName?.trim() || '物料名称待接入'
+  return props.materialSpec && props.materialSpec !== '无'
+    ? `${name}（${props.materialSpec}）`
+    : name
+})
 </script>
 
 <template>
@@ -42,21 +78,25 @@ const extAttrsText = computed(() =>
     <template v-if="order">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="订单号" :span="2">{{ order.orderNo }}</el-descriptions-item>
-        <el-descriptions-item label="产品物料">{{ order.materialCode }}</el-descriptions-item>
+        <el-descriptions-item label="物料" :span="2">{{ materialText }}</el-descriptions-item>
+        <el-descriptions-item label="物料编码">{{ order.materialCode }}</el-descriptions-item>
         <el-descriptions-item label="数量">{{ order.qty }}</el-descriptions-item>
         <el-descriptions-item label="交期">{{ order.dueDate }}</el-descriptions-item>
         <el-descriptions-item label="优先级">
           <StatusTag enum-key="orderPriority" :value="order.priority" />
         </el-descriptions-item>
-        <el-descriptions-item label="客户 ID">{{ order.customerId || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="客户">{{ customerText }}</el-descriptions-item>
         <el-descriptions-item label="来源">
           <StatusTag enum-key="orderSource" :value="order.source" />
         </el-descriptions-item>
-        <el-descriptions-item label="工艺路线">{{ order.routingId || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="工艺路线">
+          <el-tooltip v-if="order.routingId" content="内部工艺路线 ID，不对外展示" placement="top">
+            <span>已绑定工艺路线</span>
+          </el-tooltip>
+          <span v-else class="none-text">未绑定</span>
+        </el-descriptions-item>
         <el-descriptions-item label="版本号">{{ order.version }}</el-descriptions-item>
-        <el-descriptions-item label="备注" :span="2">{{
-          order.remark || '—'
-        }}</el-descriptions-item>
+        <el-descriptions-item label="备注" :span="2">{{ order.remark || '无' }}</el-descriptions-item>
       </el-descriptions>
 
       <div class="section-title">状态</div>
@@ -67,8 +107,12 @@ const extAttrsText = computed(() =>
         <el-descriptions-item label="冻结状态">
           <StatusTag enum-key="freezeStatus" :value="order.freezeStatus" />
         </el-descriptions-item>
-        <el-descriptions-item label="创建时间">{{ order.createdAt || '—' }}</el-descriptions-item>
-        <el-descriptions-item label="更新时间">{{ order.updatedAt || '—' }}</el-descriptions-item>
+        <el-descriptions-item label="创建时间">
+          {{ formatTime(order.createdAt) }}
+        </el-descriptions-item>
+        <el-descriptions-item label="更新时间">
+          {{ formatTime(order.updatedAt) }}
+        </el-descriptions-item>
       </el-descriptions>
       <el-alert
         class="history-tip"
@@ -78,7 +122,12 @@ const extAttrsText = computed(() =>
         title="契约未提供订单状态流转历史端点，此处仅展示当前状态与关键时间。"
       />
 
-      <div class="section-title">扩展属性 ext_attrs</div>
+      <div class="section-title">交期预估（ATP）</div>
+      <AtpEstimate :order="order" />
+
+      <AiExplain :order="order" :active="modelValue" />
+
+      <div class="section-title">扩展属性</div>
       <pre class="json-block">{{ extAttrsText }}</pre>
 
       <div class="drawer-actions">
@@ -107,6 +156,10 @@ const extAttrsText = computed(() =>
 
 .history-tip {
   margin-top: var(--space-3);
+}
+
+.none-text {
+  color: var(--text-3);
 }
 
 .json-block {

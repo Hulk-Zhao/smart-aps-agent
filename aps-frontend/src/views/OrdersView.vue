@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { createIdempotencyKey } from '@/api/http'
+import { listMaterials } from '@/api/materials'
 import { confirmOrder, freezeOrder, getOrder, listOrders, unfreezeOrder } from '@/api/orders'
 import { DataTable, StatusTag } from '@/components/common'
+import AtpEstimate from '@/components/orders/AtpEstimate.vue'
 import { getEnumOptions } from '@/constants/enums'
+import { clearHelpContext, setHelpContext } from '@/constants/help/context'
+import type { Material } from '@/types/materials'
 import type { Order, OrderStatus } from '@/types/orders'
 
 import OrderDetailDrawer from './orders/OrderDetailDrawer.vue'
@@ -29,6 +33,8 @@ const filters = reactive<OrderFilters>({
 const dueDateRange = ref<[string, string] | null>(null)
 
 const orders = ref<Order[]>([])
+/** 物料编码 → 主数据，用于订单列表展示“物料名称 + 规格型号”，编码只作副文本。 */
+const materialMap = ref<Record<string, Material>>({})
 const loading = ref(false)
 const error = ref('')
 const page = ref(1)
@@ -39,6 +45,15 @@ const formVisible = ref(false)
 const editingOrder = ref<Order | null>(null)
 const detailVisible = ref(false)
 const detailOrder = ref<Order | null>(null)
+const atpVisible = ref(false)
+const atpOrder = ref<Order | null>(null)
+
+/** 行内 ATP 入口：弹窗里复用与详情抽屉同一套组件，避免两处口径漂移。 */
+function openAtp(order: Order): void {
+  atpOrder.value = order
+  atpVisible.value = true
+  setHelpContext('atp-estimate')
+}
 const actingOrderNo = ref('')
 
 async function loadOrders() {
@@ -64,6 +79,65 @@ async function loadOrders() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadMaterialOptions() {
+  try {
+    const result = await listMaterials({ page: 1, size: 200, sort: 'code,asc' })
+    const map: Record<string, Material> = {}
+    result.items.forEach((item) => {
+      map[item.code] = item
+    })
+    materialMap.value = map
+  } catch {
+    // 物料主数据不可用时退回订单扩展属性/编码，不阻塞订单列表
+  }
+}
+
+/** 订单扩展属性里的产品名称，作为物料主数据缺失时的业务名称兜底。 */
+function extProductName(order: Order): string {
+  const lines = order.extAttrs?.lines
+  if (!Array.isArray(lines)) {
+    return ''
+  }
+  const matched = lines.find(
+    (line) =>
+      typeof line === 'object' &&
+      line !== null &&
+      (line as Record<string, unknown>).productCode === order.materialCode
+  ) as Record<string, unknown> | undefined
+  const candidates = [matched, ...lines]
+  for (const line of candidates) {
+    if (typeof line !== 'object' || line === null) {
+      continue
+    }
+    const name = (line as Record<string, unknown>).productName
+    if (typeof name === 'string' && name.trim()) {
+      return name.trim()
+    }
+  }
+  return ''
+}
+
+function materialOf(order: Order): Material | null {
+  return materialMap.value[order.materialCode] ?? null
+}
+
+function materialNameOf(order: Order): string {
+  return materialOf(order)?.name || extProductName(order) || '物料名称待接入'
+}
+
+function materialSpecOf(order: Order): string {
+  return materialOf(order)?.spec || '无'
+}
+
+/** 客户名称优先用接口字段；接口暂无客户档案时只显示业务标签，绝不渲染 customerId UUID。 */
+function customerNameOf(order: Order): string {
+  return order.customerName?.trim() || ''
+}
+
+function customerCodeOf(order: Order): string {
+  return order.customerCode?.trim() || ''
 }
 
 function search() {
@@ -94,7 +168,19 @@ function openEdit(order: Order) {
 function openDetail(order: Order) {
   detailOrder.value = order
   detailVisible.value = true
+  setHelpContext('ai-explain')
 }
+
+/** 抽屉/ATP 都关闭后清空上下文，帮助面板回到订单管理的页面级场景。 */
+watch([detailVisible, atpVisible], ([detail, atp]) => {
+  if (!detail && !atp) {
+    clearHelpContext()
+  }
+})
+
+onBeforeUnmount(() => {
+  clearHelpContext()
+})
 
 function onSaved(order: Order) {
   if (!editingOrder.value) {
@@ -197,7 +283,10 @@ async function unfreezeRow(order: Order) {
   )
 }
 
-onMounted(loadOrders)
+onMounted(() => {
+  void loadMaterialOptions()
+  void loadOrders()
+})
 </script>
 
 <template>
@@ -219,7 +308,7 @@ onMounted(loadOrders)
           <el-input
             v-model="filters.customerId"
             clearable
-            placeholder="客户 UUID"
+            placeholder="按客户 ID 精确查询"
             style="width: 180px"
             @keyup.enter="search"
           />
@@ -277,7 +366,37 @@ onMounted(loadOrders)
       </template>
 
       <el-table-column prop="orderNo" label="订单号" min-width="150" />
-      <el-table-column prop="materialCode" label="物料编码" min-width="150" />
+      <el-table-column label="客户" min-width="190" show-overflow-tooltip>
+        <template #default="{ row }">
+          <template v-if="customerNameOf(row)">
+            <div class="primary-text">{{ customerNameOf(row) }}</div>
+            <div v-if="customerCodeOf(row)" class="secondary-text">
+              {{ customerCodeOf(row) }}
+            </div>
+          </template>
+          <el-tooltip
+            v-else-if="row.customerId"
+            content="客户档案名称待后端接口补齐，当前不展示内部 UUID"
+            placement="top"
+          >
+            <span class="secondary-text">已关联客户</span>
+          </el-tooltip>
+          <span v-else class="none-text">未指定客户</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="物料名称" min-width="230" show-overflow-tooltip>
+        <template #default="{ row }">
+          <div class="primary-text">{{ materialNameOf(row) }}</div>
+          <div v-if="materialSpecOf(row) !== '无'" class="secondary-text">
+            规格型号：{{ materialSpecOf(row) }}
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column prop="materialCode" label="物料编码" min-width="150">
+        <template #default="{ row }">
+          <span class="secondary-text">{{ row.materialCode }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="qty" label="数量" width="90" />
       <el-table-column label="状态" width="110">
         <template #default="{ row }">
@@ -295,12 +414,10 @@ onMounted(loadOrders)
         </template>
       </el-table-column>
       <el-table-column prop="dueDate" label="交期" width="110" />
-      <el-table-column label="客户" min-width="150" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.customerId || '—' }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="280" fixed="right">
+      <el-table-column label="操作" width="360" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
+          <el-button link type="primary" @click="openAtp(row)">交期预估</el-button>
           <el-button v-if="row.status === 'DRAFT'" link type="primary" @click="openEdit(row)">
             编辑
           </el-button>
@@ -340,10 +457,34 @@ onMounted(loadOrders)
     <OrderDetailDrawer
       v-model="detailVisible"
       :order="detailOrder"
+      :material-name="detailOrder ? materialNameOf(detailOrder) : ''"
+      :material-spec="detailOrder ? materialSpecOf(detailOrder) : ''"
       @edit="openEdit"
       @confirm="confirmRow"
       @freeze="freezeRow"
       @unfreeze="unfreezeRow"
     />
+
+    <el-dialog v-model="atpVisible" title="交期预估（ATP）" width="560px" destroy-on-close>
+      <AtpEstimate v-if="atpOrder" :order="atpOrder" />
+      <template #footer>
+        <el-button @click="atpVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.primary-text {
+  color: var(--text);
+}
+
+.secondary-text {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+
+.none-text {
+  color: var(--text-3);
+}
+</style>

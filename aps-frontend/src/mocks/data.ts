@@ -46,6 +46,33 @@ const RESOURCE_ID = {
   mill: '13131313-1313-4313-8313-131313131313'
 } as const
 
+/**
+ * 客户主数据（与 seed-demo 的 CUS-001..004 对齐）：
+ * 订单以 customerName + customerCode 展示业务名称，customerId 只作为外键保留，不在页面裸展示。
+ */
+const CUSTOMER = {
+  northChina: {
+    customerId: ID.customerA,
+    customerCode: 'CUS-001',
+    customerName: '华北储能客户 A'
+  },
+  eastChina: {
+    customerId: '33333333-3333-4333-8333-333333333334',
+    customerCode: 'CUS-002',
+    customerName: '华东渠道客户 B'
+  },
+  southChina: {
+    customerId: '33333333-3333-4333-8333-333333333335',
+    customerCode: 'CUS-003',
+    customerName: '华南系统集成客户 C'
+  },
+  southwest: {
+    customerId: '33333333-3333-4333-8333-333333333336',
+    customerCode: 'CUS-004',
+    customerName: '西南分布式客户 D'
+  }
+} as const
+
 /** C15：工序模版 UUID；节点通过 operationTemplateId 引用。 */
 const TEMPLATE_ID = {
   smt: '1a1a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a',
@@ -56,99 +83,254 @@ const TEMPLATE_ID = {
 
 export const materials: Material[] = [
   {
-    code: 'MAT-FG-001',
-    name: '储能电芯模组 48V/15Ah',
+    code: 'FG-ESS-001',
+    name: '工商业储能电池柜 ESS-100（液冷）',
     type: 'FINISHED',
-    spec: '48V 15Ah 16S1P',
-    unit: '套',
+    spec: '磷酸铁锂 1P52S，100kWh / 1000V，液冷',
+    unit: '台',
     categoryId: ID.categoryElectrical,
-    safetyStock: 50,
+    safetyStock: 5,
     moq: 10,
-    leadTimeDays: 7,
+    leadTimeDays: 20,
     defaultSupplierId: null,
     extAttrs: { brand: 'HENGCE', tags: ['rohs', 'reach'] },
-    industryAttrs: { cell_model: 'IFR32140', nominal_capacity_ah: 15, nominal_voltage_v: 3.2 },
+    industryAttrs: {
+      configuration: '1P52S',
+      energy_kwh: 100,
+      cooling: '液冷',
+      voltage_v: 1000,
+      protection: 'IP55',
+      standard: 'GB/T 36276'
+    },
     version: 2,
     createdAt: '2026-10-01T02:00:00Z',
     updatedAt: NOW
   },
   {
-    code: 'MAT-SF-001',
-    name: '电池包半成品 16S1P',
+    code: 'SEMI-MOD-001',
+    name: '1P16S 磷酸铁锂电池模组 51.2V/280Ah',
     type: 'SEMI',
-    spec: '16S1P 电池包',
-    unit: '个',
+    spec: '16 串 51.2V / 14.3kWh，激光焊接',
+    unit: '组',
     categoryId: ID.categoryElectrical,
-    safetyStock: 80,
-    moq: 20,
-    leadTimeDays: 3,
+    safetyStock: 30,
+    moq: 50,
+    leadTimeDays: 5,
     defaultSupplierId: null,
-    extAttrs: { production_line: 'PACK-A' },
-    industryAttrs: { grading_rule: { capacity_tolerance_pct: 0.5, resistance_max_mohm: 3 } },
+    extAttrs: { production_line: 'MOD' },
+    industryAttrs: {
+      configuration: '1P16S',
+      nominal_voltage_v: 51.2,
+      capacity_ah: 280,
+      energy_kwh: 14.3,
+      welding: '激光焊接',
+      busbar: '铝排'
+    },
     version: 1,
     createdAt: '2026-10-02T02:00:00Z',
     updatedAt: NOW
   },
   {
-    code: 'MAT-RM-101',
-    name: '磷酸铁锂电芯 IFR32140',
+    code: 'SEMI-SMT-001',
+    name: 'SMT 控制主板 PCBA（双面混装）',
+    type: 'SEMI',
+    spec: '双面混装 680 点，六层沉金板',
+    unit: '块',
+    categoryId: ID.categoryElectrical,
+    safetyStock: 30,
+    moq: 100,
+    leadTimeDays: 3,
+    defaultSupplierId: null,
+    extAttrs: { production_line: 'SMT' },
+    industryAttrs: {
+      board_layers: 6,
+      placement_points: 680,
+      side: '双面',
+      process: 'SMT 贴片+回流焊',
+      test: 'AOI+ICT'
+    },
+    version: 1,
+    createdAt: '2026-10-02T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'RAW-CELL-001',
+    name: '磷酸铁锂方形电芯 3.2V/280Ah',
     type: 'RAW',
-    spec: '3.2V 15Ah',
+    spec: 'LF280K 方形铝壳，≥8000 次循环',
     unit: '只',
     categoryId: ID.categoryElectrical,
-    safetyStock: 5000,
+    safetyStock: 200,
     moq: 1000,
     leadTimeDays: 14,
     defaultSupplierId: ID.supplierCell,
     extAttrs: { customs_code: '8507.60' },
-    industryAttrs: { nominal_capacity_ah: 15, nominal_voltage_v: 3.2 },
+    industryAttrs: {
+      material: '磷酸铁锂',
+      cell_model: 'LF280K',
+      nominal_capacity_ah: 280,
+      nominal_voltage_v: 3.2,
+      dimensions_mm: '173.9×71.7×207.2',
+      grading_rule: '容量分档 A/B/C'
+    },
     version: 3,
     createdAt: '2026-09-20T03:00:00Z',
     updatedAt: NOW
   },
   {
-    code: 'MAT-RM-102',
-    name: 'LFP 正极片卷料',
+    code: 'RAW-BMS-001',
+    name: 'BMS 主控采集模块 16S（BCU-16S）',
     type: 'RAW',
-    spec: 'LFP 涂布卷料',
-    unit: '米',
+    spec: '16 串，主动均衡 5A，CAN 2.0B',
+    unit: '套',
     categoryId: ID.categoryElectrical,
-    safetyStock: 1200,
+    safetyStock: 0,
+    moq: 50,
+    leadTimeDays: 21,
+    defaultSupplierId: ID.supplierCell,
+    industryAttrs: {
+      cell_count: 16,
+      balancing: '主动均衡 5A',
+      communication: 'CAN 2.0B',
+      sampling_precision_mv: 2,
+      functional_safety: 'ISO 26262 ASIL-B'
+    },
+    version: 1,
+    createdAt: '2026-09-24T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'RAW-BMS-002',
+    name: 'BMS 主控采集模块 32S（BCU-32S）',
+    type: 'RAW',
+    spec: '32 串，主动均衡 5A，CAN FD',
+    unit: '套',
+    categoryId: ID.categoryElectrical,
+    safetyStock: 0,
+    moq: 50,
+    leadTimeDays: 30,
+    defaultSupplierId: ID.supplierCell,
+    industryAttrs: {
+      cell_count: 32,
+      balancing: '主动均衡 5A',
+      communication: 'CAN FD',
+      sampling_precision_mv: 2,
+      functional_safety: 'ISO 26262 ASIL-B'
+    },
+    version: 1,
+    createdAt: '2026-09-25T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'RAW-ELEC-002',
+    name: '高压直流熔断器 FWH-500A',
+    type: 'RAW',
+    spec: 'DC 1000V / 500A，IEC 60269-7',
+    unit: '只',
+    categoryId: ID.categoryElectrical,
+    safetyStock: 20,
+    moq: 500,
+    leadTimeDays: 10,
+    defaultSupplierId: ID.supplierCell,
+    industryAttrs: {
+      rated_voltage_v: 1000,
+      rated_current_a: 500,
+      standard: 'IEC 60269-7',
+      breaking_capacity_ka: 50,
+      mounting: '螺栓式'
+    },
+    version: 1,
+    createdAt: '2026-09-26T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'RAW-THM-001',
+    name: 'EC 离心散热风机模组 48V',
+    type: 'RAW',
+    spec: '48V / 8500rpm，IP68，Φ250',
+    unit: '套',
+    categoryId: ID.categoryElectrical,
+    safetyStock: 10,
+    moq: 100,
+    leadTimeDays: 15,
+    defaultSupplierId: null,
+    industryAttrs: {
+      voltage_v: 48,
+      speed_rpm: 8500,
+      protection: 'IP68',
+      diameter_mm: 250,
+      airflow_m3h: 1200,
+      noise_db: 58
+    },
+    version: 1,
+    createdAt: '2026-09-27T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'RAW-THM-002',
+    name: 'EC 轴流散热风机模组 48V（替代）',
+    type: 'RAW',
+    spec: '48V / 7200rpm，IP68，Φ250',
+    unit: '套',
+    categoryId: ID.categoryElectrical,
+    safetyStock: 20,
+    moq: 100,
+    leadTimeDays: 10,
+    defaultSupplierId: null,
+    industryAttrs: {
+      alternate_of: 'RAW-THM-001',
+      voltage_v: 48,
+      speed_rpm: 7200,
+      protection: 'IP68',
+      diameter_mm: 250,
+      airflow_m3h: 1050,
+      noise_db: 56
+    },
+    version: 1,
+    createdAt: '2026-09-28T03:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    code: 'AUX-CHEM-001',
+    name: '乙二醇冷却液（50% 水溶液）',
+    type: 'AUX',
+    spec: '50% 乙二醇水溶液，-40℃~+120℃，20L/桶',
+    unit: '桶',
+    categoryId: null,
+    safetyStock: 20,
     moq: 200,
     leadTimeDays: 5,
     defaultSupplierId: null,
+    industryAttrs: {
+      concentration_pct: 50,
+      freezing_point_c: -40,
+      boiling_point_c: 120,
+      volume_l: 20,
+      standard: 'GB 29743'
+    },
     version: 1,
-    createdAt: '2026-09-21T03:00:00Z',
+    createdAt: '2026-09-29T03:00:00Z',
     updatedAt: NOW
   },
   {
-    code: 'MAT-AX-101',
-    name: '绝缘胶带',
-    type: 'AUX',
-    spec: '10mm × 20m',
-    unit: '卷',
-    categoryId: null,
-    safetyStock: 300,
-    moq: 50,
-    leadTimeDays: 2,
-    defaultSupplierId: null,
-    version: 1,
-    createdAt: '2026-09-22T03:00:00Z',
-    updatedAt: NOW
-  },
-  {
-    code: 'MAT-PK-101',
-    name: '出口包装箱',
-    type: 'PACK',
-    spec: '600 × 400 × 350mm',
-    unit: '个',
+    code: 'RAW-PKG-001',
+    name: '铭牌与安全标识套件',
+    type: 'RAW',
+    spec: 'PET 耐候，UL94 V-0，含铭牌/警示/追溯码',
+    unit: '套',
     categoryId: null,
     safetyStock: 200,
-    moq: 20,
-    leadTimeDays: 1,
+    moq: 5000,
+    leadTimeDays: 5,
     defaultSupplierId: null,
+    industryAttrs: {
+      material: 'PET',
+      flame_retardant: 'UL94 V-0',
+      weathering: '户外 5 年',
+      items: '铭牌+警示标签+追溯二维码'
+    },
     version: 1,
-    createdAt: '2026-09-23T03:00:00Z',
+    createdAt: '2026-09-30T03:00:00Z',
     updatedAt: NOW
   }
 ]
@@ -156,7 +338,7 @@ export const materials: Material[] = [
 export const boms: Bom[] = [
   {
     id: ID.bom1,
-    parentMaterialCode: 'MAT-FG-001',
+    parentMaterialCode: 'FG-ESS-001',
     bomVersion: 'V1.0',
     effectiveDate: '2026-10-01',
     expiryDate: null,
@@ -165,26 +347,58 @@ export const boms: Bom[] = [
     panelSize: null,
     items: [
       {
-        materialCode: 'MAT-SF-001',
+        materialCode: 'SEMI-MOD-001',
         qtyPerUnit: 1,
         scrapRate: 0.01,
-        position: 'P1',
+        position: 'A01',
         substitutes: [],
         isPhantom: false
       },
       {
-        materialCode: 'MAT-AX-101',
-        qtyPerUnit: 0.5,
-        scrapRate: 0.02,
-        position: 'P2',
-        substitutes: ['MAT-AX-102'],
+        materialCode: 'SEMI-SMT-001',
+        qtyPerUnit: 1,
+        scrapRate: 0.005,
+        position: 'A02',
+        substitutes: [],
         isPhantom: false
       },
       {
-        materialCode: 'MAT-PK-101',
+        materialCode: 'RAW-BMS-002',
         qtyPerUnit: 1,
         scrapRate: 0,
-        position: 'P3',
+        position: 'A03',
+        substitutes: [],
+        isPhantom: false
+      },
+      {
+        materialCode: 'RAW-ELEC-002',
+        qtyPerUnit: 2,
+        scrapRate: 0,
+        position: 'A04',
+        substitutes: [],
+        isPhantom: false
+      },
+      {
+        materialCode: 'RAW-THM-001',
+        qtyPerUnit: 2,
+        scrapRate: 0.01,
+        position: 'A05',
+        substitutes: ['RAW-THM-002'],
+        isPhantom: false
+      },
+      {
+        materialCode: 'AUX-CHEM-001',
+        qtyPerUnit: 2,
+        scrapRate: 0,
+        position: 'A06',
+        substitutes: [],
+        isPhantom: false
+      },
+      {
+        materialCode: 'RAW-PKG-001',
+        qtyPerUnit: 1,
+        scrapRate: 0,
+        position: 'A07',
         substitutes: [],
         isPhantom: false
       }
@@ -193,16 +407,16 @@ export const boms: Bom[] = [
   },
   {
     id: ID.bom2,
-    parentMaterialCode: 'MAT-SF-001',
-    bomVersion: 'V2.0',
-    effectiveDate: '2026-11-10',
+    parentMaterialCode: 'SEMI-MOD-001',
+    bomVersion: 'V1.0',
+    effectiveDate: '2026-10-01',
     expiryDate: null,
-    status: 'DRAFT',
+    status: 'ACTIVE',
     isPanel: false,
     panelSize: null,
     items: [
       {
-        materialCode: 'MAT-RM-101',
+        materialCode: 'RAW-CELL-001',
         qtyPerUnit: 16,
         scrapRate: 0.005,
         position: 'CELL-01',
@@ -210,10 +424,10 @@ export const boms: Bom[] = [
         isPhantom: false
       },
       {
-        materialCode: 'MAT-RM-102',
-        qtyPerUnit: 3.2,
-        scrapRate: 0.01,
-        position: 'ELECT-01',
+        materialCode: 'RAW-BMS-001',
+        qtyPerUnit: 1,
+        scrapRate: 0,
+        position: 'BMS-01',
         substitutes: [],
         isPhantom: false
       }
@@ -224,23 +438,31 @@ export const boms: Bom[] = [
 
 export const bomTree: BomTreeNode = {
   bomId: ID.bom1,
-  parentMaterialCode: 'MAT-FG-001',
-  materialName: '储能电芯模组 48V/15Ah',
+  parentMaterialCode: 'FG-ESS-001',
+  materialName: '工商业储能电池柜 ESS-100（液冷）',
   qtyPerUnit: 1,
   level: 1,
   children: [
     {
       bomId: ID.bom2,
-      parentMaterialCode: 'MAT-SF-001',
-      materialName: '电池包半成品 16S1P',
+      parentMaterialCode: 'SEMI-MOD-001',
+      materialName: '1P16S 磷酸铁锂电池模组 51.2V/280Ah',
       qtyPerUnit: 1,
       level: 2,
       children: [
         {
           bomId: ID.bom2,
-          parentMaterialCode: 'MAT-RM-101',
-          materialName: '磷酸铁锂电芯 IFR32140',
+          parentMaterialCode: 'RAW-CELL-001',
+          materialName: '磷酸铁锂方形电芯 3.2V/280Ah',
           qtyPerUnit: 16,
+          level: 3,
+          children: []
+        },
+        {
+          bomId: ID.bom2,
+          parentMaterialCode: 'RAW-BMS-001',
+          materialName: 'BMS 主控采集模块 16S（BCU-16S）',
+          qtyPerUnit: 1,
           level: 3,
           children: []
         }
@@ -253,7 +475,98 @@ export const resources: Resource[] = [
   {
     id: RESOURCE_ID.smt,
     code: 'RES-SMT-01',
-    name: 'SMT 贴片机 1 号',
+    name: '高速贴片线 SMT-01',
+    type: 'PRIMARY',
+    groupId: null,
+    capacityMode: 'UNIT_PER_HOUR',
+    capacityValue: 120,
+    batchCapacity: null,
+    efficiency: 1,
+    calendarId: ID.calendar,
+    setupSeconds: 1800,
+    teardownSeconds: 0,
+    maintenancePlan: {
+      periodic: [{ cycle: 'WEEKLY', duration_minutes: 120 }],
+      next_due_at: '2026-11-10T00:00:00Z',
+      note: '每周三保养'
+    },
+    industryAttrs: {
+      maker: 'FUJI',
+      model: 'NXT III',
+      feeder_slots: 180,
+      workshop: 'SMT 贴片车间',
+      process_function: '高速贴片（CHIP/QFP/QFN）'
+    },
+    version: 1
+  },
+  {
+    id: RESOURCE_ID.age,
+    code: 'RES-AGING-01',
+    name: '老化房 AGING-01（20 工位）',
+    type: 'PRIMARY',
+    groupId: null,
+    capacityMode: 'BATCH_SECONDS',
+    capacityValue: 7200,
+    batchCapacity: 20,
+    efficiency: 1,
+    calendarId: ID.calendar,
+    setupSeconds: 3600,
+    teardownSeconds: 0,
+    maintenancePlan: {},
+    industryAttrs: {
+      workshop: '测试与老化中心',
+      process_function: '整柜充放电老化',
+      capacity_text: '20 工位/批，单批 2 小时',
+      temperature_range: '25~55℃'
+    },
+    version: 1
+  },
+  {
+    id: RESOURCE_ID.assy,
+    code: 'RES-PACK-01',
+    name: 'PACK 总装线 PACK-01',
+    type: 'PRIMARY',
+    groupId: null,
+    capacityMode: 'UNIT_PER_HOUR',
+    capacityValue: 4,
+    batchCapacity: null,
+    efficiency: 1,
+    calendarId: ID.calendar,
+    setupSeconds: 2400,
+    teardownSeconds: 0,
+    maintenancePlan: {},
+    industryAttrs: {
+      workshop: 'PACK 总装车间',
+      process_function: '模组入柜、铜排装配与气密测试',
+      capacity_text: '4 台/小时'
+    },
+    version: 1
+  },
+  {
+    id: RESOURCE_ID.qc,
+    code: 'RES-EOL-01',
+    name: 'EOL 终检线 EOL-01',
+    type: 'PRIMARY',
+    groupId: null,
+    capacityMode: 'UNIT_PER_HOUR',
+    capacityValue: 20,
+    batchCapacity: null,
+    efficiency: 1,
+    calendarId: ID.calendar,
+    setupSeconds: 1200,
+    teardownSeconds: 0,
+    maintenancePlan: {},
+    industryAttrs: {
+      workshop: '测试与老化中心',
+      process_function: 'EOL 绝缘、耐压与功能终检',
+      capacity_text: '20 台/小时'
+    },
+    version: 1
+  },
+  {
+    id: RESOURCE_ID.op,
+    code: 'RES-MODULE-01',
+    name: '模组装配线 MOD-01',
     type: 'PRIMARY',
     groupId: null,
     capacityMode: 'UNIT_PER_HOUR',
@@ -261,99 +574,36 @@ export const resources: Resource[] = [
     batchCapacity: null,
     efficiency: 1,
     calendarId: ID.calendar,
-    setupSeconds: 0,
+    setupSeconds: 1800,
     teardownSeconds: 0,
-    maintenancePlan: {
-      periodic: [{ cycle: 'WEEKLY', duration_minutes: 120 }],
-      next_due_at: '2026-11-10T00:00:00Z',
-      note: '每周三保养'
+    maintenancePlan: {},
+    industryAttrs: {
+      workshop: '模组装配车间',
+      process_function: '电芯堆叠、激光焊接与模组下线',
+      capacity_text: '6 组/小时'
     },
-    industryAttrs: { feeder_slots: 120, supported_packages: ['0402', '0603', 'QFN'] },
-    version: 1
-  },
-  {
-    id: RESOURCE_ID.age,
-    code: 'RES-AGE-01',
-    name: '储能老化柜 1 号',
-    type: 'PRIMARY',
-    groupId: null,
-    capacityMode: 'BATCH_SECONDS',
-    capacityValue: 600,
-    batchCapacity: 20,
-    efficiency: 1,
-    calendarId: ID.calendar,
-    setupSeconds: 0,
-    teardownSeconds: 0,
-    maintenancePlan: {},
-    industryAttrs: { aging_cabinet_capacity: 20, aging_hours: 24 },
-    version: 1
-  },
-  {
-    id: RESOURCE_ID.assy,
-    code: 'RES-ASSY-01',
-    name: '电池包总装线 1 号',
-    type: 'PRIMARY',
-    groupId: null,
-    capacityMode: 'SECONDS_PER_UNIT',
-    capacityValue: 0,
-    batchCapacity: null,
-    efficiency: 1,
-    calendarId: ID.calendar,
-    setupSeconds: 0,
-    teardownSeconds: 0,
-    maintenancePlan: {},
-    industryAttrs: {},
-    version: 1
-  },
-  {
-    id: RESOURCE_ID.qc,
-    code: 'RES-QC-01',
-    name: '质检工位 1 号',
-    type: 'SECONDARY',
-    groupId: null,
-    capacityMode: 'SECONDS_PER_UNIT',
-    capacityValue: 0,
-    batchCapacity: null,
-    efficiency: 1,
-    calendarId: ID.calendar,
-    setupSeconds: 0,
-    teardownSeconds: 0,
-    maintenancePlan: {},
-    industryAttrs: {},
-    version: 1
-  },
-  {
-    id: RESOURCE_ID.op,
-    code: 'RES-OP-01',
-    name: '装配操作工 1 名',
-    type: 'HUMAN',
-    groupId: null,
-    capacityMode: 'SECONDS_PER_UNIT',
-    capacityValue: 0,
-    batchCapacity: null,
-    efficiency: 1,
-    calendarId: ID.calendar,
-    setupSeconds: 0,
-    teardownSeconds: 0,
-    maintenancePlan: {},
-    industryAttrs: {},
     version: 1
   },
   {
     id: RESOURCE_ID.tech,
-    code: 'RES-TECH-101',
-    name: '工艺技术员组',
+    code: 'RES-TECH-01',
+    name: '装调技师组 TECH-01（6 人）',
     type: 'HUMAN',
     groupId: null,
-    capacityMode: 'SECONDS_PER_UNIT',
-    capacityValue: 30,
-    batchCapacity: 1,
+    capacityMode: 'UNIT_PER_HOUR',
+    capacityValue: 4,
+    batchCapacity: null,
     efficiency: 1,
     calendarId: ID.calendar,
-    setupSeconds: 0,
+    setupSeconds: 600,
     teardownSeconds: 0,
     maintenancePlan: {},
-    industryAttrs: {},
+    industryAttrs: {
+      headcount: 6,
+      workshop: '全厂',
+      process_function: '人工装配、调试与返修',
+      capacity_text: '6 人，按 4 台/小时折算'
+    },
     version: 1
   },
   {
@@ -380,23 +630,23 @@ export const resources: Resource[] = [
 export const calendars: Calendar[] = [
   {
     id: ID.calendar,
-    name: '全厂 7×24 日历',
+    name: '全厂单班制日历（08:00-20:00，含年度检修）',
     calendarVersion: 1,
     type: 'FACTORY',
     resourceId: null,
     resourceGroupId: null,
     effectiveFrom: '2026-01-01',
     effectiveTo: null,
-    shifts: [{ startTime: '00:00', endTime: '24:00', daysOfWeek: [1, 2, 3, 4, 5, 6, 7] }],
+    shifts: [{ startTime: '08:00', endTime: '20:00', daysOfWeek: [1, 2, 3, 4, 5, 6] }],
     holidays: [
       { date: '2026-10-01', name: '国庆节', kind: 'LEGAL' },
-      { date: '2026-10-10', name: '调休上班', kind: 'MAKEUP' }
+      { date: '2026-11-10', name: '设备年度检修', kind: 'COMPANY' }
     ],
     version: 1
   },
   {
     id: '55555555-5555-4555-8555-555555555556',
-    name: 'SMT 两班制',
+    name: 'SMT 贴片车间两班制日历',
     calendarVersion: 2,
     type: 'SHIFT',
     resourceId: null,
@@ -404,8 +654,8 @@ export const calendars: Calendar[] = [
     effectiveFrom: '2026-11-01',
     effectiveTo: null,
     shifts: [
-      { startTime: '08:00', endTime: '20:00', daysOfWeek: [1, 2, 3, 4, 5] },
-      { startTime: '20:00', endTime: '06:00', daysOfWeek: [1, 2, 3, 4, 5] }
+      { startTime: '08:00', endTime: '20:00', daysOfWeek: [1, 2, 3, 4, 5, 6] },
+      { startTime: '20:00', endTime: '08:00', daysOfWeek: [1, 2, 3, 4, 5] }
     ],
     holidays: [],
     version: 1
@@ -413,7 +663,7 @@ export const calendars: Calendar[] = [
   {
     // 历史日历：effectiveTo 早于今天，Mock 更新返回 403，前端禁用编辑
     id: '55555555-5555-4555-8555-555555555557',
-    name: '总装线三班制',
+    name: '包装车间两班制日历（2025 历史版本）',
     calendarVersion: 1,
     type: 'SHIFT',
     resourceId: null,
@@ -421,9 +671,8 @@ export const calendars: Calendar[] = [
     effectiveFrom: '2025-01-01',
     effectiveTo: '2025-12-31',
     shifts: [
-      { startTime: '07:00', endTime: '15:00', daysOfWeek: [1, 2, 3, 4, 5] },
-      { startTime: '15:00', endTime: '23:00', daysOfWeek: [1, 2, 3, 4, 5] },
-      { startTime: '23:00', endTime: '07:00', daysOfWeek: [1, 2, 3, 4, 5] }
+      { startTime: '08:00', endTime: '20:00', daysOfWeek: [1, 2, 3, 4, 5, 6] },
+      { startTime: '20:00', endTime: '08:00', daysOfWeek: [1, 2, 3, 4, 5] }
     ],
     holidays: [{ date: '2025-10-01', name: '国庆节', kind: 'LEGAL' }],
     version: 1
@@ -431,7 +680,7 @@ export const calendars: Calendar[] = [
   {
     // 待生效日历：校验未来版本编辑与生效状态标签
     id: '55555555-5555-4555-8555-555555555558',
-    name: 'SMT 旺季两班制',
+    name: '包装车间两班制日历（2026 旺季版本）',
     calendarVersion: 3,
     type: 'SHIFT',
     resourceId: null,
@@ -469,10 +718,10 @@ export const operationTemplates: OperationTemplate[] = [
   },
   {
     id: TEMPLATE_ID.assy,
-    code: 'OP-ASSY-01',
-    name: '电池包总装',
+    code: 'OP-MOD-01',
+    name: '模组装配',
     templateVersion: 1,
-    primaryResourceId: RESOURCE_ID.assy,
+    primaryResourceId: RESOURCE_ID.op,
     primaryResourceGroupId: null,
     secondaryResourceIds: [],
     inputMaterialIds: [],
@@ -485,7 +734,7 @@ export const operationTemplates: OperationTemplate[] = [
   {
     id: TEMPLATE_ID.age,
     code: 'OP-AGE-01',
-    name: '老化烘烤',
+    name: '老化测试',
     templateVersion: 1,
     primaryResourceId: RESOURCE_ID.age,
     primaryResourceGroupId: null,
@@ -499,10 +748,10 @@ export const operationTemplates: OperationTemplate[] = [
   },
   {
     id: TEMPLATE_ID.qc,
-    code: 'OP-QC-01',
-    name: '出厂检验',
+    code: 'OP-EOL-01',
+    name: 'EOL 终检',
     templateVersion: 1,
-    primaryResourceId: RESOURCE_ID.assy,
+    primaryResourceId: RESOURCE_ID.qc,
     primaryResourceGroupId: null,
     secondaryResourceIds: [],
     inputMaterialIds: [],
@@ -516,15 +765,15 @@ export const operationTemplates: OperationTemplate[] = [
 
 /**
  * 工艺路线 DAG Mock：
- * - MAT-FG-001 同时存在 INACTIVE（V0.9）/ ACTIVE（V1.0）/ DRAFT（V1.1），覆盖版本切换与只读态；
+ * - FG-ESS-001 同时存在 INACTIVE（V0.9）/ ACTIVE（V1.0）/ DRAFT（V1.1），覆盖版本切换与只读态；
  * - V1.1 草稿内置环、缺模版、seq_no 冲突、重复单向边、孤立节点，用于前端就地校验演示；
- * - MAT-SF-001 V2.0 为正常草稿链。
+ * - SEMI-MOD-001 V2.0 为正常草稿链。
  */
 export const routings: Routing[] = [
   {
     id: ID.routing2,
-    productCode: 'MAT-FG-001',
-    productName: '储能电芯模组 48V/15Ah',
+    productCode: 'FG-ESS-001',
+    productName: '工商业储能电池柜 ESS-100（液冷）',
     routingVersion: 'V1.1',
     effectiveDate: '2026-11-10',
     expiryDate: null,
@@ -549,11 +798,11 @@ export const routings: Routing[] = [
         seqNo: 20,
         operationTemplateId: TEMPLATE_ID.assy,
         operationCode: 'OP-ASSY-01',
-        operationName: '电池包总装',
+        operationName: '模组装配',
         standardSeconds: 30,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [RESOURCE_ID.op],
         optional: false,
         position: { x: 380, y: 80 }
@@ -563,11 +812,11 @@ export const routings: Routing[] = [
         seqNo: 30,
         operationTemplateId: null,
         operationCode: 'OP-AGE-01',
-        operationName: '老化烘烤（待补模版）',
+        operationName: '老化测试（待补模版）',
         standardSeconds: 600,
         setupSeconds: 30,
         primaryResourceId: RESOURCE_ID.age,
-        primaryResourceCode: 'RES-AGE-01',
+        primaryResourceCode: 'RES-AGING-01',
         secondaryResourceIds: [],
         optional: false,
         position: { x: 680, y: 80 }
@@ -577,11 +826,11 @@ export const routings: Routing[] = [
         seqNo: 20,
         operationTemplateId: TEMPLATE_ID.qc,
         operationCode: 'OP-QC-01',
-        operationName: '出厂检验（seq 冲突）',
+        operationName: 'EOL 终检（seq 冲突）',
         standardSeconds: 20,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [RESOURCE_ID.qc],
         optional: false,
         position: { x: 380, y: 260 }
@@ -591,11 +840,11 @@ export const routings: Routing[] = [
         seqNo: 40,
         operationTemplateId: TEMPLATE_ID.qc,
         operationCode: 'OP-QC-01',
-        operationName: '出厂检验（孤立节点）',
+        operationName: 'EOL 终检（孤立节点）',
         standardSeconds: 20,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [],
         optional: true,
         position: { x: 680, y: 260 }
@@ -636,8 +885,8 @@ export const routings: Routing[] = [
   },
   {
     id: ID.routing1,
-    productCode: 'MAT-FG-001',
-    productName: '储能电芯模组 48V/15Ah',
+    productCode: 'FG-ESS-001',
+    productName: '工商业储能电池柜 ESS-100（液冷）',
     routingVersion: 'V1.0',
     effectiveDate: '2026-10-01',
     expiryDate: null,
@@ -662,11 +911,11 @@ export const routings: Routing[] = [
         seqNo: 20,
         operationTemplateId: TEMPLATE_ID.assy,
         operationCode: 'OP-ASSY-01',
-        operationName: '电池包总装',
+        operationName: '模组装配',
         standardSeconds: 30,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [RESOURCE_ID.op],
         optional: false,
         position: { x: 380, y: 80 }
@@ -676,11 +925,11 @@ export const routings: Routing[] = [
         seqNo: 30,
         operationTemplateId: TEMPLATE_ID.age,
         operationCode: 'OP-AGE-01',
-        operationName: '老化烘烤',
+        operationName: '老化测试',
         standardSeconds: 600,
         setupSeconds: 30,
         primaryResourceId: RESOURCE_ID.age,
-        primaryResourceCode: 'RES-AGE-01',
+        primaryResourceCode: 'RES-AGING-01',
         secondaryResourceIds: [],
         optional: false,
         position: { x: 680, y: 80 }
@@ -707,8 +956,8 @@ export const routings: Routing[] = [
   },
   {
     id: ID.routing4,
-    productCode: 'MAT-FG-001',
-    productName: '储能电芯模组 48V/15Ah',
+    productCode: 'FG-ESS-001',
+    productName: '工商业储能电池柜 ESS-100（液冷）',
     routingVersion: 'V0.9',
     effectiveDate: '2026-08-01',
     expiryDate: '2026-10-01',
@@ -733,11 +982,11 @@ export const routings: Routing[] = [
         seqNo: 20,
         operationTemplateId: TEMPLATE_ID.assy,
         operationCode: 'OP-ASSY-01',
-        operationName: '电池包总装',
+        operationName: '模组装配',
         standardSeconds: 30,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [],
         optional: false,
         position: { x: 380, y: 80 }
@@ -757,8 +1006,8 @@ export const routings: Routing[] = [
   },
   {
     id: ID.routing3,
-    productCode: 'MAT-SF-001',
-    productName: '电池包半成品 16S1P',
+    productCode: 'SEMI-MOD-001',
+    productName: '1P16S 磷酸铁锂电池模组 51.2V/280Ah',
     routingVersion: 'V2.0',
     effectiveDate: '2026-11-10',
     expiryDate: null,
@@ -783,11 +1032,11 @@ export const routings: Routing[] = [
         seqNo: 20,
         operationTemplateId: TEMPLATE_ID.assy,
         operationCode: 'OP-ASSY-01',
-        operationName: '电池包总装',
+        operationName: '模组装配',
         standardSeconds: 30,
         setupSeconds: 10,
         primaryResourceId: RESOURCE_ID.assy,
-        primaryResourceCode: 'RES-ASSY-01',
+        primaryResourceCode: 'RES-PACK-01',
         secondaryResourceIds: [RESOURCE_ID.op],
         optional: false,
         position: { x: 380, y: 80 }
@@ -809,173 +1058,173 @@ export const routings: Routing[] = [
 
 export const orders: Order[] = [
   {
-    orderNo: 'SO-20261101-0001',
-    materialCode: 'MAT-FG-001',
-    qty: 120,
-    status: 'SCHEDULED',
+    orderNo: 'DM-SO-1001',
+    materialCode: 'FG-ESS-001',
+    qty: 12,
+    status: 'CONFIRMED',
     freezeStatus: 'UNFROZEN',
     dueDate: '2026-11-12',
     priority: 'URGENT',
     source: 'ERP_SYNC',
-    customerId: ID.customerA,
+    ...CUSTOMER.northChina,
     routingId: ID.routing1,
-    remark: '储能客户首批交付',
-    extAttrs: { sales_region: '华东' },
+    remark: '华北储能客户首批交付，齐套可排',
+    extAttrs: { sales_region: '华北', customer_po: 'PO-NC-26-1001' },
     version: 2,
     createdAt: '2026-11-01T01:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261101-0002',
-    materialCode: 'MAT-SF-001',
-    qty: 300,
+    orderNo: 'DM-SO-1002',
+    materialCode: 'FG-ESS-001',
+    qty: 24,
     status: 'CONFIRMED',
     freezeStatus: 'UNFROZEN',
     dueDate: '2026-11-15',
-    priority: 'HIGH',
-    source: 'MANUAL',
-    customerId: null,
-    routingId: ID.routing2,
-    remark: null,
-    extAttrs: {},
+    priority: 'URGENT',
+    source: 'ERP_SYNC',
+    ...CUSTOMER.northChina,
+    routingId: ID.routing1,
+    remark: '华北储能客户追加订单，齐套可排',
+    extAttrs: { sales_region: '华北', customer_po: 'PO-NC-26-1002' },
     version: 1,
     createdAt: '2026-11-01T02:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261102-0003',
-    materialCode: 'MAT-FG-001',
-    qty: 80,
-    status: 'RELEASED',
+    orderNo: 'DM-SO-1003',
+    materialCode: 'FG-ESS-001',
+    qty: 18,
+    status: 'CONFIRMED',
     freezeStatus: 'FROZEN',
     dueDate: '2026-11-08',
-    priority: 'URGENT',
+    priority: 'HIGH',
     source: 'ERP_SYNC',
-    customerId: ID.customerA,
+    ...CUSTOMER.eastChina,
     routingId: ID.routing1,
-    remark: '冻结时间窗内不可移动',
-    extAttrs: {},
+    remark: '华东渠道客户已冻结交期，不可移动',
+    extAttrs: { sales_region: '华东', customer_po: 'PO-EC-26-1003' },
     version: 3,
     createdAt: '2026-11-02T01:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261102-0004',
-    materialCode: 'MAT-SF-001',
-    qty: 500,
-    status: 'IN_PROGRESS',
+    orderNo: 'DM-SO-1004',
+    materialCode: 'SEMI-MOD-001',
+    qty: 32,
+    status: 'CONFIRMED',
     freezeStatus: 'LOCKED_RESOURCE',
-    dueDate: '2026-11-06',
-    priority: 'NORMAL',
+    dueDate: '2026-11-12',
+    priority: 'HIGH',
     source: 'ERP_SYNC',
-    customerId: null,
+    ...CUSTOMER.southChina,
     routingId: ID.routing2,
-    remark: null,
-    extAttrs: {},
+    remark: '华南客户指定模组线与总装线',
+    extAttrs: { sales_region: '华南', customer_po: 'PO-SC-26-1004' },
     version: 2,
     createdAt: '2026-11-02T03:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261103-0005',
-    materialCode: 'MAT-FG-001',
+    orderNo: 'DM-SO-1005',
+    materialCode: 'SEMI-SMT-001',
     qty: 60,
-    status: 'DRAFT',
+    status: 'SCHEDULED',
     freezeStatus: 'UNFROZEN',
     dueDate: '2026-11-20',
-    priority: 'LOW',
-    source: 'AGENT',
-    customerId: null,
-    routingId: ID.routing1,
-    remark: 'Agent 推荐补单',
+    priority: 'NORMAL',
+    source: 'MANUAL',
+    ...CUSTOMER.southwest,
+    routingId: null,
+    remark: 'SMT 控制主板备件补单',
     extAttrs: {},
     version: 1,
     createdAt: '2026-11-03T01:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261028-0006',
-    materialCode: 'MAT-SF-001',
-    qty: 200,
-    status: 'COMPLETED',
+    orderNo: 'DM-SO-1006',
+    materialCode: 'FG-ESS-001',
+    qty: 20,
+    status: 'IN_PROGRESS',
     freezeStatus: 'UNFROZEN',
-    dueDate: '2026-11-03',
-    priority: 'NORMAL',
-    source: 'MANUAL',
-    customerId: null,
-    routingId: ID.routing2,
-    remark: null,
-    extAttrs: {},
+    dueDate: '2026-11-06',
+    priority: 'URGENT',
+    source: 'ERP_SYNC',
+    ...CUSTOMER.southwest,
+    routingId: ID.routing1,
+    remark: '西南分布式客户在制订单，SMT 已完成',
+    extAttrs: { sales_region: '西南', customer_po: 'PO-WC-26-1006' },
     version: 4,
     createdAt: '2026-10-28T01:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261029-0007',
-    materialCode: 'MAT-FG-001',
+    orderNo: 'DM-SO-1007',
+    materialCode: 'FG-ESS-001',
     qty: 30,
-    status: 'CANCELLED',
-    freezeStatus: 'UNFROZEN',
+    status: 'RELEASED',
+    freezeStatus: 'LOCKED_TIME_WINDOW',
     dueDate: '2026-11-10',
     priority: 'LOW',
     source: 'MANUAL',
-    customerId: null,
+    ...CUSTOMER.eastChina,
     routingId: ID.routing1,
-    remark: '客户取消',
+    remark: '已下发车间，时间窗锁定',
     extAttrs: {},
     version: 2,
     createdAt: '2026-10-29T01:00:00Z',
     updatedAt: NOW
   },
   {
-    orderNo: 'SO-20261104-0008',
-    materialCode: 'MAT-FG-001',
-    qty: 7,
-    status: 'DRAFT',
-    freezeStatus: 'UNFROZEN',
-    dueDate: '2026-11-14',
-    priority: 'NORMAL',
-    source: 'MANUAL',
-    customerId: null,
-    routingId: null,
-    remark: '小批量模组订单',
-    extAttrs: {},
-    version: 1,
-    createdAt: NOW,
-    updatedAt: NOW
-  },
-  {
-    orderNo: 'SO-20261104-0011',
-    materialCode: 'MAT-FG-001',
-    qty: 150,
+    orderNo: 'DM-SO-1008',
+    materialCode: 'FG-ESS-001',
+    qty: 90,
     status: 'CONFIRMED',
-    freezeStatus: 'LOCKED_TIME_WINDOW',
+    freezeStatus: 'UNFROZEN',
     dueDate: '2026-11-18',
     priority: 'HIGH',
     source: 'ERP_SYNC',
-    customerId: ID.customerA,
+    ...CUSTOMER.northChina,
     routingId: ID.routing1,
-    remark: null,
-    extAttrs: {},
+    remark: '华北客户大批量订单，齐套可排',
+    extAttrs: { sales_region: '华北', customer_po: 'PO-NC-26-1008' },
     version: 1,
     createdAt: NOW,
     updatedAt: NOW
   },
   {
-    // 确认失败样例：MAT-SF-001 只有 DRAFT BOM，触发 C8 的 42200。
-    orderNo: 'SO-20261104-0010',
-    materialCode: 'MAT-SF-001',
-    qty: 100,
+    orderNo: 'DM-SO-1009',
+    materialCode: 'SEMI-MOD-001',
+    qty: 200,
+    status: 'COMPLETED',
+    freezeStatus: 'UNFROZEN',
+    dueDate: '2026-11-03',
+    priority: 'NORMAL',
+    source: 'MANUAL',
+    ...CUSTOMER.southChina,
+    routingId: ID.routing2,
+    remark: '历史订单，已完工入库',
+    extAttrs: {},
+    version: 4,
+    createdAt: '2026-10-28T01:00:00Z',
+    updatedAt: NOW
+  },
+  {
+    // 确认失败样例：SEMI-MOD-001 只有 DRAFT 工艺路线，触发 C8 的 42200。
+    orderNo: 'DM-SO-1010',
+    materialCode: 'SEMI-SMT-001',
+    qty: 40,
     status: 'DRAFT',
     freezeStatus: 'UNFROZEN',
     dueDate: '2026-11-25',
     priority: 'NORMAL',
     source: 'MANUAL',
-    customerId: ID.customerA,
-    routingId: ID.routing2,
-    remark: '待补生效 BOM 后确认',
+    ...CUSTOMER.eastChina,
+    routingId: null,
+    remark: '华东渠道样机订单，待评审',
     extAttrs: {},
-    version: 1,
+    version: 2,
     createdAt: NOW,
     updatedAt: NOW
   }
@@ -1178,7 +1427,7 @@ export const sandboxes: Sandbox[] = [
     expiresAt: null,
     snapshot: {
       capturedAt: '2026-11-03T02:00:00Z',
-      orderIds: ['SO-20261101-0001', 'SO-20261102-0003'],
+      orderIds: ['DM-SO-1001', 'DM-SO-1003'],
       strategyId: ID.strategy1,
       baselineSolveTaskId: 1001,
       note: '默认基线'
@@ -1229,7 +1478,7 @@ export const solveTaskDetails: SolveTaskDetail[] = [
 export const ganttTasks: GanttTask[] = [
   {
     id: 2101,
-    orderNo: 'SO-20261101-0001',
+    orderNo: 'DM-SO-1001',
     operationIndex: 1,
     operationName: 'SMT 贴片',
     resourceCode: 'RES-SMT-01',
@@ -1245,11 +1494,11 @@ export const ganttTasks: GanttTask[] = [
   },
   {
     id: 2102,
-    orderNo: 'SO-20261101-0001',
+    orderNo: 'DM-SO-1001',
     operationIndex: 2,
-    operationName: '电池包总装',
-    resourceCode: 'RES-ASSY-01',
-    secondaryResourceCodes: ['RES-OP-01'],
+    operationName: '模组装配',
+    resourceCode: 'RES-PACK-01',
+    secondaryResourceCodes: ['RES-MODULE-01'],
     startTime: '2026-11-05T02:30:00Z',
     endTime: '2026-11-05T04:30:00Z',
     setupStartTime: '2026-11-05T02:00:00Z',
@@ -1261,10 +1510,10 @@ export const ganttTasks: GanttTask[] = [
   },
   {
     id: 2103,
-    orderNo: 'SO-20261101-0001',
+    orderNo: 'DM-SO-1001',
     operationIndex: 3,
-    operationName: '老化烘烤',
-    resourceCode: 'RES-AGE-01',
+    operationName: '老化测试',
+    resourceCode: 'RES-AGING-01',
     secondaryResourceCodes: [],
     startTime: '2026-11-05T05:00:00Z',
     endTime: '2026-11-06T05:00:00Z',
@@ -1277,7 +1526,7 @@ export const ganttTasks: GanttTask[] = [
   },
   {
     id: 2104,
-    orderNo: 'SO-20261102-0003',
+    orderNo: 'DM-SO-1003',
     operationIndex: 1,
     operationName: 'SMT 贴片',
     resourceCode: 'RES-SMT-01',
@@ -1293,10 +1542,10 @@ export const ganttTasks: GanttTask[] = [
   },
   {
     id: 2105,
-    orderNo: 'SO-20261102-0003',
+    orderNo: 'DM-SO-1003',
     operationIndex: 2,
-    operationName: '电池包总装',
-    resourceCode: 'RES-ASSY-01',
+    operationName: '模组装配',
+    resourceCode: 'RES-PACK-01',
     secondaryResourceCodes: [],
     startTime: '2026-11-05T06:30:00Z',
     endTime: '2026-11-05T07:30:00Z',
@@ -1309,10 +1558,10 @@ export const ganttTasks: GanttTask[] = [
   },
   {
     id: 2106,
-    orderNo: 'SO-20261028-0006',
+    orderNo: 'DM-SO-1006',
     operationIndex: 1,
     operationName: '模组装配',
-    resourceCode: 'RES-ASSY-01',
+    resourceCode: 'RES-PACK-01',
     secondaryResourceCodes: [],
     startTime: '2026-11-04T08:00:00Z',
     endTime: '2026-11-04T10:00:00Z',
@@ -1328,36 +1577,36 @@ export const ganttTasks: GanttTask[] = [
 export const ganttResourceRows: GanttResourceRow[] = [
   {
     resourceCode: 'RES-SMT-01',
-    resourceName: 'SMT 贴片机 1 号',
+    resourceName: '高速贴片线 SMT-01',
     resourceType: 'PRIMARY',
     tasks: ganttTasks.filter((task) => task.resourceCode === 'RES-SMT-01')
   },
   {
-    resourceCode: 'RES-ASSY-01',
-    resourceName: '总装线 A',
+    resourceCode: 'RES-PACK-01',
+    resourceName: 'PACK 总装线 PACK-01',
     resourceType: 'PRIMARY',
-    tasks: ganttTasks.filter((task) => task.resourceCode === 'RES-ASSY-01')
+    tasks: ganttTasks.filter((task) => task.resourceCode === 'RES-PACK-01')
   },
   {
-    resourceCode: 'RES-AGE-01',
-    resourceName: '储能老化柜 1 号',
+    resourceCode: 'RES-AGING-01',
+    resourceName: '老化房 AGING-01（20 工位）',
     resourceType: 'PRIMARY',
-    tasks: ganttTasks.filter((task) => task.resourceCode === 'RES-AGE-01')
+    tasks: ganttTasks.filter((task) => task.resourceCode === 'RES-AGING-01')
   }
 ]
 
 export const ganttOrderRows: GanttOrderRow[] = [
   {
-    orderNo: 'SO-20261101-0001',
-    materialCode: 'MAT-FG-001',
+    orderNo: 'DM-SO-1001',
+    materialCode: 'FG-ESS-001',
     dueDate: '2026-11-12',
-    tasks: ganttTasks.filter((task) => task.orderNo === 'SO-20261101-0001')
+    tasks: ganttTasks.filter((task) => task.orderNo === 'DM-SO-1001')
   },
   {
-    orderNo: 'SO-20261102-0003',
-    materialCode: 'MAT-FG-001',
+    orderNo: 'DM-SO-1003',
+    materialCode: 'FG-ESS-001',
     dueDate: '2026-11-08',
-    tasks: ganttTasks.filter((task) => task.orderNo === 'SO-20261102-0003')
+    tasks: ganttTasks.filter((task) => task.orderNo === 'DM-SO-1003')
   }
 ]
 
@@ -1370,18 +1619,18 @@ export const mrpAnalysisFixture: MrpAnalysisResult = {
   blocked: false,
   inventoryEnabled: true,
   orderCount: 3,
-  warnings: ['MAT-RM-101 可用量低于安全库存'],
+  warnings: ['RAW-CELL-001 可用量低于安全库存'],
   orders: [
     {
-      orderNo: 'SO-20261102-0010',
-      productCode: 'MAT-FG-001',
+      orderNo: 'DM-SO-1001',
+      productCode: 'FG-ESS-001',
       qty: 1000,
       dueDate: '2026-11-08',
       kitted: false,
       shortages: [
         {
-          materialCode: 'MAT-RM-101',
-          materialName: '电芯',
+          materialCode: 'RAW-CELL-001',
+          materialName: '磷酸铁锂方形电芯 3.2V/280Ah',
           requiredQty: 1920,
           allocatedQty: 1500,
           shortageQty: 420
@@ -1389,23 +1638,23 @@ export const mrpAnalysisFixture: MrpAnalysisResult = {
       ]
     },
     {
-      orderNo: 'SO-20261102-0011',
-      productCode: 'MAT-SF-001',
+      orderNo: 'DM-SO-1006',
+      productCode: 'SEMI-MOD-001',
       qty: 800,
       dueDate: '2026-11-10',
       kitted: true,
       shortages: []
     },
     {
-      orderNo: 'SO-20261102-0012',
-      productCode: 'MAT-FG-002',
+      orderNo: 'DM-SO-1008',
+      productCode: 'FG-ESS-001',
       qty: 500,
       dueDate: '2026-11-12',
       kitted: false,
       shortages: [
         {
-          materialCode: 'MAT-AX-101',
-          materialName: '辅料',
+          materialCode: 'RAW-THM-001',
+          materialName: 'EC 离心散热风机模组 48V',
           requiredQty: 60,
           allocatedQty: 40,
           shortageQty: 20
@@ -1415,40 +1664,40 @@ export const mrpAnalysisFixture: MrpAnalysisResult = {
   ],
   shortages: [
     {
-      materialCode: 'MAT-RM-101',
-      materialName: '电芯',
+      materialCode: 'RAW-CELL-001',
+      materialName: '磷酸铁锂方形电芯 3.2V/280Ah',
       requiredQty: 1920,
       availableQty: 1500,
       shortageQty: 420,
       earliestRequiredAt: '2026-11-06T00:00:00Z',
-      affectedOrderNos: ['SO-20261102-0010'],
+      affectedOrderNos: ['DM-SO-1001'],
       suggestedPurchaseDate: '2026-11-05T00:00:00Z',
       suggestedQty: 420,
       supplierCode: 'SUP-CELL-001'
     },
     {
-      materialCode: 'MAT-RM-102',
-      materialName: '外壳',
+      materialCode: 'RAW-BMS-001',
+      materialName: 'BMS 主控采集模块 16S（BCU-16S）',
       requiredQty: 384,
       availableQty: 1200,
       shortageQty: 0,
       earliestRequiredAt: '2026-11-12T00:00:00Z',
-      affectedOrderNos: ['SO-20261102-0011'],
+      affectedOrderNos: ['DM-SO-1006'],
       suggestedPurchaseDate: null,
       suggestedQty: null,
       supplierCode: null
     },
     {
-      materialCode: 'MAT-AX-101',
-      materialName: '辅料',
+      materialCode: 'RAW-THM-001',
+      materialName: 'EC 离心散热风机模组 48V',
       requiredQty: 60,
       availableQty: 40,
       shortageQty: 20,
       earliestRequiredAt: '2026-11-05T00:00:00Z',
-      affectedOrderNos: ['SO-20261102-0003'],
+      affectedOrderNos: ['DM-SO-1008'],
       suggestedPurchaseDate: '2026-11-05T00:00:00Z',
       suggestedQty: 20,
-      supplierCode: 'SUP-AUX-001'
+      supplierCode: 'SUP-THM-001'
     }
   ]
 }
@@ -1598,7 +1847,7 @@ export const auditLogs: AuditLog[] = [
     userId: ID.user1,
     action: 'ORDER_FROZEN',
     resourceType: 'ORDER',
-    resourceId: 'SO-20261104-0008',
+    resourceId: 'DM-SO-1008',
     beforeValue: { frozen: false },
     afterValue: { frozen: true, reason: '客户确认插单' },
     clientIp: '10.0.0.20',
@@ -1610,7 +1859,7 @@ export const auditLogs: AuditLog[] = [
     userId: ID.user1,
     action: 'ORDER_RELEASED',
     resourceType: 'ORDER',
-    resourceId: 'SO-20261103-0004',
+    resourceId: 'DM-SO-1004',
     beforeValue: { status: 'HOLD' },
     afterValue: { status: 'RELEASED' },
     clientIp: '10.0.0.20',

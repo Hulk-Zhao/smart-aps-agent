@@ -96,10 +96,20 @@ function onSaved() {
 
 function calendarLabel(calendarId?: string | null): string {
   if (!calendarId) {
-    return '—'
+    return '无'
   }
   const calendar = calendarMap.value[calendarId]
-  return calendar ? `${calendar.name} ${calendar.calendarVersion}` : calendarId.slice(0, 8)
+  return calendar ? `${calendar.name} ${calendar.calendarVersion}` : '日历名称待接入'
+}
+
+function groupLabel(groupId?: string | null): string {
+  return groupId ? '已分组' : '未分组'
+}
+
+function setupText(resource: Resource): string {
+  return resource.setupSeconds === undefined || resource.setupSeconds === null
+    ? '无'
+    : `${resource.setupSeconds} 秒`
 }
 
 function capacitySummary(resource: Resource): string {
@@ -110,9 +120,9 @@ function capacitySummary(resource: Resource): string {
     case 'SECONDS_PER_UNIT':
       return `标准工时 ÷ 效率 ${efficiency}`
     case 'BATCH_SECONDS':
-      return `每批 ${resource.capacityValue} 秒 × ${resource.batchCapacity ?? '—'} 件/批，效率 ${efficiency}`
+      return `每批 ${resource.capacityValue} 秒 × ${resource.batchCapacity ?? '无'} 件/批，效率 ${efficiency}`
     default:
-      return '—'
+      return '无'
   }
 }
 
@@ -172,25 +182,25 @@ onMounted(() => {
 
     <el-card shadow="never" class="page-card">
       <el-form :inline="true" @submit.prevent="search">
-        <el-form-item label="编码">
+        <el-form-item label="资源编码">
           <el-input
             v-model="filters.code"
             clearable
-            placeholder="按编码模糊查询"
+            placeholder="按资源编码模糊查询"
             style="width: 170px"
             @keyup.enter="search"
           />
         </el-form-item>
-        <el-form-item label="名称">
+        <el-form-item label="资源名称">
           <el-input
             v-model="filters.name"
             clearable
-            placeholder="按名称模糊查询"
+            placeholder="按资源名称模糊查询"
             style="width: 180px"
             @keyup.enter="search"
           />
         </el-form-item>
-        <el-form-item label="类型">
+        <el-form-item label="资源类型">
           <el-select v-model="filters.type" clearable placeholder="全部" style="width: 130px">
             <el-option
               v-for="item in resourceTypeOptions"
@@ -204,7 +214,7 @@ onMounted(() => {
           <el-input
             v-model="filters.groupId"
             clearable
-            placeholder="资源组 UUID"
+            placeholder="资源组 ID"
             style="width: 210px"
             @keyup.enter="search"
           />
@@ -232,9 +242,13 @@ onMounted(() => {
         <el-button type="primary" @click="openCreate">新建资源</el-button>
       </template>
 
-      <el-table-column prop="code" label="资源编码" min-width="150" />
-      <el-table-column prop="name" label="名称" min-width="170" show-overflow-tooltip />
-      <el-table-column label="类型" width="100">
+      <el-table-column prop="name" label="资源名称" min-width="200" show-overflow-tooltip />
+      <el-table-column prop="code" label="资源编码" min-width="160">
+        <template #default="{ row }">
+          <span class="secondary-text">{{ row.code }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="资源类型" width="110">
         <template #default="{ row }">
           <StatusTag enum-key="resourceType" :value="row.type" />
         </template>
@@ -244,17 +258,25 @@ onMounted(() => {
           <StatusTag enum-key="capacityMode" :value="row.capacityMode" />
         </template>
       </el-table-column>
-      <el-table-column label="产能配置" min-width="230" show-overflow-tooltip>
+      <el-table-column label="产能" min-width="230" show-overflow-tooltip>
         <template #default="{ row }">{{ capacitySummary(row) }}</template>
       </el-table-column>
-      <el-table-column label="单件工时" min-width="150" show-overflow-tooltip>
+      <el-table-column label="节拍（秒/件）" min-width="150" show-overflow-tooltip>
         <template #default="{ row }">{{ perUnitSummary(row) }}</template>
       </el-table-column>
-      <el-table-column label="工作日历" min-width="170" show-overflow-tooltip>
+      <el-table-column label="换型时间" width="110">
+        <template #default="{ row }">{{ setupText(row) }}</template>
+      </el-table-column>
+      <el-table-column label="工作日历" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ calendarLabel(row.calendarId) }}</template>
       </el-table-column>
-      <el-table-column label="资源组" width="130" show-overflow-tooltip>
-        <template #default="{ row }">{{ row.groupId || '—' }}</template>
+      <el-table-column label="资源组" width="110">
+        <template #default="{ row }">
+          <el-tooltip v-if="row.groupId" content="资源组名称待后端接口补齐" placement="top">
+            <span>{{ groupLabel(row.groupId) }}</span>
+          </el-tooltip>
+          <span v-else class="none-text">未分组</span>
+        </template>
       </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
@@ -280,5 +302,14 @@ onMounted(() => {
 <style scoped>
 .page-alert {
   margin-bottom: 12px;
+}
+
+.secondary-text {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+
+.none-text {
+  color: var(--text-3);
 }
 </style>

@@ -21,6 +21,10 @@ export interface Order {
   dueDate: string
   priority: OrderPriority
   source: OrderSource
+  /** 客户业务名称；后端补齐前页面不展示裸 UUID。 */
+  customerName?: string | null
+  /** 客户编码，作为客户名称的副文本展示。 */
+  customerCode?: string | null
   customerId?: string | null
   routingId?: string | null
   remark?: string | null
@@ -71,18 +75,86 @@ export interface OrderFreezeRequest {
   version: number
 }
 
+export type AtpMode = 'FAST' | 'ACCURATE'
+export type AtpStatus = 'OK' | 'INFEASIBLE' | 'TIMEOUT' | 'FAILED'
+/** FAST 恒为 ESTIMATE；ACCURATE 仅完整可行解为 VERIFIED，超时/降级为 UNVERIFIED。 */
+export type AtpAccuracy = 'ESTIMATE' | 'VERIFIED' | 'UNVERIFIED'
+
 export interface AtpRequest {
   materialCode: string
   qty: number
   requestedDate: string
   customerId?: string | null
+  /** 可选；存在时必须为 CONFIRMED/SCHEDULED/RELEASED/IN_PROGRESS 且与物料一致，否则 422/42200。 */
+  orderNo?: string | null
+  mode?: AtpMode
+  timeoutSeconds?: number
+  allowSplitBatch?: boolean
 }
 
+export interface AtpBottleneck {
+  type: string
+  resourceCode?: string | null
+  operationCode?: string | null
+  operationIndex?: number | null
+  delayMinutes: number
+  detail: string
+}
+
+export interface AtpSuggestion {
+  action: string
+  resourceCode?: string | null
+  operationCode?: string | null
+  operationIndex?: number | null
+  expectedGainMinutes: number
+  detail: string
+}
+
+/** 建议性标识：advisoryOnly 恒为 true，capacity lock 不写主计划。 */
+export interface AtpCapacityLockSuggestion {
+  advisoryOnly: boolean
+  required?: boolean
+  reason?: string
+  resourceCodes?: string[]
+  from?: string | null
+  to?: string | null
+}
+
+export interface AtpSolveInfo {
+  engine?: string
+  timeoutSeconds?: number | null
+  elapsedMs?: number
+  timedOut?: boolean
+  solverStatus?: string | null
+  scoreHard?: number | null
+  scoreSoft?: number | null
+  assignedTaskCount?: number
+  unassignedTaskCount?: number
+  message?: string
+}
+
+/** C46 响应；mainPlanWritten 恒为 false，TIMEOUT/INFEASIBLE 时不含任何日期字段。 */
 export interface AtpResult {
-  feasible: boolean
-  earliestDate: string
-  leadTimeDays: number
+  materialCode: string
+  qty: number
+  requestedDate: string
+  orderNo?: string | null
+  mode?: AtpMode
+  accuracy?: AtpAccuracy
+  status?: AtpStatus
+  feasible?: boolean | null
+  earliestDeliveryDate?: string | null
+  /** C41 兼容别名，与 earliestDeliveryDate 同值。 */
+  earliestDate?: string | null
+  leadTimeDays?: number | null
   bottleneckResourceCode?: string | null
+  bottlenecks?: AtpBottleneck[]
+  suggestions?: AtpSuggestion[]
+  capacityLockSuggestion?: AtpCapacityLockSuggestion
+  solve?: AtpSolveInfo
+  assumptions?: string[]
+  mainPlanWritten?: boolean
+  message?: string
 }
 
 export type StrategyDirection = 'FORWARD' | 'BACKWARD' | 'BOTTLENECK'

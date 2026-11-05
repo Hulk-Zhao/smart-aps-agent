@@ -14,6 +14,7 @@ import type {
   GanttConflict,
   GanttLayerFlags
 } from '@/components/gantt/analysis'
+import { PageSkeleton } from '@/components/common'
 import { GANTT_CALENDAR_TIMEZONE_NOTE } from '@/components/gantt/calendar'
 import type { GanttCalendarRowState, GanttCalendarWindowKind } from '@/components/gantt/calendar'
 import GanttTimeline from '@/components/gantt/GanttTimeline.vue'
@@ -43,7 +44,9 @@ interface PerfProbe {
   minMs: number
   maxMs: number
   fps: number
+  avgFrameMs: number
   droppedFrames: number
+  dropRate: number
   sampledFrames: number
   rowCount: number
   taskCount: number
@@ -74,9 +77,20 @@ const QUERY_RANGE = {
   to: new Date(Date.UTC(2026, 10, 12)).toISOString()
 }
 
+/**
+ * 5000 任务容量档的任务会溢出 11-05 → 11-12 的默认窗口。
+ * Mock 下放宽到整档实际跨度，确保「5000 任务」档位真的是 5000 条任务参与渲染，
+ * 否则按默认窗口过滤后只剩约 1/4，性能采样会失真。
+ */
+const CAPACITY_MOCK_RANGE = {
+  from: new Date(Date.UTC(2026, 10, 1)).toISOString(),
+  to: new Date(Date.UTC(2026, 11, 31)).toISOString()
+}
+
 const datasetKey = ref<GanttDatasetKey>('48x8')
 const zoom = ref<GanttZoom>('day')
-const dataSource = ref<'mock' | 'api'>('mock')
+/** 默认真实后端；Mock 只允许显式 ?source=mock 或工具栏显式切换进入。 */
+const dataSource = ref<'mock' | 'api'>('api')
 const layers = reactive<GanttLayerFlags>({
   calendar: true,
   idle: false,
@@ -87,6 +101,7 @@ const layers = reactive<GanttLayerFlags>({
 })
 
 const dataset = ref<GanttDataset | null>(null)
+const datasetIsEmpty = computed(() => dataset.value !== null && dataset.value.rows.length === 0)
 const analysis = ref<GanttAnalysis | null>(null)
 const metrics = ref<RenderMetrics | null>(null)
 const perf = ref<PerfProbe | null>(null)
@@ -1018,10 +1033,14 @@ async function loadDataset(preserveSelection = false): Promise<void> {
   }
   try {
     const startedAt = performance.now()
+    const range =
+      dataSource.value === 'mock' && datasetKey.value === '5000x50'
+        ? CAPACITY_MOCK_RANGE
+        : QUERY_RANGE
     const data = await adapter.value.load({
       sandboxId: DEFAULT_SANDBOX_ID,
-      from: QUERY_RANGE.from,
-      to: QUERY_RANGE.to
+      from: range.from,
+      to: range.to
     })
     const afterLoad = performance.now()
     dataset.value = data
@@ -1081,7 +1100,13 @@ function percentileOf(values: number[], ratio: number): number {
 function measureScrollFps(
   element: HTMLElement,
   frames: number
-): Promise<{ fps: number; droppedFrames: number; sampledFrames: number }> {
+): Promise<{
+  fps: number
+  avgFrameMs: number
+  droppedFrames: number
+  dropRate: number
+  sampledFrames: number
+}> {
   return new Promise((resolve) => {
     const max = Math.max(element.scrollHeight - element.clientHeight, 0)
     const step = max > 0 ? Math.max(Math.floor(max / frames), 1) : 0
@@ -1109,7 +1134,9 @@ function measureScrollFps(
       }
       resolve({
         fps: elapsed > 0 ? Math.round((sampled * 1000 * 10) / elapsed) / 10 : 0,
+        avgFrameMs: sampled > 0 ? Math.round((elapsed / sampled) * 100) / 100 : 0,
         droppedFrames: dropped,
+        dropRate: sampled > 0 ? Math.round((dropped / sampled) * 1000) / 10 : 0,
         sampledFrames: sampled
       })
     }
@@ -1138,7 +1165,7 @@ async function runPerfProbe(): Promise<void> {
       stageRef.value?.querySelector<HTMLElement>('.gantt-scroll') ?? null
     const scroll = scrollElement
       ? await measureScrollFps(scrollElement, PROBE_SCROLL_FRAMES)
-      : { fps: 0, droppedFrames: 0, sampledFrames: 0 }
+      : { fps: 0, avgFrameMs: 0, droppedFrames: 0, dropRate: 0, sampledFrames: 0 }
     if (scrollElement) {
       scrollElement.scrollTop = 0
     }
@@ -1150,7 +1177,9 @@ async function runPerfProbe(): Promise<void> {
       minMs: Math.round(Math.min(...totals) * 100) / 100,
       maxMs: Math.round(Math.max(...totals) * 100) / 100,
       fps: scroll.fps,
+      avgFrameMs: scroll.avgFrameMs,
       droppedFrames: scroll.droppedFrames,
+      dropRate: scroll.dropRate,
       sampledFrames: scroll.sampledFrames,
       rowCount: dataset.value?.rows.length ?? 0,
       taskCount: analysis.value?.summary.taskCount ?? 0,
@@ -1169,7 +1198,7 @@ function readQuery(): void {
     key === '100x10' || key === '500x50' || key === '5000x50' || key === '48x8' ? key : '48x8'
   const nextZoom = String(query.zoom ?? '')
   zoom.value = nextZoom === 'hour' || nextZoom === 'week' || nextZoom === 'month' ? nextZoom : 'day'
-  dataSource.value = String(query.source ?? '') === 'api' ? 'api' : 'mock'
+  dataSource.value = String(query.source ?? '') === 'mock' ? 'mock' : 'api'
   if (String(query.heat ?? '') === '1') {
     layers.heat = true
   }
@@ -1196,12 +1225,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="gantt-page">
     <h2 class="page-title">订单甘特图（M3 W7 · 虚拟滚动 + C36 调整）</h2>
 
-    <el-card class="page-card" shadow="never">
+    <el-card class="page-card gantt-toolbar-card" shadow="never">
       <div class="toolbar">
-        <el-form inline>
+        <el-form inline size="small">
           <el-form-item label="数据档">
             <el-select v-model="datasetKey" style="width: 260px">
               <el-option
@@ -1223,9 +1252,10 @@ onMounted(() => {
             </el-select>
           </el-form-item>
           <el-form-item label="数据源">
-            <el-tag :type="dataSource === 'api' ? 'warning' : 'success'" effect="plain">
-              {{ dataSource === 'api' ? 'API（/gantt/order C29）' : 'Mock（契约 C29 结构）' }}
-            </el-tag>
+            <el-select v-model="dataSource" style="width: 176px">
+              <el-option label="API（后端真实数据）" value="api" />
+              <el-option label="Mock（合成数据）" value="mock" />
+            </el-select>
           </el-form-item>
           <el-form-item label="图层">
             <el-checkbox v-model="layers.calendar">C14 非工时校验</el-checkbox>
@@ -1237,37 +1267,76 @@ onMounted(() => {
           </el-form-item>
         </el-form>
         <div class="toolbar__actions">
-          <el-button @click="goResourceView">资源甘特视图</el-button>
-          <el-button :loading="loading" @click="loadDataset()">重新加载</el-button>
+          <el-tag
+            class="source-badge"
+            :type="dataSource === 'api' ? 'success' : 'warning'"
+            effect="dark"
+            size="large"
+          >
+            {{ dataSource === 'api' ? '数据源：API（后端真实数据）' : '数据源：Mock（合成数据）' }}
+          </el-tag>
+          <el-button size="small" @click="goResourceView">资源甘特视图</el-button>
+          <el-button size="small" :loading="loading" @click="loadDataset()">重新加载</el-button>
         </div>
       </div>
 
-      <div class="legend">
-        <span class="legend__title">状态配色：</span>
-        <span v-for="item in statusLegend" :key="item.value" class="legend__item">
-          <i class="legend__dot" :class="`tag-${item.tagType}`" />{{ item.label }}
-        </span>
-        <span class="legend__item"><i class="legend__setup" />换型窗口</span>
-        <span class="legend__item"
-          ><i class="legend__frozen">冻</i>冻结（订单级/任务级取交集）</span
-        >
-        <span class="legend__item"><i class="legend__lock">窗</i>工时窗锁 / 资锁</span>
-        <span class="legend__item"><i class="legend__conflict" />冲突（红色描边）</span>
-        <span class="legend__item"><i class="legend__calendar" />C14 非工时校验（任务级）</span>
-        <span class="legend__item"><i class="legend__due" />订单交期线（C29 dueDateLine）</span>
-      </div>
-
-      <p class="scope-note">
-        一行一订单，行内为作业任务；任务时间与资源甘特同源（同一份任务集合），日历停机、冲突、热力、
-        lateMinutes、lockType 均由同一套 analysis 口径计算，不存在「订单甘特另算一遍」。 C14
-        资源日历经 GET /resources + GET /calendars/{id}
-        补齐。停机窗口与资源日历按资源编码展示（下方表格），
-        不按订单行叠加：订单跨多资源，叠加会把「资源停机」误读为「订单停机」；订单图为任务级非工时校验。
-        M2-FE-03 的移动/锁定/冻结在本页选中任务后操作。
-      </p>
     </el-card>
 
     <el-alert v-if="error" class="page-card" type="error" :closable="false" :title="error" />
+
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        订单甘特 · {{ profile.label }} · 缩放
+        {{ zoomOptions.find((item) => item.value === zoom)?.label ?? zoom }}
+      </template>
+      <div ref="stageRef" v-loading="loading" class="stage">
+        <PageSkeleton v-if="!dataset && loading" :rows="10" :show-title="false" />
+        <el-empty
+          v-else-if="datasetIsEmpty"
+          description="该数据档在所选时间窗内没有订单任务（可能尚未排产）"
+        >
+          <template #default>
+            <p class="empty-hint">
+              先确认该方案已排产；仍为空时切换数据档或重新加载，Mock 数据档请确认已切换数据源。
+            </p>
+            <el-button size="small" type="primary" @click="loadDataset()">重新加载</el-button>
+          </template>
+        </el-empty>
+        <GanttTimeline
+          v-else-if="dataset"
+          :dataset="dataset"
+          :zoom="zoom"
+          :analysis="analysis"
+          :layers="layers"
+          :selected-task-id="selectedTaskId"
+          @select="onSelect"
+        />
+        <el-empty v-else description="暂无订单甘特数据：请先加载排产结果，或检查筛选条件" />
+      </div>
+      <p class="perf-note">
+        行头展示订单号、物料/交期、优先级、延期分钟、订单冻结与资源日历绑定比例；行内橙色虚线为 C29
+        交期线，超出交期的任务条带红色左边。点击任务条选中（M2-FE-03 调整目标），再次点击取消。
+      </p>
+      <p class="perf-note">
+        当前选中：<strong>{{
+          selectedBar ? `#${selectedBar.taskId} ${selectedBar.label}` : '无'
+        }}</strong>
+        <span v-if="selectedRow">（订单 {{ selectedRow.key }}）</span>
+      </p>
+    </el-card>
+
+    <div class="legend legend--below">
+      <span class="legend__title">状态配色：</span>
+      <span v-for="item in statusLegend" :key="item.value" class="legend__item">
+        <i class="legend__dot" :class="`tag-${item.tagType}`" />{{ item.label }}
+      </span>
+      <span class="legend__item"><i class="legend__setup" />换型窗口</span>
+      <span class="legend__item"><i class="legend__frozen">冻</i>冻结（订单级/任务级取交集）</span>
+      <span class="legend__item"><i class="legend__lock">窗</i>工时窗锁 / 资锁</span>
+      <span class="legend__item"><i class="legend__conflict" />冲突（红色描边）</span>
+      <span class="legend__item"><i class="legend__calendar" />C14 非工时校验（任务级）</span>
+      <span class="legend__item"><i class="legend__due" />订单交期线（C29 dueDateLine）</span>
+    </div>
 
     <el-alert v-if="analysis && hasCalendarGap" class="page-card" type="warning" :closable="false">
       <template #title
@@ -1280,6 +1349,14 @@ onMounted(() => {
         <li v-for="issue in analysis.calendarIssues" :key="issue">{{ issue }}</li>
       </ul>
     </el-alert>
+
+    <p class="scope-note">
+      一行一订单，行内为作业任务；任务时间与资源甘特同源（同一份任务集合），日历停机、冲突、热力、
+      lateMinutes、lockType 均由同一套 analysis 口径计算，不存在「订单甘特另算一遍」。 C14 资源日历经
+      GET /resources + GET /calendars/{id} 补齐。停机窗口与资源日历按资源编码展示（下方表格），
+      不按订单行叠加：订单跨多资源，叠加会把「资源停机」误读为「订单停机」；订单图为任务级非工时校验。
+      M2-FE-03 的移动/锁定/冻结在本页选中任务后操作。
+    </p>
 
     <el-card class="page-card" shadow="never">
       <template #header>只读指标（{{ profile.label }}）</template>
@@ -1375,8 +1452,11 @@ onMounted(() => {
         <el-descriptions-item label="首屏 min / max">
           {{ perf.minMs }} ms / {{ perf.maxMs }} ms
         </el-descriptions-item>
-        <el-descriptions-item label="滚动 FPS / 掉帧">
-          {{ perf.fps }} / {{ perf.droppedFrames }}（{{ perf.sampledFrames }} 帧，>25ms 记为掉帧）
+        <el-descriptions-item label="滚动 FPS / 平均帧间隔">
+          {{ perf.fps }} / {{ perf.avgFrameMs }} ms
+        </el-descriptions-item>
+        <el-descriptions-item label="掉帧 / 掉帧率">
+          {{ perf.droppedFrames }} / {{ perf.dropRate }}%（{{ perf.sampledFrames }} 帧，>25ms 记为掉帧）
         </el-descriptions-item>
         <el-descriptions-item label="行 / 任务">
           {{ perf.rowCount }} / {{ perf.taskCount }}
@@ -1739,68 +1819,72 @@ onMounted(() => {
       </p>
     </el-card>
 
-    <el-card shadow="never">
-      <template #header>
-        订单甘特 · {{ profile.label }} · 缩放
-        {{ zoomOptions.find((item) => item.value === zoom)?.label ?? zoom }}
-      </template>
-      <div ref="stageRef" v-loading="loading" class="stage">
-        <GanttTimeline
-          v-if="dataset"
-          :dataset="dataset"
-          :zoom="zoom"
-          :analysis="analysis"
-          :layers="layers"
-          :selected-task-id="selectedTaskId"
-          @select="onSelect"
-        />
-        <el-empty v-else description="暂无订单甘特数据" />
-      </div>
-      <p class="perf-note">
-        行头展示订单号、物料/交期、优先级、延期分钟、订单冻结与资源日历绑定比例；行内橙色虚线为 C29
-        交期线，超出交期的任务条带红色左边。点击任务条选中（M2-FE-03 调整目标），再次点击取消。
-      </p>
-      <p class="perf-note">
-        当前选中：<strong>{{
-          selectedBar ? `#${selectedBar.taskId} ${selectedBar.label}` : '无'
-        }}</strong>
-        <span v-if="selectedRow">（订单 {{ selectedRow.key }}）</span>
-      </p>
-    </el-card>
   </div>
 </template>
 
 <style scoped>
+.empty-hint {
+  margin: 0 0 var(--space-3);
+  color: var(--text-2);
+  font-size: var(--font-sm);
+}
+
+/* 甘特页顶部压缩：减少卡体内边距、表单行高与图例行距，让时间轴更早进入首屏 */
+.gantt-page :deep(.page-title) {
+  margin-bottom: var(--space-2);
+  font-size: calc(var(--font-title) - 2px);
+}
+
+.gantt-page :deep(.el-card__header) {
+  padding: var(--space-2) var(--space-3);
+}
+
+.gantt-page :deep(.el-card__body) {
+  padding: var(--space-3);
+}
+
+.gantt-toolbar-card :deep(.el-card__body) {
+  padding: var(--space-2) var(--space-3);
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: var(--space-4);
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
 .toolbar__actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
-  padding-top: 2px;
+  padding-top: 0;
+}
+
+/* 当前数据源必须一眼可辨：真实后端=绿色，合成数据=橙色，字号不低于 --font-sm。 */
+.source-badge {
+  font-size: var(--font-sm);
+  font-weight: 700;
 }
 
 .toolbar :deep(.el-form-item) {
-  margin-bottom: var(--space-2);
-  margin-right: var(--space-4);
+  margin-bottom: var(--space-1);
+  margin-right: var(--space-3);
 }
 
 .toolbar :deep(.el-checkbox) {
-  margin-right: var(--space-3);
+  margin-right: var(--space-2);
 }
 
 .legend {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-3);
-  margin: var(--space-1) 0 var(--space-2);
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 0;
   font-size: var(--font-xs);
+  line-height: 16px;
   color: var(--text-2);
 }
 
@@ -1867,7 +1951,7 @@ onMounted(() => {
     var(--text-3)
   );
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-2xs);
   font-style: normal;
 }
 
@@ -1881,7 +1965,7 @@ onMounted(() => {
   border-radius: 2px;
   background: var(--primary);
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-2xs);
   font-style: normal;
 }
 
@@ -1939,7 +2023,7 @@ onMounted(() => {
 
 .muted {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--font-xs);
 }
 
 .issue-list {

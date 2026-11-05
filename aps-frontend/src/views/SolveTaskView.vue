@@ -10,10 +10,28 @@ import type { SolveProgress, SolveTaskDetail, SolveTaskStatus, SolverEngine } fr
 
 const TERMINAL_STATUSES: SolveTaskStatus[] = ['SOLVED', 'FAILED', 'CANCELLED', 'TIMEOUT']
 
-const form = reactive<{ taskNo: string; engine: SolverEngine; orderNos: string }>({
+/** 产品默认预算保持 60/10；演示走“演示预置”一键 90/90。 */
+const DEFAULT_TIMEOUT_SECONDS = 60
+const DEFAULT_UNIMPROVED_SECONDS = 10
+const TIMEOUT_MIN_SECONDS = 1
+const TIMEOUT_MAX_SECONDS = 3600
+const UNIMPROVED_MIN_SECONDS = 0
+const UNIMPROVED_MAX_SECONDS = 3600
+const DEMO_TIMEOUT_SECONDS = 90
+const DEMO_UNIMPROVED_SECONDS = 90
+
+const form = reactive<{
+  taskNo: string
+  engine: SolverEngine
+  orderNos: string
+  timeoutSeconds: number | undefined
+  unimprovedSecondsSpentLimit: number | undefined
+}>({
   taskNo: 'SOLVE-20261104-0001',
   engine: 'timefold',
-  orderNos: ''
+  orderNos: '',
+  timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
+  unimprovedSecondsSpentLimit: DEFAULT_UNIMPROVED_SECONDS
 })
 
 const submitting = ref(false)
@@ -133,9 +151,35 @@ function stopTracking() {
   tracker = null
 }
 
-async function onSubmit() {
-  submitting.value = true
+function isValidBudget(value: number | undefined, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+}
+
+/** 演示预置：只改本次表单，不改变产品默认 60/10。 */
+function applyDemoPreset(): void {
+  form.timeoutSeconds = DEMO_TIMEOUT_SECONDS
+  form.unimprovedSecondsSpentLimit = DEMO_UNIMPROVED_SECONDS
   error.value = ''
+  ElMessage.success('已填入演示预置：timeoutSeconds=90、unimprovedSecondsSpentLimit=90')
+}
+
+async function onSubmit() {
+  error.value = ''
+  const timeoutSeconds = form.timeoutSeconds
+  const unimprovedSecondsSpentLimit = form.unimprovedSecondsSpentLimit
+  if (!isValidBudget(timeoutSeconds, TIMEOUT_MIN_SECONDS, TIMEOUT_MAX_SECONDS)) {
+    error.value = `超时秒数需为 ${TIMEOUT_MIN_SECONDS}-${TIMEOUT_MAX_SECONDS} 的整数`
+    return
+  }
+  if (!isValidBudget(
+    unimprovedSecondsSpentLimit,
+    UNIMPROVED_MIN_SECONDS,
+    UNIMPROVED_MAX_SECONDS
+  )) {
+    error.value = `无改进上限需为 ${UNIMPROVED_MIN_SECONDS}-${UNIMPROVED_MAX_SECONDS} 的整数`
+    return
+  }
+  submitting.value = true
   stopTracking()
   detail.value = null
   progress.value = null
@@ -149,7 +193,7 @@ async function onSubmit() {
       taskNo: form.taskNo,
       engine: form.engine,
       orderNos,
-      parameters: {}
+      parameters: { timeoutSeconds, unimprovedSecondsSpentLimit }
     })
     if (typeof created?.id !== 'number') {
       error.value = '接口未按 C20 返回 SolveTaskDetail（缺少 id），无法订阅进度'
@@ -204,8 +248,42 @@ onBeforeUnmount(() => {
         <el-form-item label="订单号">
           <el-input v-model="form.orderNos" placeholder="多个订单号以英文逗号分隔" />
         </el-form-item>
+        <el-form-item label="超时秒数">
+          <el-input-number
+            v-model="form.timeoutSeconds"
+            :min="TIMEOUT_MIN_SECONDS"
+            :max="TIMEOUT_MAX_SECONDS"
+            :step="10"
+            controls-position="right"
+            @change="error = ''"
+          />
+          <span class="budget-key">parameters.timeoutSeconds（1-3600，默认 60）</span>
+        </el-form-item>
+        <el-form-item label="无改进上限">
+          <el-input-number
+            v-model="form.unimprovedSecondsSpentLimit"
+            :min="UNIMPROVED_MIN_SECONDS"
+            :max="UNIMPROVED_MAX_SECONDS"
+            :step="10"
+            controls-position="right"
+            @change="error = ''"
+          />
+          <span class="budget-key">
+            parameters.unimprovedSecondsSpentLimit（0-3600，默认 10）
+          </span>
+        </el-form-item>
+        <el-form-item label="等待预期">
+          <el-alert
+            class="budget-hint"
+            type="info"
+            :closable="false"
+            show-icon
+            title="单次最多约 90 秒、失败重试再加 30 秒；默认 60/10 更短，演示请点“演示预置”。"
+          />
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="submitting" @click="onSubmit">提交求解</el-button>
+          <el-button :disabled="submitting" @click="applyDemoPreset">演示预置（90/90）</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -277,6 +355,16 @@ onBeforeUnmount(() => {
 .channel-warning,
 .panel-detail {
   margin-top: 12px;
+}
+
+.budget-key {
+  margin-left: var(--space-2);
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+
+.budget-hint {
+  width: 100%;
 }
 
 .panel-actions {

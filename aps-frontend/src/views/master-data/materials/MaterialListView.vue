@@ -116,25 +116,25 @@ onMounted(loadMaterials)
 
     <el-card shadow="never" class="page-card">
       <el-form :inline="true" @submit.prevent="search">
-        <el-form-item label="编码">
+        <el-form-item label="物料编码">
           <el-input
             v-model="filters.code"
             clearable
-            placeholder="按编码模糊查询"
+            placeholder="按物料编码模糊查询"
             style="width: 180px"
             @keyup.enter="search"
           />
         </el-form-item>
-        <el-form-item label="名称">
+        <el-form-item label="物料名称">
           <el-input
             v-model="filters.name"
             clearable
-            placeholder="按名称模糊查询"
+            placeholder="按物料名称模糊查询"
             style="width: 200px"
             @keyup.enter="search"
           />
         </el-form-item>
-        <el-form-item label="类型">
+        <el-form-item label="物料类型">
           <el-select v-model="filters.type" clearable placeholder="全部" style="width: 150px">
             <el-option
               v-for="item in materialTypeOptions"
@@ -167,18 +167,30 @@ onMounted(loadMaterials)
         <el-button type="primary" @click="openCreate">新建物料</el-button>
       </template>
 
-      <el-table-column prop="code" label="物料编码" min-width="150" />
-      <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
-      <el-table-column label="类型" width="110">
+      <el-table-column prop="name" label="物料名称" min-width="220" show-overflow-tooltip />
+      <el-table-column label="规格型号" min-width="180" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.spec || '无' }}</template>
+      </el-table-column>
+      <el-table-column prop="code" label="物料编码" min-width="160">
+        <template #default="{ row }">
+          <span class="secondary-text">{{ row.code }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="物料类型" width="110">
         <template #default="{ row }">
           <StatusTag enum-key="materialType" :value="row.type" />
         </template>
       </el-table-column>
-      <el-table-column prop="spec" label="规格" min-width="160" show-overflow-tooltip />
-      <el-table-column prop="unit" label="单位" width="80" />
-      <el-table-column prop="safetyStock" label="安全库存" width="100" />
-      <el-table-column prop="leadTimeDays" label="提前期(天)" width="110" />
-      <el-table-column prop="version" label="版本" width="80" />
+      <el-table-column label="计量单位" width="100">
+        <template #default="{ row }">{{ row.unit || '无' }}</template>
+      </el-table-column>
+      <el-table-column label="安全库存" width="110">
+        <template #default="{ row }">{{ row.safetyStock ?? '无' }}</template>
+      </el-table-column>
+      <el-table-column label="采购提前期（天）" width="140">
+        <template #default="{ row }">{{ row.leadTimeDays ?? '无' }}</template>
+      </el-table-column>
+      <el-table-column prop="version" label="版本号" width="80" />
       <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="openDetail(row)">详情</el-button>
@@ -198,3 +210,10 @@ onMounted(loadMaterials)
     />
   </div>
 </template>
+
+<style scoped>
+.secondary-text {
+  color: var(--text-3);
+  font-size: var(--font-xs);
+}
+</style>

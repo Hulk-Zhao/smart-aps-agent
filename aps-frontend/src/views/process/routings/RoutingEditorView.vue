@@ -482,7 +482,11 @@ watch(errorIssues, (current) => {
     <el-page-header class="page-header" @back="goBack">
       <template #content>
         <span class="editor-title">
-          {{ graph ? `${graph.productCode} · ${graph.routingVersion}` : '工艺路线编辑' }}
+          {{
+            graph
+              ? `${graph.productName || graph.productCode} · ${graph.routingVersion}`
+              : '工艺路线编辑'
+          }}
         </span>
         <StatusTag v-if="graph" enum-key="routingStatus" :value="graph.status" />
       </template>
@@ -554,9 +558,9 @@ watch(errorIssues, (current) => {
 
         <el-card v-if="graph" shadow="never" class="meta-card">
           <div class="meta-grid">
-            <span>产品：{{ graph.productName }}（{{ graph.productCode }}）</span>
+            <span>物料：{{ graph.productName || '物料名称待接入' }}（{{ graph.productCode }}）</span>
             <span>生效：{{ graph.effectiveDate }}</span>
-            <span>失效：{{ graph.expiryDate || '—' }}</span>
+            <span>失效：{{ graph.expiryDate || '无' }}</span>
             <span>更新时间：{{ graph.updatedAt }}</span>
             <span>节点/边：{{ nodes.length }} / {{ edges.length }}</span>
           </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { getEnumLabel, getEnumTagType } from '@/constants/enums'
 import { heatLevelOf } from './analysis'
@@ -55,25 +55,37 @@ const headsRef = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const scrollLeft = ref(0)
 const viewportWidth = ref(0)
-const hovered = ref<{ bar: GanttBarModel; x: number; y: number } | null>(null)
+const hovered = ref<{
+  bar: GanttBarModel
+  row: GanttRowModel
+  x: number
+  y: number
+} | null>(null)
+/** 初始进入即「适应屏幕」：整段数据落在可视宽度内，不留大片空白。 */
+const fitToScreen = ref(true)
+/** 「放大 / 缩小」在非适应态下对基准像素/天做倍率调整。 */
+const zoomFactor = ref(1)
+const nowMs = ref(Date.now())
 
+const AXIS_HEIGHT = 54
 const ZOOM_PX_PER_DAY: Record<GanttZoom, number> = {
   hour: 960,
   day: 168,
   week: 56,
   month: 24
 }
-const ZOOM_STEP_MS: Record<GanttZoom, number> = {
-  hour: 2 * 3_600_000,
-  day: 86_400_000,
-  week: 86_400_000,
-  month: 7 * 86_400_000
-}
 
 const rangeStart = computed(() => Date.parse(props.dataset.range.from))
 const rangeEnd = computed(() => Date.parse(props.dataset.range.to))
 const totalMs = computed(() => Math.max(rangeEnd.value - rangeStart.value, 3_600_000))
-const pxPerMs = computed(() => ZOOM_PX_PER_DAY[props.zoom] / 86_400_000)
+const basePxPerMs = computed(() => ZOOM_PX_PER_DAY[props.zoom] / 86_400_000)
+const pxPerMs = computed(() => {
+  if (fitToScreen.value) {
+    const width = viewportWidth.value || 960
+    return width / totalMs.value
+  }
+  return basePxPerMs.value * zoomFactor.value
+})
 const timelineWidth = computed(() => Math.max(Math.round(totalMs.value * pxPerMs.value), 320))
 const rows = computed(() => props.dataset.rows)
 const totalHeight = computed(() => rows.value.length * props.rowHeight)
@@ -239,6 +251,8 @@ interface RenderRow {
   dueLeft: number | null
   calendarShort: string
   calendarState: GanttCalendarRowState['state'] | null
+  /** 资源视图按资源类型分组的首行，用于给分组之间留出视觉间距。 */
+  groupStart: boolean
 }
 
 function boxOf(
@@ -365,11 +379,78 @@ function lockLabel(kind: 'FROZEN' | 'TIME_WINDOW' | 'RESOURCE' | 'NONE'): string
   return ''
 }
 
+/** 悬停卡里的锁类型：按枚举中文文案展示，不暴露 FROZEN/lockType 这类内部值。 */
+const hoveredLockKind = computed<'FROZEN' | 'TIME_WINDOW' | 'RESOURCE' | 'NONE'>(() =>
+  hovered.value ? lockKindOf(hovered.value.row, hovered.value.bar) : 'NONE'
+)
+const hoveredLockText = computed(() => {
+  if (hoveredLockKind.value === 'TIME_WINDOW') {
+    return '锁定时间窗'
+  }
+  if (hoveredLockKind.value === 'RESOURCE') {
+    return '锁定资源'
+  }
+  if (hoveredLockKind.value === 'FROZEN') {
+    return '已冻结'
+  }
+  return '无'
+})
+
+/** 行头用"超期 N 天"，与任务条的红色描边对应；不足一天按 1 天计，不显示"0 天"。 */
 function lateText(row: GanttRowModel): string {
   if (!row.late) {
     return ''
   }
-  return row.lateMinutes == null ? '延期' : `延期 ${row.lateMinutes} 分`
+  if (row.lateMinutes == null) {
+    return '超期'
+  }
+  const days = Math.max(1, Math.ceil(row.lateMinutes / 1440))
+  return `超期 ${days} 天`
+}
+
+/** 资源行头里的超期任务数，避免资源视图看不出"这行里有超期"。 */
+function lateBarCount(row: GanttRowModel): number {
+  return row.bars.filter((bar) => bar.late === true).length
+}
+
+/** 时长按分钟给出可读文本（悬停卡用）。 */
+function durationText(start?: string | null, end?: string | null): string {
+  if (!start || !end) {
+    return '—'
+  }
+  const minutes = (Date.parse(end) - Date.parse(start)) / 60_000
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return '—'
+  }
+  if (minutes >= 60) {
+    return `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分`
+  }
+  return `${Math.round(minutes)} 分`
+}
+
+function setupDurationText(bar: GanttBarModel): string {
+  if (!bar.setupStartTime || !bar.setupEndTime) {
+    return '无换型'
+  }
+  return durationText(bar.setupStartTime, bar.setupEndTime)
+}
+
+/** 同一订单在资源视图里用同一条底部色带，才能看出"这是一条工序链"。 */
+const ORDER_TINTS = [
+  'var(--primary)',
+  'var(--ok)',
+  'var(--warn)',
+  'var(--danger)',
+  'var(--text-2)',
+  'var(--primary-hover, var(--primary))'
+]
+
+function orderTint(orderNo: string): string {
+  let hash = 0
+  for (let index = 0; index < orderNo.length; index += 1) {
+    hash = (hash * 31 + orderNo.charCodeAt(index)) % 9973
+  }
+  return ORDER_TINTS[hash % ORDER_TINTS.length]
 }
 
 function priorityLabel(priority?: string): string {
@@ -476,7 +557,11 @@ const renderRows = computed<RenderRow[]>(() => {
       calendar,
       dueLeft: dueLineLeft(row, from, to),
       calendarShort: calendarShortOf(calendarRowByKey.value.get(row.key)),
-      calendarState: calendarRowByKey.value.get(row.key)?.state ?? null
+      calendarState: calendarRowByKey.value.get(row.key)?.state ?? null,
+      groupStart:
+        props.dataset.mode === 'resource' &&
+        index > 0 &&
+        rows.value[index - 1]?.resourceType !== row.resourceType
     }
   })
 })
@@ -500,6 +585,13 @@ function dueLineLeft(row: GanttRowModel, from: number, to: number): number | nul
 const barMap = computed(() => {
   const map = new Map<number, GanttBarModel>()
   rows.value.forEach((row) => row.bars.forEach((bar) => map.set(bar.taskId, bar)))
+  return map
+})
+
+/** 悬停卡要判断"是否冻结"时需要行级 freezeStatus，所以按 taskId 反查所属行。 */
+const rowByTask = computed(() => {
+  const map = new Map<number, GanttRowModel>()
+  rows.value.forEach((row) => row.bars.forEach((bar) => map.set(bar.taskId, row)))
   return map
 })
 
@@ -549,34 +641,208 @@ interface Tick {
   time: number
   left: number
   label: string
+  sub: string
   major: boolean
 }
 
+const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/**
+ * 刻度粒度不再由 zoom 枚举硬编码：按当前实际像素密度选最小可读单位，
+ * 保证相邻刻度至少 64px，不会出现"一排没有标注的竖线"。
+ */
+const tickUnit = computed<'hour' | 'day' | 'week' | 'month'>(() => {
+  const ladder: Array<{ unit: 'hour' | 'day' | 'week' | 'month'; ms: number }> = [
+    { unit: 'hour', ms: 3_600_000 },
+    { unit: 'day', ms: 86_400_000 },
+    { unit: 'week', ms: 7 * 86_400_000 },
+    { unit: 'month', ms: 28 * 86_400_000 }
+  ]
+  for (const item of ladder) {
+    if (item.ms * pxPerMs.value >= 64) {
+      return item.unit
+    }
+  }
+  return 'month'
+})
+
+function startOfDay(time: number): number {
+  const date = new Date(time)
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime()
+}
+
+function startOfWeek(time: number): number {
+  const day = new Date(startOfDay(time))
+  const offset = (day.getDay() + 6) % 7
+  return day.getTime() - offset * 86_400_000
+}
+
+function startOfMonth(time: number): number {
+  const date = new Date(time)
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime()
+}
+
 const ticks = computed<Tick[]>(() => {
-  const step = ZOOM_STEP_MS[props.zoom]
+  const unit = tickUnit.value
   const items: Tick[] = []
-  const first = Math.ceil(rangeStart.value / step) * step
-  for (let time = first; time <= rangeEnd.value; time += step) {
-    const date = new Date(time)
-    const left = (time - rangeStart.value) * pxPerMs.value
+  const from = rangeStart.value
+  const to = rangeEnd.value
+  const step =
+    unit === 'hour'
+      ? 3_600_000
+      : unit === 'day'
+        ? 86_400_000
+        : unit === 'week'
+          ? 7 * 86_400_000
+          : 0
+  let cursor =
+    unit === 'hour'
+      ? Math.ceil(from / 3_600_000) * 3_600_000
+      : unit === 'day'
+        ? startOfDay(from)
+        : unit === 'week'
+          ? startOfWeek(from)
+          : startOfMonth(from)
+  const max = 400
+  for (let index = 0; index < max && cursor <= to; index += 1) {
+    const date = new Date(cursor)
+    const left = (cursor - from) * pxPerMs.value
     const label =
-      props.zoom === 'hour'
-        ? `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-        : `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+      unit === 'hour'
+        ? `${String(date.getHours()).padStart(2, '0')}:00`
+        : unit === 'month'
+          ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+          : `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    const sub =
+      unit === 'hour'
+        ? `${date.getMonth() + 1}/${date.getDate()} ${WEEKDAY_LABELS[date.getDay()]}`
+        : unit === 'month'
+          ? `${date.getFullYear()} 年`
+          : WEEKDAY_LABELS[date.getDay()]
     const major =
-      props.zoom === 'hour'
-        ? date.getHours() % 12 === 0
-        : props.zoom === 'week'
+      unit === 'hour'
+        ? date.getHours() === 0
+        : unit === 'day'
           ? date.getDay() === 1
-          : true
-    items.push({ time, left, label, major })
+          : unit === 'month'
+            ? true
+            : date.getMonth() !== new Date(cursor - 7 * 86_400_000).getMonth()
+    items.push({ time: cursor, left, label, sub, major })
+    cursor = unit === 'month' ? startOfMonth(cursor + 32 * 86_400_000) : cursor + step
   }
   return items
 })
 
+/** 周末底色：按自然日合并连续周末，作为"这里没排是因为休息"的全局提示。 */
+interface DayBand {
+  key: string
+  left: number
+  width: number
+}
+
+const weekendBands = computed<DayBand[]>(() => {
+  const from = rangeStart.value
+  const to = rangeEnd.value
+  const bands: DayBand[] = []
+  const dayMs = 86_400_000
+  let cursor = startOfDay(from)
+  let open: DayBand | null = null
+  const maxDays = Math.min(Math.ceil((to - from) / dayMs) + 1, 400)
+  for (let index = 0; index < maxDays; index += 1) {
+    const date = new Date(cursor)
+    const weekend = date.getDay() === 0 || date.getDay() === 6
+    const left = Math.max((cursor - from) * pxPerMs.value, 0)
+    const right = Math.min((cursor + dayMs - from) * pxPerMs.value, timelineWidth.value)
+    if (weekend && right > left) {
+      const width = right - left
+      if (open) {
+        open.width += width
+      } else {
+        open = { key: `weekend-${cursor}`, left, width }
+        bands.push(open)
+      }
+    } else {
+      open = null
+    }
+    cursor += dayMs
+  }
+  return bands
+})
+
+const nowLeft = computed(() => {
+  if (nowMs.value <= rangeStart.value || nowMs.value >= rangeEnd.value) {
+    return null
+  }
+  return (nowMs.value - rangeStart.value) * pxPerMs.value
+})
+
+const gridStepMs = computed(() => {
+  if (tickUnit.value === 'hour') {
+    return 3_600_000
+  }
+  if (tickUnit.value === 'week') {
+    return 7 * 86_400_000
+  }
+  return 86_400_000
+})
 const gridStyle = computed(() => ({
-  backgroundSize: `${ZOOM_STEP_MS[props.zoom] * pxPerMs.value}px 100%`
+  // 月粒度下刻度间距本就远大于一天，再画每日竖线会变成"没有标注的线"，直接交给周末底色与刻度。
+  backgroundImage: tickUnit.value === 'month' ? 'none' : undefined,
+  backgroundSize: `${Math.max(gridStepMs.value * pxPerMs.value, 4)}px 100%`
 }))
+
+function formatRangeDate(time: number): string {
+  const date = new Date(time)
+  return `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+/** 当前可视时间范围：随横向滚动实时更新，替代"看不到自己在哪"的空白感。 */
+const visibleRangeText = computed(() => {
+  const from = rangeStart.value + scrollLeft.value / pxPerMs.value
+  const width = viewportWidth.value || timelineWidth.value
+  const to = Math.min(rangeStart.value + (scrollLeft.value + width) / pxPerMs.value, rangeEnd.value)
+  return `${formatRangeDate(from)} ~ ${formatRangeDate(to)}`
+})
+
+function zoomIn(): void {
+  const current = pxPerMs.value
+  fitToScreen.value = false
+  zoomFactor.value = Math.min(16, Math.max(0.1, (current / basePxPerMs.value) * 1.5))
+}
+
+function zoomOut(): void {
+  const current = pxPerMs.value
+  fitToScreen.value = false
+  zoomFactor.value = Math.max(0.1, Math.min(16, (current / basePxPerMs.value) / 1.5))
+}
+
+function resetFit(): void {
+  fitToScreen.value = true
+  zoomFactor.value = 1
+  if (scrollRef.value) {
+    scrollRef.value.scrollLeft = 0
+  }
+}
+
+/** 回到今天：当前时刻在数据窗口内才移动，避免给出"跳过去却没有任务"的假定位。 */
+function scrollToNow(): void {
+  if (nowLeft.value === null || !scrollRef.value) {
+    return
+  }
+  scrollRef.value.scrollLeft = Math.max(nowLeft.value - viewportWidth.value / 3, 0)
+}
+
+function tooltipStyle(): Record<string, string> {
+  if (!hovered.value) {
+    return {}
+  }
+  const width = 360
+  const height = 240
+  return {
+    left: `${Math.max(8, Math.min(hovered.value.x, window.innerWidth - width - 8))}px`,
+    top: `${Math.max(8, Math.min(hovered.value.y, window.innerHeight - height - 8))}px`
+  }
+}
 
 function statusClass(status: TaskStatus): string {
   return `tag-${getEnumTagType('taskStatus', status)}`
@@ -624,17 +890,23 @@ function resolveBar(target: EventTarget | null): GanttBarModel | null {
 
 function onOver(event: MouseEvent): void {
   const bar = resolveBar(event.target)
-  if (!bar) {
+  const row = bar ? rowByTask.value.get(bar.taskId) : null
+  if (!bar || !row) {
     return
   }
-  hovered.value = { bar, x: event.clientX + 14, y: event.clientY + 14 }
+  hovered.value = { bar, row, x: event.clientX + 14, y: event.clientY + 14 }
 }
 
 function onMove(event: MouseEvent): void {
   if (!hovered.value) {
     return
   }
-  hovered.value = { bar: hovered.value.bar, x: event.clientX + 14, y: event.clientY + 14 }
+  hovered.value = {
+    bar: hovered.value.bar,
+    row: hovered.value.row,
+    x: event.clientX + 14,
+    y: event.clientY + 14
+  }
 }
 
 function onLeave(): void {
@@ -658,7 +930,17 @@ function selectBar(bar: GanttBarModel): void {
   emit('select', bar.taskId)
 }
 
+// 用户在页面工具栏切换 zoom 时退出"适应屏幕"，让所选粒度真正生效。
+watch(
+  () => props.zoom,
+  () => {
+    fitToScreen.value = false
+    zoomFactor.value = 1
+  }
+)
+
 let resizeObserver: ResizeObserver | null = null
+let nowTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
   const element = scrollRef.value
@@ -674,25 +956,71 @@ onMounted(() => {
     })
     resizeObserver.observe(element)
   }
+  // "现在"竖线每分钟更新一次即可，不必逐帧重算。
+  nowTimer = setInterval(() => {
+    nowMs.value = Date.now()
+  }, 60_000)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   resizeObserver = null
+  if (nowTimer) {
+    clearInterval(nowTimer)
+    nowTimer = null
+  }
 })
 </script>
 
 <template>
-  <div class="gantt-timeline" :style="{ height: `${props.height}px` }">
-    <div class="gantt-heads" ref="headsRef" :style="{ width: `${props.labelWidth}px` }">
-      <div class="gantt-heads__corner">
-        {{ props.dataset.mode === 'order' ? '订单泳道' : '资源泳道' }}
+  <div class="gantt-root">
+    <div class="gantt-legend" role="list" aria-label="甘特图图例">
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-normal" />正常任务
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-setup" />换型（紧贴任务条下方的斜纹）
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-frozen" />冻结（锁形 + 斜纹）
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-resource-lock" />资源锁定（实线框）
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-window-lock" />时间窗锁定（虚线框）
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-inprogress" />在制（进行中）
+      </span>
+      <span class="gantt-legend__item" role="listitem">
+        <i class="gantt-legend__swatch is-late" />超期（红色描边）
+      </span>
+    </div>
+
+    <div class="gantt-toolbar">
+      <span class="gantt-toolbar__range">可视范围 {{ visibleRangeText }}</span>
+      <div class="gantt-toolbar__actions">
+        <el-button size="small" aria-label="适应屏幕" @click="resetFit">适应屏幕</el-button>
+        <el-button size="small" aria-label="放大时间轴" @click="zoomIn">放大</el-button>
+        <el-button size="small" aria-label="缩小时间轴" @click="zoomOut">缩小</el-button>
+        <el-button size="small" :disabled="nowLeft === null" aria-label="回到今天" @click="scrollToNow">
+          回到今天
+        </el-button>
       </div>
+    </div>
+
+    <div class="gantt-timeline" :style="{ height: `${props.height}px` }">
+      <div class="gantt-heads" ref="headsRef" :style="{ width: `${props.labelWidth}px` }">
+        <div class="gantt-heads__corner" :style="{ height: `${AXIS_HEIGHT}px` }">
+          {{ props.dataset.mode === 'order' ? '订单泳道' : '资源泳道' }}
+        </div>
       <div class="gantt-heads__canvas" :style="{ height: `${totalHeight}px` }">
         <div
           v-for="item in renderRows"
           :key="item.row.key"
           class="gantt-heads__row"
+          :class="{ 'is-group-start': item.groupStart }"
           :style="{ top: `${item.top}px`, height: `${props.rowHeight}px` }"
         >
           <template v-if="props.dataset.mode === 'order'">
@@ -722,6 +1050,11 @@ onBeforeUnmount(() => {
             <span class="gantt-heads__meta"
               >{{ item.row.key }} · {{ item.row.subLabel ?? '—' }} ·
               {{ item.row.bars.length }} 条<span
+                v-if="lateBarCount(item.row)"
+                class="gantt-heads__late"
+              >
+                · 超期 {{ lateBarCount(item.row) }} 条</span
+              ><span
                 v-if="conflictCountByRow.get(item.row.key)"
                 class="gantt-heads__conflict"
               >
@@ -741,7 +1074,13 @@ onBeforeUnmount(() => {
 
     <div class="gantt-scroll" ref="scrollRef" @scroll="onScroll">
       <div class="gantt-canvas" :style="{ width: `${timelineWidth}px` }">
-        <div class="gantt-axis" :style="{ height: '44px' }">
+        <div class="gantt-axis" :style="{ height: `${AXIS_HEIGHT}px` }">
+          <div
+            v-for="band in weekendBands"
+            :key="band.key"
+            class="gantt-weekend gantt-weekend--axis"
+            :style="{ left: `${band.left}px`, width: `${band.width}px` }"
+          />
           <div
             v-for="tick in ticks"
             :key="tick.time"
@@ -750,7 +1089,16 @@ onBeforeUnmount(() => {
             :style="{ left: `${tick.left}px` }"
           >
             <span class="gantt-axis__label">{{ tick.label }}</span>
+            <span class="gantt-axis__sub">{{ tick.sub }}</span>
             <i class="gantt-axis__line" />
+          </div>
+          <div
+            v-if="nowLeft !== null"
+            class="gantt-axis__now"
+            :style="{ left: `${nowLeft}px` }"
+            :title="`当前时刻 ${new Date(nowMs).toLocaleString('zh-CN', { hour12: false })}`"
+          >
+            现在
           </div>
         </div>
         <div
@@ -761,11 +1109,18 @@ onBeforeUnmount(() => {
           @mouseleave="onLeave"
           @click="onClick"
         >
+          <div
+            v-for="band in weekendBands"
+            :key="band.key"
+            class="gantt-weekend"
+            :style="{ left: `${band.left}px`, width: `${band.width}px` }"
+          />
           <div class="gantt-grid" :style="gridStyle" />
           <div
             v-for="item in renderRows"
             :key="item.row.key"
             class="gantt-row"
+            :class="{ 'is-group-start': item.groupStart }"
             :style="{ top: `${item.top}px`, height: `${props.rowHeight}px` }"
           >
             <div
@@ -843,6 +1198,11 @@ onBeforeUnmount(() => {
                 >非工时</span
               >
               <span class="gantt-bar__label">{{ entry.bar.label }}</span>
+              <i
+                class="gantt-bar__tint"
+                :style="{ background: orderTint(entry.bar.orderNo) }"
+                aria-hidden="true"
+              />
             </div>
           </div>
 
@@ -885,6 +1245,13 @@ onBeforeUnmount(() => {
               "
             />
           </svg>
+
+          <div
+            v-if="nowLeft !== null"
+            class="gantt-now-line"
+            :style="{ left: `${nowLeft}px` }"
+            aria-hidden="true"
+          />
         </div>
       </div>
     </div>
@@ -892,18 +1259,23 @@ onBeforeUnmount(() => {
     <div
       v-if="hovered"
       class="gantt-tooltip"
-      :style="{ left: `${hovered.x}px`, top: `${hovered.y}px` }"
+      :style="tooltipStyle()"
     >
       <div class="gantt-tooltip__title">
         {{ hovered.bar.orderNo }} · 工序 {{ hovered.bar.operationIndex }}
+        <template v-if="hovered.bar.operationName">· {{ hovered.bar.operationName }}</template>
       </div>
       <div>资源：{{ hovered.bar.resourceCode ?? '—' }}</div>
       <div>
-        加工：{{ formatTime(hovered.bar.startTime) }} → {{ formatTime(hovered.bar.endTime) }}
+        开始 → 结束：{{ formatTime(hovered.bar.startTime) }} → {{ formatTime(hovered.bar.endTime) }}
       </div>
+      <div>加工时长：{{ durationText(hovered.bar.startTime, hovered.bar.endTime) }}</div>
       <div>
-        换型：{{ formatTime(hovered.bar.setupStartTime) }} →
-        {{ formatTime(hovered.bar.setupEndTime) }}
+        换型：{{ setupDurationText(hovered.bar) }}<template
+          v-if="hovered.bar.setupStartTime && hovered.bar.setupEndTime"
+        >
+          （{{ formatTime(hovered.bar.setupStartTime) }} → {{ formatTime(hovered.bar.setupEndTime) }}）</template
+        >
       </div>
       <div>
         数量：{{ hovered.bar.qty ?? '—' }} · 资源内序号：{{ hovered.bar.sequenceInResource ?? '—' }}
@@ -911,8 +1283,9 @@ onBeforeUnmount(() => {
       <div>
         状态：{{ getEnumLabel('taskStatus', hovered.bar.status) }} · 版本 {{ hovered.bar.version }}
       </div>
-      <div v-if="hovered.bar.lockType && hovered.bar.lockType !== 'NONE'">
-        锁类型：{{ hovered.bar.lockType }}（优先级 FROZEN &gt; lockType &gt; frozen）
+      <div>是否冻结：{{ hoveredLockKind === 'FROZEN' ? '是' : '否' }}</div>
+      <div v-if="hoveredLockKind === 'TIME_WINDOW' || hoveredLockKind === 'RESOURCE'">
+        锁定类型：{{ hoveredLockText }}
       </div>
       <div v-if="hovered.bar.late">交期：已超期</div>
       <div v-if="calendarCheckByTask.has(hovered.bar.taskId)" class="gantt-tooltip__conflict">
@@ -929,6 +1302,7 @@ onBeforeUnmount(() => {
       >
         冲突：{{ reason }}
       </div>
+    </div>
     </div>
   </div>
 </template>
@@ -950,11 +1324,118 @@ onBeforeUnmount(() => {
   background: var(--bg-soft);
 }
 
+.gantt-root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* 常驻图例：颜色含义直接写在图例里，不藏进 tooltip。 */
+.gantt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-soft);
+  font-size: var(--font-xs);
+  color: var(--text-2);
+}
+
+.gantt-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.gantt-legend__swatch {
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--gantt-bar-run);
+  border: 1px solid transparent;
+  position: relative;
+  display: inline-block;
+}
+
+.gantt-legend__swatch.is-setup {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--gantt-setup-stripe),
+    var(--gantt-setup-stripe) 2px,
+    var(--gantt-setup-fill) 2px,
+    var(--gantt-setup-fill) 4px
+  );
+}
+
+.gantt-legend__swatch.is-frozen {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--text-3) 45%, transparent) 0 3px,
+    color-mix(in srgb, var(--text-3) 18%, transparent) 3px 6px
+  );
+  border-color: var(--border-strong);
+}
+
+.gantt-legend__swatch.is-frozen::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 5px;
+  height: 4px;
+  margin-left: -2.5px;
+  border: 1px solid var(--text-2);
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+}
+
+.gantt-legend__swatch.is-resource-lock {
+  background: var(--bg);
+  border: 1.5px solid var(--warn);
+}
+
+.gantt-legend__swatch.is-window-lock {
+  background: var(--bg);
+  border: 1.5px dashed var(--warn);
+}
+
+.gantt-legend__swatch.is-inprogress {
+  background: var(--ok);
+}
+
+.gantt-legend__swatch.is-late {
+  background: var(--bg);
+  border: 2px solid var(--danger);
+}
+
+.gantt-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.gantt-toolbar__range {
+  color: var(--text-2);
+  font-size: var(--font-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.gantt-toolbar__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
 .gantt-heads__corner {
   position: sticky;
   top: 0;
   z-index: 3;
-  height: 44px;
+  height: 54px;
   display: flex;
   align-items: center;
   padding: 0 var(--space-3);
@@ -1061,6 +1542,60 @@ onBeforeUnmount(() => {
   z-index: 2;
   background: var(--bg-soft);
   border-bottom: var(--border-width) solid var(--border);
+  overflow: hidden;
+}
+
+/* 周末底色：轴头与画布同一条带，一眼看到"这里没排是因为休息"。 */
+.gantt-weekend {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--text-3) 8%, transparent);
+  pointer-events: none;
+}
+
+.gantt-weekend--axis {
+  background: color-mix(in srgb, var(--text-3) 12%, transparent);
+}
+
+.gantt-axis__sub {
+  position: absolute;
+  top: 26px;
+  left: 4px;
+  font-size: var(--font-2xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.gantt-axis__tick.is-major .gantt-axis__sub {
+  color: var(--text-2);
+}
+
+/* "现在"竖线 + 轴头标签，避免用户不知道今天在哪。 */
+.gantt-axis__now {
+  position: absolute;
+  top: 38px;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px solid var(--danger);
+  color: var(--danger);
+  font-size: var(--font-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+  padding-left: 3px;
+  line-height: 14px;
+  z-index: 3;
+}
+
+.gantt-now-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px solid var(--danger);
+  opacity: 0.75;
+  pointer-events: none;
+  z-index: 4;
 }
 
 .gantt-axis__tick {
@@ -1108,6 +1643,15 @@ onBeforeUnmount(() => {
   left: 0;
   right: 0;
   border-bottom: var(--border-width) solid var(--border);
+}
+
+/* 资源视图按资源类型分组：组首加一道分隔，避免所有行看起来一样。 */
+.gantt-row.is-group-start {
+  border-top: 2px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
+}
+
+.gantt-heads__row.is-group-start {
+  border-top: 2px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
 }
 
 .gantt-row:nth-child(even) {
@@ -1239,9 +1783,40 @@ onBeforeUnmount(() => {
 
 /* 冻结层：PRD BR-GT-001-06 要求灰色背景 + 锁标识，视觉上明确不可拖。 */
 .gantt-bar.is-frozen {
-  background: linear-gradient(180deg, var(--gantt-bar-frozen-light), var(--gantt-bar-frozen));
-  border: 1px dashed var(--text-2);
+  background:
+    repeating-linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--gantt-frozen-ink) 26%, transparent) 0 4px,
+      transparent 4px 9px
+    ),
+    linear-gradient(180deg, var(--gantt-bar-frozen-light), var(--gantt-bar-frozen));
+  border: 1px dashed color-mix(in srgb, var(--gantt-frozen-ink) 55%, transparent);
+  color: var(--gantt-frozen-ink);
   cursor: not-allowed;
+}
+
+/* 冻结的锁标记：小锁形（横梁 + 锁体），与资源锁/时间窗锁的边框语义区分。 */
+.gantt-bar.is-frozen .gantt-bar__lock::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 4px;
+  margin-right: 2px;
+  border: 1px solid currentColor;
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  vertical-align: -1px;
+}
+
+/* 同一订单色带：底部 2px，颜色由订单号稳定映射，看出"同一条工序链"。 */
+.gantt-bar__tint {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  opacity: 0.85;
+  pointer-events: none;
 }
 
 .gantt-bar.is-conflict {
@@ -1250,15 +1825,21 @@ onBeforeUnmount(() => {
   z-index: 2;
 }
 
-/* 延期任务（C29 late）：左侧红条，与订单行头延期分钟同源。 */
+/* 延期任务（C29 late）：红色描边 + 左侧红条，远看即可识别。 */
 .gantt-bar.is-late {
   box-shadow: inset 3px 0 0 var(--danger);
+  outline: 1.5px solid var(--danger);
+  outline-offset: 1px;
+  z-index: 2;
 }
 
-/* 工时窗锁 / 资源锁：锁标识在条内，视觉与订单冻结区分。 */
-.gantt-bar.is-window-locked,
+/* 工时窗锁 / 资源锁：同为警告色，但实线=资源锁、虚线=时间窗锁，不与冻结混淆。 */
 .gantt-bar.is-resource-locked {
-  border: 1px solid var(--warn);
+  border: 1.5px solid var(--warn);
+}
+
+.gantt-bar.is-window-locked {
+  border: 1.5px dashed var(--warn);
 }
 
 /* 任务占用落在资源日历非工作时段（订单视图 C14 校验）。 */
@@ -1294,10 +1875,11 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+/* 换型单独一条斜纹带（不再与加工条混成一条），与图例第一项对应。 */
 .gantt-setup {
   position: absolute;
-  top: 27px;
-  height: 4px;
+  top: 26px;
+  height: 6px;
   border-radius: 2px;
   background: repeating-linear-gradient(
     -45deg,

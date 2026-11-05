@@ -4,6 +4,8 @@
  * solve_task.engine 的库内 CHECK 取值为 TIMEFOLD/ORTOOLS/RULE_BASED（schema.md 4.1）。
  */
 
+import type { SandboxCompare } from '@/types/orders'
+
 export type SolverEngine = 'timefold' | 'ortools' | 'rule_based'
 
 export interface SolveSubmitRequest {
@@ -81,11 +83,38 @@ export interface ExplainCause {
   evidence?: Record<string, unknown>
 }
 
+/** 约束归因：约束名 + 扣分 + 说明，全部来自求解证据，不由前端拼装。 */
+export interface ExplainConstraintImpact {
+  justificationId?: string
+  constraintId?: string
+  constraintName?: string | null
+  scoreImpact?: string | null
+  hard?: boolean
+  weight?: number | null
+  deduction?: number | null
+  affectedTaskIds?: number[]
+  description?: string
+}
+
+export interface ExplainLlmInfo {
+  configured: boolean
+  provider?: string | null
+  fallbackReason?: string | null
+  fallbackSource?: 'EVIDENCE' | 'LLM'
+}
+
+/** C45 `GET /agent/explain/{taskId}`；available=false 时不得编造原因。 */
 export interface ExplainResult {
   taskId: number
+  available?: boolean
+  source?: 'EVIDENCE' | 'LLM'
+  noDataReason?: 'NO_JUSTIFICATION_RECORD' | 'AMBIGUOUS_SOLVE_TASK' | null
   summary: string
+  narrative?: string
   causes: ExplainCause[]
   suggestions: string[]
+  constraintImpacts?: ExplainConstraintImpact[]
+  llm?: ExplainLlmInfo
 }
 
 export interface WhatIfRequest {
@@ -94,8 +123,33 @@ export interface WhatIfRequest {
   parameters?: Record<string, unknown>
 }
 
+export interface WhatIfBottleneckChange {
+  before?: { resourceCode: string; utilization: number } | null
+  after?: { resourceCode: string; utilization: number } | null
+  comparable?: boolean
+  notComparableReason?: string | null
+  changed?: boolean
+  metric?: string
+  resourceDeltas?: Array<{ resourceCode: string; before: number; after: number; delta: number }>
+}
+
+/** C45 `POST /agent/whatif`：只接受 WHAT_IF 场景，返回对比摘要 + 确定性 answer。 */
 export interface WhatIfResult {
+  sandboxId?: string
+  baselineSandboxId?: string
+  baselineTaskCount?: number
+  afterTaskCount?: number
+  baselineEmpty?: boolean
+  comparisonWarnings?: string[]
+  question?: string
+  appliedChanges?: Array<{ parameter: string; value: unknown }>
+  available?: boolean
+  unavailableReason?: string | null
+  comparison?: SandboxCompare
+  impactedOrders?: string[]
+  impactedOrdersComplete?: boolean
+  bottleneckChange?: WhatIfBottleneckChange
   answer: string
-  appliedChanges: Record<string, unknown>[]
-  impact?: Record<string, unknown>
+  source?: 'EVIDENCE' | 'LLM'
+  solveStatus?: string
 }

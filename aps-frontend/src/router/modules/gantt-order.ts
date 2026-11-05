@@ -1,5 +1,3 @@
-import OrderGanttView from '@/views/gantt/OrderGanttView.vue'
-
 import type { RouterModule } from '../types'
 
 /**
@@ -16,7 +14,7 @@ export const ganttOrderModule: RouterModule = {
     {
       path: 'gantt-orders',
       name: 'gantt-orders',
-      component: OrderGanttView,
+      component: () => import('@/views/gantt/OrderGanttView.vue'),
       meta: {
         title: '订单甘特图',
         description:

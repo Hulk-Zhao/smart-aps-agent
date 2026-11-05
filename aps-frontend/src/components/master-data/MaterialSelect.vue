@@ -111,7 +111,9 @@ watch(
     <el-option
       v-for="item in options"
       :key="item.code"
-      :label="`${item.code} · ${item.name}`"
+      :label="
+        item.spec ? `${item.name} · ${item.spec}（${item.code}）` : `${item.name}（${item.code}）`
+      "
       :value="item.code"
     />
   </el-select>

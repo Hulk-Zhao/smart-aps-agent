@@ -35,7 +35,24 @@ export interface MrpOrderResult {
   qty: MrpQty
   dueDate?: string | null
   kitted: boolean
+  /** 订单级三态结论文本（C49）；旧响应可能缺省，用 kitted 兜底。 */
+  kittingStatus?: MrpStatus | null
+  /** 该订单缺料物料项数。 */
+  shortageItemCount?: number | null
+  /** 该订单展开后的物料项总数。 */
+  totalItemCount?: number | null
   shortages: MrpOrderShortage[]
+}
+
+/** 替代料候选（C49），编码/优先级/比例来自 BOM substitutes。 */
+export interface MrpSubstitute {
+  materialCode: string
+  /** 数值越小越优先。 */
+  priority?: number | null
+  /** 替代比例原样输出，如 `1:1`。 */
+  ratio?: string | null
+  /** 替代料可用量 = max(0, 现有库存 + 需求时点前在途 - 安全库存)。 */
+  availableQty: MrpQty
 }
 
 /** 按物料聚合的缺料明细。 */
@@ -51,8 +68,11 @@ export interface MrpMaterialShortage {
   /** includeSuggestions=true 时输出；数值由后端计算，前端只展示。 */
   suggestedPurchaseDate?: string | null
   suggestedQty?: MrpQty | null
-  /** M2 未接供应商主数据，后端固定返回 null。 */
   supplierCode?: string | null
+  /** 替代料候选，无替代料时为空数组。 */
+  substitutes?: MrpSubstitute[] | null
+  /** 最早的非取消在途预计到货日；无在途时为 null。 */
+  expectedArrival?: string | null
 }
 
 /** POST /mrp/analysis 出参。 */

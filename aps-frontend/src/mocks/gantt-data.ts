@@ -63,13 +63,13 @@ interface ResourceKind {
 const RESOURCE_SLOTS: readonly ResourceKind[] = [
   { type: 'PRIMARY', prefix: 'CNC', name: '数控加工中心' },
   { type: 'PRIMARY', prefix: 'CNC', name: '数控加工中心' },
-  { type: 'PRIMARY', prefix: 'SMT', name: 'SMT 贴片机' },
-  { type: 'PRIMARY', prefix: 'SMT', name: 'SMT 贴片机' },
-  { type: 'PRIMARY', prefix: 'ASSY', name: '总装线' },
-  { type: 'PRIMARY', prefix: 'ASSY', name: '总装线' },
-  { type: 'PRIMARY', prefix: 'AGE', name: '老化烘烤柜' },
+  { type: 'PRIMARY', prefix: 'SMT', name: '高速贴片线' },
+  { type: 'PRIMARY', prefix: 'SMT', name: '高速贴片线' },
+  { type: 'PRIMARY', prefix: 'PACK', name: 'PACK 总装线' },
+  { type: 'PRIMARY', prefix: 'PACK', name: 'PACK 总装线' },
+  { type: 'PRIMARY', prefix: 'AGING', name: '老化房' },
   { type: 'SECONDARY', prefix: 'FIX', name: '工装夹具' },
-  { type: 'HUMAN', prefix: 'OP', name: '操作工位' },
+  { type: 'HUMAN', prefix: 'OP', name: '装调技师' },
   { type: 'TOOL', prefix: 'MOLD', name: '模具' }
 ]
 
@@ -125,7 +125,7 @@ function buildResources(count: number): Array<{
     return {
       row: {
         resourceCode: code,
-        resourceName: `${kind.name} ${100 + sequence} 号`,
+        resourceName: `${kind.name} ${kind.prefix}-${String(100 + sequence).padStart(3, '0')}`,
         resourceType: kind.type
       },
       kind,
@@ -177,7 +177,7 @@ function generateDenseResourceGanttData(
       const start = setupStart + setupMinutes * MINUTE
       const end = start + runMinutes * MINUTE
       const orderIndex = Math.floor(taskIndex / 3) + 1
-      const orderNo = `SO-20261105-${String(orderIndex).padStart(4, '0')}`
+      const orderNo = `DM-SO-${String(1001 + orderIndex)}`
       const operationIndex = (taskIndex % 3) + 1
       bucket.push({
         id: 500001 + taskIndex,
@@ -256,7 +256,7 @@ export function generateOrderGanttData(
       })
       return {
         orderNo,
-        materialCode: ['MAT-FG-001', 'MAT-SF-001', 'MAT-FG-002'][index % 3],
+        materialCode: ['FG-ESS-001', 'SEMI-MOD-001', 'SEMI-SMT-001'][index % 3],
         dueDate,
         dueDateLine,
         priority: priorities[index % priorities.length],
@@ -307,8 +307,8 @@ const EVERY_DAY = [1, 2, 3, 4, 5, 6, 7]
 
 /** 常白班：08:00-12:00 / 13:00-17:00，周一至周五；含 1 个法定停产日 + 1 个调休上班日；生效期到 11-10。 */
 const MOCK_CAL_DAY = mockCalendar(
-  'CAL-RES-DAY-01',
-  '常白班日历',
+  'CAL-PLANT-1SHIFT',
+  '全厂单班制日历（08:00-17:00）',
   '2026-11-01',
   '2026-11-10',
   [
@@ -323,8 +323,8 @@ const MOCK_CAL_DAY = mockCalendar(
 
 /** 两班制：08:00-20:00，周一至周六；11-10 公司停产检修。 */
 const MOCK_CAL_TWO = mockCalendar(
-  'CAL-RES-TWO-01',
-  '两班制日历',
+  'CAL-SMT-2SHIFT',
+  'SMT 贴片车间两班制日历',
   '2026-11-01',
   null,
   [{ startTime: '08:00', endTime: '20:00', daysOfWeek: WEEKDAY_SATURDAY }],
@@ -332,9 +332,13 @@ const MOCK_CAL_TWO = mockCalendar(
 )
 
 /** 连续生产：00:00-24:00，每天。 */
-const MOCK_CAL_CONTINUOUS = mockCalendar('CAL-FAC-7X24', '全厂 7×24 日历', '2026-01-01', null, [
-  { startTime: '00:00', endTime: '24:00', daysOfWeek: EVERY_DAY }
-])
+const MOCK_CAL_CONTINUOUS = mockCalendar(
+  'CAL-FAC-7X24',
+  '全厂 7×24 连续生产日历',
+  '2026-01-01',
+  null,
+  [{ startTime: '00:00', endTime: '24:00', daysOfWeek: EVERY_DAY }]
+)
 
 const MOCK_CALENDARS: Record<string, Calendar> = {
   [MOCK_CAL_DAY.id]: MOCK_CAL_DAY,
@@ -346,16 +350,16 @@ const MOCK_CALENDARS: Record<string, Calendar> = {
 const FE01_CALENDAR_IDS: Record<string, string | null> = {
   'RES-SMT-01': 'CAL-FAC-7X24',
   'RES-SMT-02': 'CAL-FAC-7X24',
-  'RES-ASSY-01': 'CAL-FAC-7X24',
-  'RES-ASSY-101': 'CAL-RES-TWO-01',
-  'RES-AGE-01': 'CAL-FAC-7X24',
-  'RES-AGE-101': 'CAL-RES-TWO-01',
+  'RES-PACK-01': 'CAL-FAC-7X24',
+  'RES-PACK-02': 'CAL-SMT-2SHIFT',
+  'RES-AGING-01': 'CAL-FAC-7X24',
+  'RES-AGING-02': 'CAL-SMT-2SHIFT',
   'RES-FIX-102': null
 }
 
 const FE01_MISSING_RESOURCES = new Set(['RES-FIX-101'])
 
-const FALLBACK_CALENDAR_ROTATION = ['CAL-RES-DAY-01', 'CAL-RES-TWO-01', 'CAL-FAC-7X24']
+const FALLBACK_CALENDAR_ROTATION = ['CAL-PLANT-1SHIFT', 'CAL-SMT-2SHIFT', 'CAL-FAC-7X24']
 
 /**
  * Mock 日历绑定解析：演示 BOUND / UNBOUND / MISSING 三种状态。
@@ -418,17 +422,17 @@ interface Fe01Resource {
   type: ResourceType
 }
 const FE01_RESOURCES: readonly Fe01Resource[] = [
-  { code: 'RES-SMT-01', name: 'SMT 贴片机 1 号', type: 'PRIMARY' },
-  { code: 'RES-SMT-02', name: 'SMT 贴片机 2 号', type: 'PRIMARY' },
-  { code: 'RES-ASSY-01', name: '电池包总装线 1 号', type: 'PRIMARY' },
-  { code: 'RES-ASSY-101', name: '总装线 101 号', type: 'PRIMARY' },
-  { code: 'RES-AGE-01', name: '储能老化柜 1 号', type: 'PRIMARY' },
-  { code: 'RES-AGE-101', name: '老化测试柜 101 号', type: 'PRIMARY' },
-  { code: 'RES-FIX-101', name: '夹具工位 101 号', type: 'SECONDARY' },
-  { code: 'RES-FIX-102', name: '夹具工位 102 号', type: 'SECONDARY' }
+  { code: 'RES-SMT-01', name: '高速贴片线 SMT-01', type: 'PRIMARY' },
+  { code: 'RES-SMT-02', name: '高速贴片线 SMT-02', type: 'PRIMARY' },
+  { code: 'RES-PACK-01', name: 'PACK 总装线 PACK-01', type: 'PRIMARY' },
+  { code: 'RES-PACK-02', name: 'PACK 总装线 PACK-02', type: 'PRIMARY' },
+  { code: 'RES-AGING-01', name: '老化房 AGING-01（20 工位）', type: 'PRIMARY' },
+  { code: 'RES-AGING-02', name: '老化房 AGING-02（20 工位）', type: 'PRIMARY' },
+  { code: 'RES-FIX-101', name: '工装夹具 FIX-101', type: 'SECONDARY' },
+  { code: 'RES-FIX-102', name: '工装夹具 FIX-102', type: 'SECONDARY' }
 ]
 
-const FE01_OPERATIONS = ['SMT 贴片', '电池包总装', '老化烘烤', '夹具校验'] as const
+const FE01_OPERATIONS = ['SMT 贴片', 'PACK 总装', '老化测试', '夹具校验'] as const
 const FE01_OPERATION_RESOURCES: readonly [number, number, number, number] = [0, 2, 4, 6]
 
 function resourceOf(baseIndex: number, pair: 1 | 2): Fe01Resource {
@@ -439,8 +443,8 @@ function resourceOf(baseIndex: number, pair: 1 | 2): Fe01Resource {
  * 48 任务 × 8 资源验收档：12 个订单 × 4 道工序，订单内工序链跨资源。
  * 12 个订单按 12 小时错峰开工，链长约 9–11 小时，正常情况下互不重叠。
  * 两处可复现异常：
- * - 订单 0105 的首道工序提前到订单 0103 首道工序开始后 30 分钟 → 同资源重叠冲突；
- * - 订单 0102 的第二道工序提前到首道工序结束前 45 分钟 → 工序依赖违例。
+ * - 订单 DM-SO-1005 的首道工序提前到订单 DM-SO-1003 首道工序开始后 30 分钟 → 同资源重叠冲突；
+ * - 订单 DM-SO-1002 的第二道工序提前到首道工序结束前 45 分钟 → 工序依赖违例。
  */
 function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
   const profile = getGanttDatasetProfile('48x8')
@@ -451,7 +455,7 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
 
   for (let orderIndex = 0; orderIndex < orderCount; orderIndex += 1) {
     const pair: 1 | 2 = orderIndex % 2 === 0 ? 1 : 2
-    const orderNo = `SO-20261105-${String(101 + orderIndex).padStart(4, '0')}`
+    const orderNo = `DM-SO-${String(1001 + orderIndex)}`
     let cursor = orderStart + orderIndex * 12 * 60 * MINUTE
     for (let operation = 1; operation <= FE01_OPERATIONS.length; operation += 1) {
       const resource = resourceOf(FE01_OPERATION_RESOURCES[operation - 1], pair)
@@ -490,13 +494,13 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
     }
   }
 
-  // 可复现异常 1：订单 0105 首道工序被提前，与订单 0103 首道工序在同一 SMT 资源上重叠。
+  // 可复现异常 1：订单 DM-SO-1005 首道工序被提前，与订单 DM-SO-1003 首道工序在同一 SMT 资源上重叠。
   const conflictTask = tasks.find(
-    (task) => task.orderNo === 'SO-20261105-0105' && task.operationIndex === 1
+    (task) => task.orderNo === 'DM-SO-1005' && task.operationIndex === 1
   )
   if (conflictTask) {
     const anchor = tasks.find(
-      (task) => task.orderNo === 'SO-20261105-0103' && task.operationIndex === 1
+      (task) => task.orderNo === 'DM-SO-1003' && task.operationIndex === 1
     )
     if (anchor) {
       const anchorStart = Date.parse(anchor.startTime ?? '')
@@ -509,12 +513,12 @@ function generateFe01ResourceGanttData(sandboxId: string): ResourceGanttData {
     }
   }
 
-  // 可复现异常 2：订单 0102 第二道工序提前 45 分钟，早于首道工序结束 → 工序依赖违例。
+  // 可复现异常 2：订单 DM-SO-1002 第二道工序提前 45 分钟，早于首道工序结束 → 工序依赖违例。
   const dependentTask = tasks.find(
-    (task) => task.orderNo === 'SO-20261105-0102' && task.operationIndex === 2
+    (task) => task.orderNo === 'DM-SO-1002' && task.operationIndex === 2
   )
   const predecessor = tasks.find(
-    (task) => task.orderNo === 'SO-20261105-0102' && task.operationIndex === 1
+    (task) => task.orderNo === 'DM-SO-1002' && task.operationIndex === 1
   )
   if (dependentTask && predecessor) {
     const predecessorEnd = Date.parse(predecessor.endTime ?? '')

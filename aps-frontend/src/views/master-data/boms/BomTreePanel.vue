@@ -98,8 +98,8 @@ watch(
     >
       <template #default="{ data }">
         <div class="tree-node">
+          <span class="tree-name">{{ data.materialName || '物料名称待接入' }}</span>
           <span class="tree-code">{{ data.parentMaterialCode }}</span>
-          <span class="tree-name">{{ data.materialName }}</span>
           <el-tag size="small" type="info">用量 {{ data.qtyPerUnit }}</el-tag>
           <el-tag size="small" type="primary">L{{ data.level }}</el-tag>
         </div>
@@ -138,13 +138,14 @@ watch(
   font-size: 13px;
 }
 
-.tree-code {
+.tree-name {
   font-weight: 600;
   color: var(--text);
 }
 
-.tree-name {
-  color: var(--text-2);
+.tree-code {
+  color: var(--text-3);
+  font-size: var(--font-xs);
 }
 
 .tree-hint {

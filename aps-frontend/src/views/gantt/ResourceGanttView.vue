@@ -10,13 +10,13 @@ import {
 } from '@/components/gantt/adapters'
 import { analyzeGanttDataset } from '@/components/gantt/analysis'
 import type { GanttAnalysis, GanttConflict, GanttLayerFlags } from '@/components/gantt/analysis'
+import { PageSkeleton } from '@/components/common'
 import { GANTT_CALENDAR_TIMEZONE_NOTE } from '@/components/gantt/calendar'
 import type { GanttCalendarRowState, GanttCalendarWindowKind } from '@/components/gantt/calendar'
 import GanttTimeline from '@/components/gantt/GanttTimeline.vue'
 import type { GanttDataset, GanttZoom } from '@/components/gantt'
 import type { GanttDatasetKey } from '@/components/gantt/adapters'
 import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
-import { getEnumOptions } from '@/constants/enums'
 import type { Calendar } from '@/types/calendars'
 
 interface RenderMetrics {
@@ -38,7 +38,8 @@ const zoomOptions: Array<{ value: GanttZoom; label: string }> = [
 
 const datasetKey = ref<GanttDatasetKey>('48x8')
 const zoom = ref<GanttZoom>('day')
-const dataSource = ref<'mock' | 'api'>('mock')
+/** 默认真实后端；Mock 只允许显式 ?source=mock 或工具栏显式切换进入。 */
+const dataSource = ref<'mock' | 'api'>('api')
 const layers = reactive<GanttLayerFlags>({
   calendar: true,
   idle: true,
@@ -60,13 +61,23 @@ const adapter = computed(() =>
   createGanttAdapter({ dataset: datasetKey.value, source: dataSource.value })
 )
 const profile = computed(() => getGanttDatasetProfile(datasetKey.value))
-const statusLegend = computed(() => getEnumOptions('taskStatus'))
+const datasetIsEmpty = computed(() => dataset.value !== null && dataset.value.rows.length === 0)
 const conflictRows = computed<GanttConflict[]>(() => analysis.value?.conflicts ?? [])
 const conflictTypes = computed(() => new Set(conflictRows.value.map((item) => item.type)))
 const peakLoadText = computed(() => {
   const ratio = analysis.value?.summary.peakLoadRatio
-  return ratio === null || ratio === undefined ? '—（无可比日历）' : `${Math.round(ratio * 100)}%`
+  return ratio === null || ratio === undefined ? '无（无可比日历）' : `${Math.round(ratio * 100)}%`
 })
+
+/** 资源编码 → 中文名；甘特行 key 为资源编码，label 为资源名称。 */
+const resourceDisplayMap = computed(
+  () => new Map((dataset.value?.rows ?? []).map((row) => [row.key, row.label]))
+)
+
+function resourceDisplay(code: string): string {
+  const name = resourceDisplayMap.value.get(code)
+  return name ? `${name}（${code}）` : code
+}
 
 const hasCalendarGap = computed(() => {
   if (!analysis.value) {
@@ -95,7 +106,7 @@ function daysText(days: number[]): string {
 
 function shiftTextOf(calendar: Calendar | null): string {
   if (!calendar) {
-    return '—'
+    return '无'
   }
   return calendar.shifts
     .map((shift) => `${shift.startTime}-${shift.endTime}（${daysText(shift.daysOfWeek)}）`)
@@ -147,6 +158,16 @@ function calendarStateTag(
   return 'danger'
 }
 
+function calendarStateLabel(state: GanttCalendarRowState['state']): string {
+  if (state === 'BOUND') {
+    return '已绑定'
+  }
+  if (state === 'UNBOUND') {
+    return '未绑定'
+  }
+  return state === 'MISSING' ? '日历缺失' : '读取失败'
+}
+
 function calendarWindowKindLabel(kind: GanttCalendarWindowKind): string {
   if (kind === 'HOLIDAY') {
     return '非工作例外日'
@@ -191,7 +212,14 @@ async function loadDataset(): Promise<void> {
   analysis.value = null
   metrics.value = null
   try {
-    const range = getMockQueryRange()
+    // 5000 容量档的任务会溢出默认 7 天窗口，Mock 下放宽到整档跨度，避免淡出过滤后不足 5000 条。
+    const range =
+      dataSource.value === 'mock' && datasetKey.value === '5000x50'
+        ? {
+            from: new Date(Date.UTC(2026, 10, 1)).toISOString(),
+            to: new Date(Date.UTC(2026, 11, 31)).toISOString()
+          }
+        : getMockQueryRange()
     const startedAt = performance.now()
     const data = await adapter.value.load({
       sandboxId: DEFAULT_SANDBOX_ID,
@@ -235,7 +263,7 @@ function readQuery(): void {
     key === '100x10' || key === '500x50' || key === '5000x50' || key === '48x8' ? key : '48x8'
   const nextZoom = String(query.zoom ?? '')
   zoom.value = nextZoom === 'hour' || nextZoom === 'week' || nextZoom === 'month' ? nextZoom : 'day'
-  dataSource.value = String(query.source ?? '') === 'api' ? 'api' : 'mock'
+  dataSource.value = String(query.source ?? '') === 'mock' ? 'mock' : 'api'
   if (String(query.heat ?? '') === '1') {
     layers.heat = true
   }
@@ -253,12 +281,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="gantt-page">
     <h2 class="page-title">资源甘特图（M2-FE-01 · 只读增强）</h2>
 
-    <el-card class="page-card" shadow="never">
+    <el-card class="page-card gantt-toolbar-card" shadow="never">
       <div class="toolbar">
-        <el-form inline>
+        <el-form inline size="small">
           <el-form-item label="数据档">
             <el-select v-model="datasetKey" style="width: 260px">
               <el-option
@@ -280,9 +308,10 @@ onMounted(() => {
             </el-select>
           </el-form-item>
           <el-form-item label="数据源">
-            <el-tag :type="dataSource === 'api' ? 'warning' : 'success'" effect="plain">
-              {{ dataSource === 'api' ? 'API（/gantt/resource）' : 'Mock（契约 C4 结构）' }}
-            </el-tag>
+            <el-select v-model="dataSource" style="width: 176px">
+              <el-option label="API（后端真实数据）" value="api" />
+              <el-option label="Mock（合成数据）" value="mock" />
+            </el-select>
           </el-form-item>
           <el-form-item label="图层">
             <el-checkbox v-model="layers.calendar">日历停机</el-checkbox>
@@ -294,19 +323,20 @@ onMounted(() => {
           </el-form-item>
         </el-form>
         <div class="toolbar__actions">
-          <el-button :loading="loading" @click="loadDataset">重新加载</el-button>
+          <el-tag
+            class="source-badge"
+            :type="dataSource === 'api' ? 'success' : 'warning'"
+            effect="dark"
+            size="large"
+          >
+            {{ dataSource === 'api' ? '数据源：API（后端真实数据）' : '数据源：Mock（合成数据）' }}
+          </el-tag>
+          <el-button size="small" :loading="loading" @click="loadDataset">重新加载</el-button>
         </div>
       </div>
 
       <div class="legend">
-        <span class="legend__title">状态配色：</span>
-        <span v-for="item in statusLegend" :key="item.value" class="legend__item">
-          <i class="legend__dot" :class="`tag-${item.tagType}`" />{{ item.label }}
-        </span>
-        <span class="legend__item"><i class="legend__setup" />换型窗口</span>
-        <span class="legend__item"
-          ><i class="legend__frozen">冻</i>冻结（灰色 + 锁标识，不可拖）</span
-        >
+        <span class="legend__title">图层与标记：</span>
         <span class="legend__item"><i class="legend__conflict" />冲突（红色描边 + 原因）</span>
         <span class="legend__item"><i class="legend__calendar" />日历停机（C14 班次/例外日）</span>
         <span class="legend__item"
@@ -315,12 +345,6 @@ onMounted(() => {
         <span class="legend__item"><i class="legend__link" />工序依赖 FS</span>
       </div>
 
-      <p class="scope-note">
-        M2-FE-01
-        只读：时间轴缩放、状态配色、冲突高亮、负载热力、工序依赖、冻结标识。停机层与热力分母来自 C14
-        资源工作日历（GET /resources 的 calendarId + GET /calendars/{id}）；C4 不返回日历字段。
-        拖拽调整与撤销重做属 M2-FE-03（等待 W4 交付 /tasks/{id}/adjust），本页不提供任何写操作。
-      </p>
     </el-card>
 
     <el-alert v-if="error" class="page-card" type="error" :closable="false" :title="error" />
@@ -336,6 +360,53 @@ onMounted(() => {
         <li v-for="issue in analysis.calendarIssues" :key="issue">{{ issue }}</li>
       </ul>
     </el-alert>
+
+    <el-card class="page-card" shadow="never">
+      <template #header>
+        只读甘特 · {{ profile.label }} · 缩放
+        {{ zoomOptions.find((item) => item.value === zoom)?.label ?? zoom }}
+      </template>
+      <div ref="stageRef" v-loading="loading" class="stage">
+        <PageSkeleton v-if="!dataset && loading" :rows="10" :show-title="false" />
+        <el-empty
+          v-else-if="datasetIsEmpty"
+          description="该数据档在所选时间窗内没有任务（可能尚未排产）"
+        >
+          <template #default>
+            <p class="empty-hint">
+              先确认该方案已排产；仍为空时扩大时间窗或切换数据档后重新加载。
+            </p>
+            <el-button size="small" type="primary" @click="loadDataset()">重新加载</el-button>
+          </template>
+        </el-empty>
+        <GanttTimeline
+          v-else-if="dataset"
+          :dataset="dataset"
+          :zoom="zoom"
+          :analysis="analysis"
+          :layers="layers"
+        />
+        <el-empty v-else description="暂无甘特数据：请先加载排产结果，或检查筛选条件" />
+      </div>
+      <p class="perf-note">
+        悬浮任务条可查看订单、加工窗口、换型窗口、辅资源、资源内序号与冲突原因；悬浮日历停机块可查看
+        窗口类型与日历依据，悬浮热力块可查看「占用 / 日历工作分钟」分母。冻结任务以灰色 + 虚线 +
+        「冻」标识， 明确不可拖拽（拖拽能力在 FE-03 落地前不存在）。
+      </p>
+      <p class="perf-note">
+        口径：停机层只渲染 C14 日历事实（班次休息 / 非排班日 /
+        非工作例外日），不再用相邻任务间隔推定停机； 热力分母为该资源的当日日历工作分钟，未绑 / 缺失
+        / 失败的行显示「无」，不静默回落到 24h。 可插空档仍是相邻任务间隔 ≥30
+        分钟的前端推导，仅作可插入候选，不代表真实停机指令。
+      </p>
+    </el-card>
+
+    <p class="scope-note">
+      M2-FE-01
+      只读：时间轴缩放、状态配色、冲突高亮、负载热力、工序依赖、冻结标识。停机层与热力分母来自 C14
+      资源工作日历（GET /resources 的 calendarId + GET /calendars/{id}）；C4 不返回日历字段。
+      拖拽调整与撤销重做属 M2-FE-03（等待 W4 交付 /tasks/{id}/adjust），本页不提供任何写操作。
+    </p>
 
     <el-card class="page-card" shadow="never">
       <template #header> 只读指标（{{ profile.label }}） </template>
@@ -386,10 +457,10 @@ onMounted(() => {
           <span v-else>测量中…</span>
         </el-descriptions-item>
         <el-descriptions-item label="DOM 节点数" :span="2">
-          {{ metrics?.domNodes ?? '—' }}
+          {{ metrics?.domNodes ?? '无' }}
         </el-descriptions-item>
         <el-descriptions-item label="测量时间" :span="2">
-          {{ metrics?.measuredAt ?? '—' }}
+          {{ metrics?.measuredAt ?? '无' }}
         </el-descriptions-item>
       </el-descriptions>
       <el-empty v-else description="暂无甘特数据" />
@@ -407,24 +478,18 @@ onMounted(() => {
         {{ analysis?.summary.resourceCount ?? 0 }}
       </template>
       <el-table v-if="calendarRowsView.length" :data="calendarRowsView" size="small" border>
-        <el-table-column label="资源" width="160">
-          <template #default="{ row }">
-            <span>{{ row.rowKey }}</span>
-            <br /><span class="muted">{{ row.resourceName }}</span>
-          </template>
+        <el-table-column label="资源" width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.resourceName }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="92">
+        <el-table-column label="绑定状态" width="110">
           <template #default="{ row }">
             <el-tag size="small" :type="calendarStateTag(row.state)" effect="plain">
-              {{ row.state }}
+              {{ calendarStateLabel(row.state) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="calendarId" width="140">
-          <template #default="{ row }">{{ row.calendarId ?? '—' }}</template>
-        </el-table-column>
-        <el-table-column label="日历" width="150">
-          <template #default="{ row }">{{ row.calendarName ?? '—' }}</template>
+        <el-table-column label="工作日历" width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.calendarName ?? '无' }}</template>
         </el-table-column>
         <el-table-column prop="shifts" label="班次（C14）" min-width="220" />
         <el-table-column label="例外日 / 覆盖" min-width="260">
@@ -443,7 +508,7 @@ onMounted(() => {
       <p class="perf-note">
         数据流：C4 /gantt/resource 不返回 calendarId → GET /resources 取 calendarId → GET
         /calendars/{id} 取班次 / 例外日 / 生效期。{{ GANTT_CALENDAR_TIMEZONE_NOTE }}。 未绑 / 缺失 /
-        失败的行不产生停机窗口与热力，页面显示「—」而非 24h 回落。
+        失败的行不产生停机窗口与热力，页面显示「无」而非 24h 回落。
       </p>
     </el-card>
 
@@ -452,7 +517,9 @@ onMounted(() => {
         日历停机窗口（前 20 条 / 共 {{ analysis?.calendarSummary.windowCount ?? 0 }} 条）
       </template>
       <el-table v-if="calendarWindowRows.length" :data="calendarWindowRows" size="small" border>
-        <el-table-column prop="rowKey" label="资源" width="130" />
+        <el-table-column label="资源" width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ resourceDisplay(row.rowKey) }}</template>
+        </el-table-column>
         <el-table-column label="类型" width="110">
           <template #default="{ row }">
             <el-tag
@@ -519,7 +586,9 @@ onMounted(() => {
         <el-table-column label="任务" width="140">
           <template #default="{ row }"> #{{ row.taskIds[0] }} / #{{ row.taskIds[1] }} </template>
         </el-table-column>
-        <el-table-column prop="resourceCode" label="资源" width="130" />
+        <el-table-column label="资源" width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ resourceDisplay(row.resourceCode) }}</template>
+        </el-table-column>
         <el-table-column prop="overlapMinutes" label="重叠分钟" width="100" />
         <el-table-column prop="message" label="原因（可读）" min-width="360" />
       </el-table>
@@ -530,67 +599,72 @@ onMounted(() => {
       </p>
     </el-card>
 
-    <el-card shadow="never">
-      <template #header>
-        只读甘特 · {{ profile.label }} · 缩放
-        {{ zoomOptions.find((item) => item.value === zoom)?.label ?? zoom }}
-      </template>
-      <div ref="stageRef" v-loading="loading" class="stage">
-        <GanttTimeline
-          v-if="dataset"
-          :dataset="dataset"
-          :zoom="zoom"
-          :analysis="analysis"
-          :layers="layers"
-        />
-        <el-empty v-else description="暂无甘特数据" />
-      </div>
-      <p class="perf-note">
-        悬浮任务条可查看订单、加工窗口、换型窗口、辅资源、资源内序号与冲突原因；悬浮日历停机块可查看
-        窗口类型与日历依据，悬浮热力块可查看「占用 / 日历工作分钟」分母。冻结任务以灰色 + 虚线 +
-        「冻」标识， 明确不可拖拽（拖拽能力在 FE-03 落地前不存在）。
-      </p>
-      <p class="perf-note">
-        口径：停机层只渲染 C14 日历事实（班次休息 / 非排班日 /
-        非工作例外日），不再用相邻任务间隔推定停机； 热力分母为该资源的当日日历工作分钟，未绑 / 缺失
-        / 失败的行显示「—」，不静默回落到 24h。 可插空档仍是相邻任务间隔 ≥30
-        分钟的前端推导，仅作可插入候选，不代表真实停机指令。
-      </p>
-    </el-card>
   </div>
 </template>
 
 <style scoped>
+.empty-hint {
+  margin: 0 0 var(--space-3);
+  color: var(--text-2);
+  font-size: var(--font-sm);
+}
+
+/* 甘特页顶部压缩：减少卡体内边距、表单行高与图例行距，让时间轴更早进入首屏 */
+.gantt-page :deep(.page-title) {
+  margin-bottom: var(--space-2);
+  font-size: calc(var(--font-title) - 2px);
+}
+
+.gantt-page :deep(.el-card__header) {
+  padding: var(--space-2) var(--space-3);
+}
+
+.gantt-page :deep(.el-card__body) {
+  padding: var(--space-3);
+}
+
+.gantt-toolbar-card :deep(.el-card__body) {
+  padding: var(--space-2) var(--space-3);
+}
+
 .toolbar {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: var(--space-4);
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
 .toolbar__actions {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
-  padding-top: 2px;
+  padding-top: 0;
+}
+
+/* 当前数据源必须一眼可辨：真实后端=绿色，合成数据=橙色，字号不低于 --font-sm。 */
+.source-badge {
+  font-size: var(--font-sm);
+  font-weight: 700;
 }
 
 .toolbar :deep(.el-form-item) {
-  margin-bottom: var(--space-2);
-  margin-right: var(--space-4);
+  margin-bottom: var(--space-1);
+  margin-right: var(--space-3);
 }
 
 .toolbar :deep(.el-checkbox) {
-  margin-right: var(--space-3);
+  margin-right: var(--space-2);
 }
 
 .legend {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-3);
-  margin: var(--space-1) 0 var(--space-2);
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-1) 0 0;
   font-size: var(--font-xs);
+  line-height: 16px;
   color: var(--text-2);
 }
 
@@ -657,7 +731,7 @@ onMounted(() => {
     var(--text-3)
   );
   color: var(--text);
-  font-size: 10px;
+  font-size: var(--font-2xs);
   font-style: normal;
 }
 
@@ -718,7 +792,7 @@ onMounted(() => {
 
 .muted {
   color: var(--text-3);
-  font-size: 11px;
+  font-size: var(--font-xs);
 }
 
 .issue-list {

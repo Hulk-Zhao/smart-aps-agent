@@ -1,5 +1,3 @@
-import ResourceGanttView from '@/views/gantt/ResourceGanttView.vue'
-
 import type { RouterModule } from '../types'
 
 /**
@@ -16,7 +14,7 @@ export const ganttModule: RouterModule = {
     {
       path: 'gantt',
       name: 'gantt',
-      component: ResourceGanttView,
+      component: () => import('@/views/gantt/ResourceGanttView.vue'),
       meta: {
         title: '甘特图',
         description: '资源为行的只读甘特，支持时间轴缩放、横向滚动、行头冻结与悬浮 tooltip。'

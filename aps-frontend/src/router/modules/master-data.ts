@@ -1,8 +1,4 @@
 import RouteGroup from '@/layouts/RouteGroup.vue'
-import BomListView from '@/views/master-data/boms/BomListView.vue'
-import CalendarListView from '@/views/master-data/calendars/CalendarListView.vue'
-import MaterialListView from '@/views/master-data/materials/MaterialListView.vue'
-import ResourceListView from '@/views/master-data/resources/ResourceListView.vue'
 
 import type { RouterModule } from '../types'
 
@@ -29,25 +25,25 @@ export const masterDataModule: RouterModule = {
         {
           path: 'materials',
           name: 'master-data-materials',
-          component: MaterialListView,
+          component: () => import('@/views/master-data/materials/MaterialListView.vue'),
           meta: { title: '物料管理' }
         },
         {
           path: 'boms',
           name: 'master-data-boms',
-          component: BomListView,
+          component: () => import('@/views/master-data/boms/BomListView.vue'),
           meta: { title: 'BOM 管理' }
         },
         {
           path: 'resources',
           name: 'master-data-resources',
-          component: ResourceListView,
+          component: () => import('@/views/master-data/resources/ResourceListView.vue'),
           meta: { title: '资源管理' }
         },
         {
           path: 'calendars',
           name: 'master-data-calendars',
-          component: CalendarListView,
+          component: () => import('@/views/master-data/calendars/CalendarListView.vue'),
           meta: { title: '日历管理' }
         }
       ]

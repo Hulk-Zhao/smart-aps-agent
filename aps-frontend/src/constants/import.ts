@@ -130,7 +130,9 @@ export const IMPORT_ENTITY_OPTIONS: ImportEntityOption[] = [
       { key: 'qty', header: '数量', required: true },
       { key: 'dueDate', header: '交期', required: true },
       { key: 'priority', header: '优先级' },
-      { key: 'remark', header: '备注' }
+      { key: 'remark', header: '备注' },
+      // C48：第 8 列可选；旧 7 列模板仍兼容，缺列按“未指定客户”处理。
+      { key: 'customerCode', header: '客户编码' }
     ]
   },
   {

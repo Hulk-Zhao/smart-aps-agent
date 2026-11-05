@@ -11,10 +11,14 @@ import {
   rollbackPlanVersion
 } from '@/api/plans'
 import { ApiError } from '@/api/http'
+import { listSandboxes } from '@/api/orders'
+import { listResources } from '@/api/resources'
 import { DataTable, StatusTag } from '@/components/common'
 import { ERROR_CODES } from '@/constants/error-codes'
 import { DEFAULT_SANDBOX_ID } from '@/constants/defaults'
 import type { PlanAction, PlanDetail, PlanListItem } from '@/types/plans'
+import type { Sandbox } from '@/types/orders'
+import type { Resource } from '@/types/resources'
 
 const PLAN_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
@@ -30,6 +34,8 @@ const listLoading = ref(false)
 const listError = ref('')
 
 const planIdInput = ref('')
+const sandboxMap = ref<Record<string, Sandbox>>({})
+const resourceMap = ref<Record<string, Resource>>({})
 const detail = ref<PlanDetail | null>(null)
 const loading = ref(false)
 const loadError = ref('')
@@ -70,21 +76,67 @@ function nowText(): string {
 
 function formatDateTime(value?: string | null): string {
   if (!value) {
-    return '—'
+    return '无'
   }
   const parsed = dayjs(value)
-  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : '—'
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : '无'
 }
 
 function displayOrDash(value?: string | null): string {
-  return value && String(value).trim() ? String(value) : '—'
+  return value && String(value).trim() ? String(value) : '无'
+}
+
+function sandboxLabel(id?: string | null): string {
+  if (!id) {
+    return '无'
+  }
+  return sandboxMap.value[id]?.name || '场景名称待接入'
+}
+
+function rollbackSourceLabel(planId?: string | null): string {
+  if (!planId) {
+    return '无'
+  }
+  const matched = listRows.value.find((item) => item.planId === planId)
+  return matched ? matched.planNo : '历史版本'
+}
+
+function resourceLabel(id?: string | null): string {
+  if (!id) {
+    return '无'
+  }
+  const resource = resourceMap.value[id]
+  return resource ? `${resource.name}（${resource.code}）` : '资源名称待接入'
+}
+
+async function loadLookups() {
+  try {
+    const page = await listSandboxes({ page: 1, size: 100 })
+    const map: Record<string, Sandbox> = {}
+    page.items.forEach((item) => {
+      map[item.id] = item
+    })
+    sandboxMap.value = map
+  } catch {
+    // 场景名称不可用时退回业务提示
+  }
+  try {
+    const page = await listResources({ page: 1, size: 200, sort: 'code,asc' })
+    const map: Record<string, Resource> = {}
+    page.items.forEach((item) => {
+      map[item.id] = item
+    })
+    resourceMap.value = map
+  } catch {
+    // 资源名称不可用时退回业务提示
+  }
 }
 
 async function loadPlans() {
   const id = sandboxId.value.trim()
   listError.value = ''
   if (!PLAN_ID_PATTERN.test(id)) {
-    listError.value = 'sandboxId 必须是 UUID 形态'
+    listError.value = '排产场景无效，请重新选择'
     listRows.value = []
     listTotal.value = 0
     return
@@ -148,11 +200,11 @@ async function loadDetail(planId = planIdInput.value) {
   loadError.value = ''
   conflictMessage.value = ''
   if (!id) {
-    loadError.value = '请输入 planId（plan_version.id，UUID）'
+    loadError.value = '请选择要加载的计划版本'
     return
   }
   if (!PLAN_ID_PATTERN.test(id)) {
-    loadError.value = 'planId 必须是 UUID 形态（C24 要求 planId = plan_version.id）'
+    loadError.value = '计划标识格式不正确，请从版本列表重新选择'
     detail.value = null
     return
   }
@@ -253,6 +305,7 @@ async function onRollback() {
 }
 
 onMounted(() => {
+  void loadLookups()
   void loadPlans()
   const queryPlanId = route.query.planId
   const initial = typeof queryPlanId === 'string' ? queryPlanId : ''
@@ -271,8 +324,8 @@ onMounted(() => {
       type="info"
       :closable="false"
       show-icon
-      title="列表排序固定为 published_at DESC, id DESC（契约 C24 §24.6 第 8 条，不提供 sort）"
-      description="PostgreSQL 默认 NULLS FIRST，未发布的 DRAFT/REVIEW 排在最前，其后才是按发布时间倒序的已发布版本。审批人 approver 与发布人 publishedBy 是两个独立字段，approver 为空时显示「—」，不用 publishedBy 顶替。"
+      title="列表固定按发布时间倒序排列，不支持自定义排序"
+      description="未发布的草稿/审核中版本排在最前，其后是按发布时间倒序的已发布版本。审批人与发布人是两个独立字段；审批人为空时显示「无」，不用发布人顶替。"
       class="hint-alert"
     />
 
@@ -280,13 +333,28 @@ onMounted(() => {
       <template #header>
         <div class="card-header">
           <span>版本列表</span>
-          <span class="muted">GET /api/v1/plans?sandboxId=&page=&size=</span>
+          <span class="muted">按排产场景筛选计划版本</span>
         </div>
       </template>
       <div class="form-row list-toolbar">
-        <el-input
+        <el-select
+          v-if="Object.keys(sandboxMap).length"
           v-model="sandboxId"
-          placeholder="sandboxId（UUID）"
+          filterable
+          placeholder="选择排产场景"
+          class="plan-id-input"
+        >
+          <el-option
+            v-for="item in Object.values(sandboxMap)"
+            :key="item.id"
+            :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
+        <el-input
+          v-else
+          v-model="sandboxId"
+          placeholder="场景 ID"
           clearable
           class="plan-id-input"
           @keyup.enter="searchPlans"
@@ -318,15 +386,15 @@ onMounted(() => {
         <el-table-column label="发布时间" min-width="170">
           <template #default="{ row }">{{ formatDateTime(row.publishedAt) }}</template>
         </el-table-column>
-        <el-table-column label="发布人 publishedBy" min-width="250">
+        <el-table-column label="发布人" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">{{ displayOrDash(row.publishedBy) }}</template>
         </el-table-column>
-        <el-table-column label="审批人 approver" min-width="150">
+        <el-table-column label="审批人" min-width="150">
           <template #default="{ row }">{{ displayOrDash(row.approver) }}</template>
         </el-table-column>
         <el-table-column prop="taskCount" label="快照任务数" width="110" />
-        <el-table-column label="回滚来源" min-width="250">
-          <template #default="{ row }">{{ displayOrDash(row.rollbackOf) }}</template>
+        <el-table-column label="回滚来源" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ rollbackSourceLabel(row.rollbackOf) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
@@ -339,9 +407,24 @@ onMounted(() => {
     <el-card shadow="never" class="section">
       <template #header>加载版本</template>
       <div class="form-row">
-        <el-input
+        <el-select
+          v-if="listRows.length"
           v-model="planIdInput"
-          placeholder="planId（plan_version.id，UUID）"
+          filterable
+          placeholder="选择计划版本"
+          class="plan-id-input"
+        >
+          <el-option
+            v-for="row in listRows"
+            :key="row.planId"
+            :label="`${row.planNo}（v${row.version}）`"
+            :value="row.planId"
+          />
+        </el-select>
+        <el-input
+          v-else
+          v-model="planIdInput"
+          placeholder="计划标识"
           clearable
           class="plan-id-input"
           @keyup.enter="loadDetail()"
@@ -349,7 +432,7 @@ onMounted(() => {
         <el-button type="primary" :loading="loading" @click="loadDetail()">加载详情</el-button>
       </div>
       <p class="field-hint">
-        planId 必须是 plan_version.id；场景 ID 不能充当 planId（C24 第 6 条）。
+        请从当前场景的计划版本中选择；场景不能直接作为计划标识（C24 第 6 条）。
       </p>
     </el-card>
 
@@ -383,12 +466,11 @@ onMounted(() => {
         <el-descriptions-item label="状态">
           <StatusTag enum-key="planStatus" :value="currentAction.status" />
         </el-descriptions-item>
-        <el-descriptions-item label="planId">{{ currentAction.planId }}</el-descriptions-item>
-        <el-descriptions-item label="场景 sandboxId">
-          {{ displayOrDash(currentAction.sandboxId) }}
+        <el-descriptions-item label="排产场景">
+          {{ sandboxLabel(currentAction.sandboxId) }}
         </el-descriptions-item>
         <el-descriptions-item label="快照任务数">
-          {{ currentAction.taskCount ?? '—' }}
+          {{ currentAction.taskCount ?? '无' }}
         </el-descriptions-item>
         <el-descriptions-item label="发布时间">
           {{ formatDateTime(currentAction.publishedAt) }}
@@ -429,7 +511,7 @@ onMounted(() => {
         row-key="taskId"
         empty-text="该版本尚无快照（未发布时 snapshot 为空）"
       >
-        <el-table-column prop="taskId" label="taskId" width="110" />
+        <el-table-column prop="taskId" label="任务 ID" width="110" />
         <el-table-column prop="orderNo" label="订单号" min-width="140" />
         <el-table-column prop="operationIndex" label="工序号" width="90" />
         <el-table-column label="任务状态" width="110">
@@ -443,7 +525,9 @@ onMounted(() => {
         <el-table-column label="结束" min-width="170">
           <template #default="{ row }">{{ formatDateTime(row.endTime) }}</template>
         </el-table-column>
-        <el-table-column prop="resourceId" label="资源" min-width="250" />
+        <el-table-column label="资源" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ resourceLabel(row.resourceId) }}</template>
+        </el-table-column>
         <el-table-column prop="qty" label="数量" width="100" />
       </DataTable>
     </el-card>
@@ -537,11 +621,10 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="版本号" width="90">
           <template #default="{ row }">{{
-            row.version === null ? '—' : `v${row.version}`
+            row.version === null ? '无' : `v${row.version}`
           }}</template>
         </el-table-column>
-        <el-table-column prop="planId" label="planId" min-width="250" />
-        <el-table-column prop="message" label="说明" min-width="280" />
+        <el-table-column prop="message" label="说明" min-width="320" />
       </DataTable>
     </el-card>
   </div>

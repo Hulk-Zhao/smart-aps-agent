@@ -93,3 +93,16 @@
 2. **不设该变量**：`mvn -B -o -pl aps-service -am test` 报 **208 / 0 / 0 / 25**。这**不是通过**——25 条会查库、验唯一约束/外键/422 映射的用例根本没跑（surefire 跳过原因原文：`Environment variable [APS_TEST_DB_ENABLED] does not exist`；`MrpRealDbIntegrationTest` 为 `TestAbortedException`）。
 3. **设置变量**（另需 `APS_TEST_DB_URL` / `APS_TEST_DB_NAME` / `SPRING_DATASOURCE_*`，且库内已按序应用 `db/migration` V1–V7）：**208 / 0 / 0 / 0**，九个类逐类 `skipped=0`——`BomActivationConcurrency 1`、`Bom 4`、`Calendar 5`、`CrossDomainReference 4`、`Mrp 1`、`ProductionPersistenceConfig 2`、`Resource 6`、`RoutingSortDefault 1`、`ScheduleOverlap 1`（合计 25）。
 4. **规则**：任何“测试全绿”的结论都必须写明是否开启 `APS_TEST_DB_ENABLED`；**制品级终验一律要求 `Skipped=0`**。默认跑出的 25 skipped 只能记作“未验真库”，不得写成“通过”，也不得以 `-DskipTests`、删测试或 `@Disabled` 凑绿。
+
+## 构建事故：交付基线制品被覆盖（2026-11-05 04:38:24）
+
+- 时间：`2026-11-05 04:38:24`
+- 事故类型：**交付基线制品被覆盖（不可恢复）**
+- 触发动作：`mvn -o -pl aps-admin -am package -DskipTests`
+- 被覆盖物：`aps-admin/target/aps-admin-0.1.0-SNAPSHOT.jar`（182,013,745 B / SHA256 `0EC320ED…B92518` / 264 条目 / `BOOT-INF/lib` 112 / 迁移 9）
+- 覆盖物：182,220,338 B / SHA256 `5AACC76D…A412CDA79` / 267 条目 / `BOOT-INF/lib` 113 / 迁移 11
+- 备份情况：**无备份**。`.jar.original`（33,999 B）为本次 `repackage` 产生的 thin jar 副产物，不构成备份。
+- 可恢复性：本地 `D:\tools` 按字节数与 SHA 搜索 **0 命中**，不可恢复；如 CI/制品库有归档方可取回。
+- 影响面：本轮唯一一颗经接管验收的制品灭失；复验结论本身仍有效（其验证的是含修复的新包行为）。
+- 处理人 / 后续：由制品车道按“接受新基线 → 重建 → 重新接管 18085”处理。
+- **教训一句话**：`package` 会写标准名交付制品，“只在 `target/` 下构建”不等于“没有影响既有制品”；构建前必须确认标准名文件是否为验收件，并先备份 + 记录 SHA。

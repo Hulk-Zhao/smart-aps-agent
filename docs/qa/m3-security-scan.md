@@ -1,9 +1,12 @@
 # M3-QA-03 安全扫描与加固核查
 
+> 两项 / 已取证 2 / 无法取证 0：依赖漏洞已取得实数（OSV 精确版本匹配，trivy 因漏洞库下载失败未产出，见第七节）；DSL 沙箱与 Prompt 注入已完成代码级核对（见第八节）。
+
 - 核查日期：2026-11-04
 - 范围：`aps-service` / `aps-web` / `aps-infrastructure` / `aps-admin`（`aps-frontend/**` 不在本次范围）
 - 方式：只读静态核查 + 交叉比对既有实测结论；**未启动/停止 18085，未触碰 `aps_local`，未执行 `package`/整仓 `verify`，未做 git 写操作**
 - 说明：除“跨租户导出”为前置任务已实测外，其余均为静态核查，未做实例复现
+- 本次补测：依赖漏洞实数（第七节，OSV API 在线查询）、DSL/注入代码核对（第八节）；仍未启动任何实例、未建库
 
 ## 结论
 
@@ -14,6 +17,8 @@
 | P2 | 8 | 残余租户谓词缺口 4 处、审计脱敏边界、错误信息透传、Swagger 匿名、sort/限流一致性 |
 
 **总体判断**：当前代码的“多租户隔离”对 MyBatis Mapper 有效，但**所有不走 Mapper 的查询必须逐条自证**；鉴权层只做了“认证”，**授权几乎未落地面**；默认部署配置（off/dev + 公开默认密钥）比代码缺陷更危险。
+
+**本次补测（第七/八节）**：依赖面实测 **Critical 7 / High 25 / Medium 26 / Low 10**（14 个构件，详见 [m3-dependency-scan-detail.md](m3-dependency-scan-detail.md)）；其中 6 条 Tomcat Critical 有修复版本，1 条 Spring Critical（`CVE-2026-47884`）在 6.1.x 无修复。DSL 为纯白名单声明式解析（无脚本/反射/文件/网络/任意方法调用），四个 `/agent/*` 端点仍为 501 占位，**当前不存在 Prompt 注入面**。
 
 ---
 
@@ -213,11 +218,206 @@ curl -s -H "Authorization: Bearer $TENANT_A_JWT" \
 4. **P1-2 / P1-4**：登录租户解析落地方案；STOMP 订阅加 JWT 与任务归属校验。
    - 理由：前者决定多租户是否可用，后者是**完全匿名**的跨任务数据通道。
 
-> 其余 P2 建议随对应模块迭代修复；本次未改动任何业务代码（遵守“只写 `docs/qa/m3-security-scan.md`”及“不碰他人文件”边界）。
+> 其余 P2 建议随对应模块迭代修复；本次未改动任何业务代码，仅修改本报告并新增《依赖扫描明细》（遵守“不改 Java / pom / yaml / 迁移”边界）。
 
 ---
 
-## 七、后续跟进与已知限制（W5 修复批追加）
+## 七、依赖漏洞扫描（补测）
+
+### 7.1 结论
+
+- 实测计数：**Critical 7 / High 25 / Medium 26 / Low 10**，合计 68 条、68 个不同 CVE、影响 14 个第三方构件（逐条与按构件明细见 [m3-dependency-scan-detail.md](m3-dependency-scan-detail.md)）。
+- 修复版本可得的 Critical/High：25 条（Tomcat 17 条、Jackson 8 条，均可按 7.4 的版本线覆盖）；**7 条无同分支修复版本**（6 High + 1 Critical）。
+- 唯一需要立即决策的 Critical 组：`tomcat-embed-core 10.1.42`（6 条 Critical 全部指向它，修复版本 10.1.55/10.1.58）。**按纪律未改 pom，见 7.4。**
+
+### 7.2 工具、对象与覆盖
+
+| 项 | 实测结果 |
+| --- | --- |
+| 本机工具 | `java` / `mvn` / `trivy` / `grype` 全部未安装（`Get-Command` 均 NOT FOUND） |
+| trivy 尝试 | Docker `aquasec/trivy:latest`（**trivy 0.76.1**）可运行；漏洞库 OCI artifact `mirror.gcr.io/aquasec/trivy-db:2` 下载速率约几十 KB/s（默认 5 分钟与 `--timeout 25m` 两次尝试、含本地代理重试），均未能在可接受时间内完成（首轮 5 分钟超时、次轮手动终止）→ **未产出任何 trivy 结果，未使用估算值** |
+| 实际取值工具 | **OSV.dev REST API**：`POST /v1/querybatch`（Maven ecosystem，`groupId:artifactId` + 精确版本）+ `GET /v1/vulns/{id}`；查询日期 2026-11-04；汇总脚本 PowerShell 5.1。严重度优先取 GHSA `database_specific.severity`（`MODERATE`→Medium），缺失时按 CVSS v3.1 向量计算 |
+| 扫描对象 A | `aps-admin/target/aps-admin-0.1.0-SNAPSHOT.jar`：**thin jar**，30,035 B、30 个条目、`BOOT-INF/lib` 为 0 → 本身不含第三方构件 |
+| 扫描对象 B | `aps-admin/target/aps-admin-0.1.0-SNAPSHOT-repackaged.jar`：181,892,052 B、264 个条目、112 个 `BOOT-INF/lib`（9 个本仓模块 + 103 个第三方） |
+| 依赖树 | `aps-admin/target/w5cp-filtered.txt`（`mvn dependency:build-classpath` 产物）共 110 个模块 |
+| 交叉核对 | 依赖树中 8 个 `spring-boot-starter-*` 为空壳描述符、未打进 fat jar，已一并查询（0 命中）；jar 内多出 `spring-boot-jarmode-tools:3.3.13`，单独查询 0 命中 → **第三方构件覆盖 103/103** |
+
+> 说明：本机无 JDK/Maven，未重新生成依赖树；以既有 classpath 产物 + fat jar 实际条目双向核对。未修改 pom / 依赖版本，未启动实例，未建库。
+
+### 7.3 Critical / High 逐条明细（32 条）
+
+| 等级 | CVE | 受影响构件 | 当前版本 | 是否有修复版本 |
+| --- | --- | --- | --- | --- |
+| Critical | CVE-2026-41293 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| Critical | CVE-2026-43512 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| Critical | CVE-2026-43515 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| Critical | CVE-2026-47884 | `org.springframework:spring-webmvc` | 6.1.21 | **无**（OSV 仅给出 7.0.9；6.2.19 仍 `last_affected`） |
+| Critical | CVE-2026-65182 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.58 |
+| Critical | CVE-2026-65905 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.58 |
+| Critical | CVE-2026-68525 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.58 |
+| High | CVE-2025-41249 | `org.springframework:spring-core` | 6.1.21 | **无**（OSV 未给出 fixed） |
+| High | CVE-2025-48989 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.44 |
+| High | CVE-2025-52520 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.43 |
+| High | CVE-2025-53506 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.43 |
+| High | CVE-2025-55752 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.45 |
+| High | CVE-2026-24734 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.52 |
+| High | CVE-2026-24880 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.52 |
+| High | CVE-2026-34483 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.54 |
+| High | CVE-2026-34487 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.54 |
+| High | CVE-2026-40973 | `org.springframework.boot:spring-boot` | 3.3.13 | **无**（OSV 未给出 fixed） |
+| High | CVE-2026-40984 | `io.micrometer:micrometer-core` | 1.13.15 | **无**（OSV 未给出 fixed） |
+| High | CVE-2026-41284 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| High | CVE-2026-41842 | `org.springframework:spring-webmvc` | 6.1.21 | **无**（OSV 未给出 fixed） |
+| High | CVE-2026-41845 | `org.springframework:spring-webmvc` | 6.1.21 | **无**（OSV 未给出 fixed） |
+| High | CVE-2026-41850 | `org.springframework:spring-expression` | 6.1.21 | **无**（OSV 未给出 fixed） |
+| High | CVE-2026-42498 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| High | CVE-2026-43513 | `org.apache.tomcat.embed:tomcat-embed-core` | 10.1.42 | 有：10.1.55 |
+| High | CVE-2026-54512 | `com.fasterxml.jackson.core:jackson-databind` | 2.17.3 | 有：2.18.8 |
+| High | CVE-2026-54513 | `com.fasterxml.jackson.core:jackson-databind` | 2.17.3 | 有：2.18.8 |
+| High | CVE-2026-68494 | `com.fasterxml.jackson.core:jackson-core` | 2.17.3 | 有：2.18.8 |
+| High | CVE-2026-68497 | `com.fasterxml.jackson.core:jackson-databind` | 2.17.3 | 有：2.18.10 |
+| High | CVE-2026-89407 | `com.fasterxml.jackson.core:jackson-core` | 2.17.3 | 有：2.18.11 |
+| High | CVE-2026-89425 | `com.fasterxml.jackson.core:jackson-core` | 2.17.3 | 有：2.18.11 |
+| High | CVE-2026-91776 | `com.fasterxml.jackson.core:jackson-databind` | 2.17.3 | 有：2.18.11 |
+| High | CVE-2026-91777 | `com.fasterxml.jackson.core:jackson-databind` | 2.17.3 | 有：2.18.11 |
+
+Medium 26 条 / Low 10 条不在此展开，完整清单见明细文档；“无修复版本”共 23 条（含上表 7 条 C/H），其中大部分为 Spring 6.1.21 的 `last_affected` 收口，需人工核对上游公告。
+
+### 7.4 处置建议（**未执行任何改动，等待授权**）
+
+1. **Tomcat（必须升级）**：`tomcat-embed-core 10.1.42 → 10.1.58`（Spring Boot 3.3.13 下需显式覆盖 `tomcat.version`）。可同时闭合 6 条 Critical 与全部 11 条 Tomcat High，是本次唯一“建议立即做”的升级。**按任务纪律未改 pom，停在这里。**
+2. **Jackson**：`2.17.3 → 2.18.11`（闭合 8 条 High + 8 条 Medium；注意 Boot 管理版本需一并覆盖 `jackson-bom`）。
+3. **Spring Framework 6.1.21**：13 条 spring-webmvc + 3 条 spring-expression + 2 条 spring-core 中，多条无同分支修复；其中 `CVE-2026-47884` 仅 7.0.9 修复（跨大版本）。是否使用 `XsltView` 未做可达性验证，**本次不建议动**。
+4. **可低风险跟进**：`poi-ooxml 5.3.0→5.4.0`（Medium）、`logback 1.5.18→1.5.34`（1 Medium + 3 Low）、`commons-lang3 3.14.0→3.18.0`（Medium）、`log4j-api 2.23.1→2.25.5`（Medium）。
+
+---
+
+## 八、DSL 沙箱与 Prompt 注入核对
+
+### 8.1 逐条结论
+
+| 检查项 | 结论 | 关键证据 |
+| --- | --- | --- |
+| 是否只支持受限语法 | **是**：固定键白名单 + 规则枚举 + 参数白名单，无反射、无脚本执行、无文件/网络访问、无任意方法调用 | `ConstraintDslParser.java:50,52-60,131-140,230-236,265-271,315-325`；仅引入 SnakeYAML 与 JDK 集合（`:3-14`） |
+| YAML 反序列化安全 | **是**：`SafeConstructor` + 关闭重复键；`!!` 任意对象标签被拒绝 | `ConstraintDslParser.java:352-359`；`ConstraintDslParserTest.java:162` |
+| 循环 / 递归 | **不存在**：语法不支持循环/函数/引用；解析为单遍线性遍历 | `ConstraintDslParser.java:174-178` |
+| 资源耗尽上限 | **有**：文本 256KB、嵌套 32、别名 50、重复键拒绝、恰好 8 条规则、权重 0..100 且合计 100 | `:41,46,48,105-109,352-359,179-193,281-284` |
+| 非法输入错误码是否为 `42200` | **写路径是**（HTTP 422 + `42200`，消息内嵌 `422xx` 明细）；**预检 `/validate` 不是**（HTTP 200 + `42201..42207` 报告） | `ConstraintDslService.java:231-237`；`ErrorCode.java:42`；`DslErrorCodes.java:11-41`；`ConstraintDslController.java:46-51` |
+| Agent 四端点现状 | **全部 501 占位**（实际路径前缀 `/api/v1`）：`/agent/events`、`/agent/nl-to-dsl`、`/agent/explain/{taskId}`、`/agent/whatif` | `SolveContractController.java:32-75`；`ContractSupport.java:19-21`；`ErrorCode.java:57`；`RestExceptionHandler.java:53` |
+| 是否把用户输入拼进提示/日志/外部调用 | **Agent 无**（请求体 `JsonNode body` 从未读取，方法直接抛异常）；**DSL 有弱日志拼接面**（见 8.3） | `SolveContractController.java:35,48,73`；全仓无 `body.` 使用 |
+| Prompt 注入面 | **当前无注入面，因为未实现外部 LLM 调用** | 全仓主代码无 `ScriptEngine/Groovy/SpEL/HttpClient/OkHttp/RestTemplate/WebClient`；配置中无任何 LLM 端点/密钥 |
+
+### 8.2 求值路径与“为什么不构成注入”
+
+- **解析**：只接受 `version` + `constraints`（或兼容 `constraint` 单对象）两张顶层键；规则键只允许 `id/code/ruleCode/rule_code/type/weight/enabled/params`（`ConstraintDslParser.java:50-53`）。任何未知键/未知规则编码直接 `42202`，不做“尽力而为”的解释。
+- **类型与取值**：`type` 只能是 `SOFT`（`:243-248`）；参数键必须命中该规则的白名单（`:315-319`）；参数值只能是标量（`:321-325`）；`unit/metric/groupBy` 值必须命中枚举（`:55-60,326-331`）；`maxPriority` 必须是整数（`:332-336`）。
+- **编译**：只生成固定记录 `ConstraintSpec(code, "SOFT", weight, false, "OPTIMIZATION", params)`，无代码生成、无反射调用（`ConstraintDslCompiler.java:34-41`）。
+- **落库与求值**：`compiled_spec` 仅入库/回显（`ConstraintDslService.java:87-98,247-260`）；求解器权重仍来自**策略规则**（`ScheduleService.java:222-275`）。即 **DSL 文本不会进入求解器执行**，当前不存在“用户文本被解释执行”的路径。
+- **无执行能力旁证**：全仓主代码检索 `ScriptEngine|Nashorn|GroovyShell|SpelExpression|ProcessBuilder|Runtime.getRuntime|HttpClient|OkHttp|RestTemplate|WebClient` 仅命中 `Runtime.getRuntime().availableProcessors()`（`TimefoldSolverAdapter.java:319`，用于线程数），与 DSL 无关。
+- **求解侧资源控制**（与 DSL 无直接关系，作为“资源耗尽”旁证）：单例锁 + 等待上限 `TimefoldSolverAdapter.java:93,133-141`，求解时限 `:171,275`。
+
+### 8.3 残余风险（非阻断，建议后续处理）
+
+1. **DSL 错误消息把用户键名拼进日志**：`42202/42204` 的 message 含用户提供的键名/编码（`ConstraintDslParser.java:232-233,268-269,316-318`），经 `ConstraintDslService.java:231-237` 包装为 `42200` 后由 `RestExceptionHandler.java:66,70` **回显客户端并写 WARN 日志**。该内容无法执行（已白名单），但可伪造日志行/污染日志检索。建议对 message 中的用户片段做长度截断与换行转义。
+2. **4xx 信息回显**：与既有 P2-6 同源，DSL 校验失败会把内部字段路径返回客户端（`RestExceptionHandler.java:66`）。
+3. **未来实现 `nl-to-dsl` 的前置约束**：当前请求体完全未使用；一旦接入外部 LLM，必须保留“LLM 输出只能进 `ConstraintDslParser` 校验、不得直接执行”的边界，并对输入长度/字符集设限，提示词与用户内容分离。
+
+### 8.4 明确声明
+
+**当前 `/agent/*` 无注入面，因为未实现任何外部 LLM 调用**：四个端点均直接抛出 `NOT_IMPLEMENTED(50100)`，请求体不落日志、不参与任何下游调用；全仓主代码无 HTTP 客户端、无 LLM SDK、无提示词模板。
+
+---
+
+## 九、后续跟进与已知限制（W5 修复批 + M3-QA-03 补测）
 
 - **通用导入权限粒度**：`POST /api/v1/{entity}/import`（含 `/import/{entity}` 别名）与导入任务取消端点统一使用 `MD_WRITE`，因此订单导入、策略导入同样只需 `MD_WRITE`。M3 接受该粗粒度口径；按 `entity` 动态鉴权（订单→`OM_WRITE`、策略→`SS_WRITE`）留作后续迭代。
 - **读端点未加读权限**：`GET /api/v1/{entity}/export` 等读端点未加 `*_READ` 权限注解，与本报告已有结论“读端点普遍无接口权限”一致，不改变现状。
+- **依赖数值口径（仍无法取证的部分）**：trivy 0.76.1 已具备运行条件，但漏洞库 `mirror.gcr.io/aquasec/trivy-db:2` 下载速率过低（约几十 KB/s），两次尝试（默认 5 分钟与 `--timeout 25m`）均未能在可接受时间内完成，**无法给出 trivy 口径的计数**；第七节数值来自 OSV.dev API 精确版本匹配（2026-11-04），不是 trivy 扫描结果。仍未取证：容器基础镜像 OS 层（JDK/系统包）CVE、23 条 `fixed` 缺失条目的上游公告核实、以及各 `CVE` 在本应用中的**可达性**（如 `XsltView`、`poi-ooxml` 是否实际使用）。
+- **DSL/注入核对限制**：第八节为静态代码核对；未启动实例做 DSL 运行时 fuzz、解析耗时/内存实测；`/agent/*` 返回 501 由代码路径确定（`ContractSupport.notImplemented()` → `BizException` → HTTP 501 映射），**未做实例验证**。
+- **本次未发生的变更**：本次任务未修改任何 `pom.xml` / Java / `application.yml` / 数据库迁移（工作区中既有的源码改动来自其他批次，非本次产生）；未启动或停止任何实例（含 18085）；未创建/删除数据库；本次任务净变化仅 `docs/qa/m3-security-scan.md` 与新增 `docs/qa/m3-dependency-scan-detail.md`；未 commit / push。
+- **升级待授权**：7.4 的 Tomcat 升级（10.1.42 → 10.1.58）**未执行**，需另行批准后再动 pom。
+
+---
+
+## 十、依赖升级复扫与残余豁免（2026-11-05，授权后执行）
+
+### 10.1 变更范围与制品
+
+- 仅改动根 `pom.xml` 的 `<properties>`：`tomcat.version`、`jackson-bom.version`；未改 `dependencyManagement` 结构、未新增 `<dependency>`、未升 Spring Boot 自身（仍 3.3.13）。
+- **Tomcat 版本偏差说明**：授权的 `10.1.58` 在 Maven Central **未发布**（`tomcat-embed-*` 的 10.1 线由 10.1.57 直接跳到 10.1.59；首次以 10.1.58 构建在 `aps-service` 依赖解析阶段失败）。故取同分支、最近的 **10.1.59**，语义与授权目标一致（仅补丁号右移一位）。
+- Jackson 按授权升至 **2.18.11**（`jackson-bom.version` 覆盖，annotations/core/databind/dataformat/datatype/module 全部随之统一）。
+- 新制品（标准名 `aps-admin/target/aps-admin-0.1.0-SNAPSHOT.jar`）核验：
+
+| 指标 | 值 |
+| --- | --- |
+| 字节数 | 182,013,745 |
+| SHA256 | `0EC320ED387EF81CA71AE8E3FCA00D1B6C5727F91618C47C7706CDF479B92518` |
+| 条目数 | 264 |
+| `BOOT-INF/lib` | 112（与升级前同数：Tomcat/Jackson 均为替换而非新增构件） |
+| 迁移脚本 | 9（V1–V7、V11、V12；V8/V9/V10 不存在） |
+
+### 10.2 漏洞计数对照
+
+口径与第七节一致：OSV.dev `querybatch` 精确版本匹配，对象为 `aps-admin` runtime 依赖树的 110 个第三方模块（`mvn -pl aps-admin dependency:list -DincludeScope=runtime`），不含 `com.hengce.aps` 内部模块。
+
+| 等级 | 第七节记录（2026-11-04） | 同日复扫旧坐标（10.1.42 / 2.17.3） | 升级后（10.1.59 / 2.18.11） |
+| --- | ---: | ---: | ---: |
+| Critical | 7 | 8 | **1** |
+| High | 25 | 26 | **6** |
+| Medium | 26 | 27 | **16** |
+| Low | 10 | 10 | **7** |
+| 合计 | 68 | 71 | **30** |
+
+> 同日复扫比第七节多 1 Critical / 1 High / 1 Medium，差异来源是 OSV 漏洞库在 11-04→11-05 间的数据更新（Tomcat 条目重评级/新增），不是代码变化；为消除口径漂移，本节的“升级前”以**同日复扫旧坐标**为准。升级共消除 41 条：Tomcat 25 条（7 Critical + 12 High + 6 Medium/Low）+ Jackson 16 条（8 High + 8 Medium/Low）；剩余 30 条全部为平台侧（spring-*、logback、poi 等）既有条目，与升级前一致。
+
+### 10.3 剩余 Critical / High 明细（7 条）
+
+| # | 等级 | CVE | 构件 | 当前版本 | 同分支修复线 | 影响 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Critical | CVE-2026-47884 | spring-webmvc | 6.1.21 | 无（仅 7.0.9） | `XsltView` 未显式 view name 时可用于 SSRF/任意 XSLT 执行 |
+| 2 | High | CVE-2025-41249 | spring-core | 6.1.21 | 6.2.11（6.1.x last_affected） | 泛型父类/接口方法上的注解检测可被绕过（Spring Security 方法级授权场景） |
+| 3 | High | CVE-2026-40973 | spring-boot | 3.3.13 | 3.3.19（本次授权不含 Boot 升级） | `ApplicationTemp` 目录可预测，需本地攻击者配合持久化 session |
+| 4 | High | CVE-2026-40984 | micrometer-core | 1.13.15 | 1.15.12 / 1.16.6 | HTTP server 指标采集路径可被构造请求拖慢 |
+| 5 | High | CVE-2026-41842 | spring-webmvc | 6.1.21 | 6.2.19 / 7.0.8 | 版本化静态资源解析可被构造请求拖慢 |
+| 6 | High | CVE-2026-41845 | spring-webmvc | 6.1.21 | 6.2.19 / 7.0.8 | `JavaScriptUtils.javaScriptEscape` 输出可致 XSS |
+| 7 | High | CVE-2026-41850 | spring-expression | 6.1.21 | 6.2.19 / 7.0.8 | 用户可控 SpEL 表达式可致算法复杂度 DoS |
+
+### 10.4 同分支无修复条目的豁免结论
+
+判定依据：`aps-web` / `aps-service` / `aps-admin` 主代码静态核对（全仓检索 `XsltView`、`ViewResolver`、`Thymeleaf`、`JavaScriptUtils`、`SpelExpressionParser`/`ExpressionParser`、`@EnableMethodSecurity`、`addResourceHandlers`、`VersionResourceResolver`、`session.persistent`、`actuator`，均**零命中**）；`WebMvcConfiguration` 仅实现 `addInterceptors`（[WebMvcConfiguration.java](../../aps-web/src/main/java/com/hengce/aps/web/config/WebMvcConfiguration.java#L52)），无视图/资源解析器注册。
+
+| CVE | 构件 | 影响面 | 可达性（判断依据） | 为什么不能修 | 补偿措施 |
+| --- | --- | --- | --- | --- | --- |
+| CVE-2026-47884 | spring-webmvc 6.1.21 | `XsltView` 路径限制缺陷 → SSRF/XSLT 执行 | **不可达**：全仓无 `XsltView`/`ViewResolver`/XSLT 模板；控制器均为 `@RestController`，仅返回 JSON | 上游只在 Spring 7.0.9 修复，6.1.x / 6.2.x 均标 last_affected；升级需跨到 Boot 4.x 线，超出本次授权范围 | 不引入任何 View 技术；网关/WAF 拦截异常 `Accept` 与 XSLT 载荷；随 Boot 4 升级闭合 |
+| CVE-2025-41249 | spring-core 6.1.21 | 注解检测绕过（方法级授权） | **不可达**：依赖树仅有 `spring-security-crypto`，无 `spring-security-config/web`；无 `@EnableMethodSecurity`；鉴权走自研 `ApiSecurityFilter` + `PermissionInterceptor` | 6.1.x 无修复（last_affected 6.1.22），修复线 6.2.11 需升 Boot 3.4+，本次未授权 | 自研鉴权不解析泛型继承链上的注解；角色/权限来自 `PermissionInterceptor` 显式注解；升级 Boot 3.4/3.5 时闭合 |
+| CVE-2026-40973 | spring-boot 3.3.13 | `ApplicationTemp` 目录可预测（本地攻击 + 持久化会话） | **不可达**：`application*.yml` 无 `server.servlet.session.persistent`（默认 false），无 Spring Session；未使用 `ApplicationTemp` 能力 | 3.3.x 修复线为 3.3.19，本次授权明确“不升 Spring Boot 自身”；跨线升级会牵动整个依赖树 | 部署机限制 JVM 运行用户与 `java.io.tmpdir` 权限；不启用持久化 session；单机部署无不可信本地用户 |
+| CVE-2026-40984 | micrometer-core 1.13.15 | HTTP server instrumentation DoS | **不可达**：依赖树无 `spring-boot-starter-actuator`（`actuator` 仅出现在根 POM `dependencyManagement`，非实际依赖）；无 actuator 自动配置 → 无 `WebMvcMetricsFilter`；`micrometer-core` 仅作为 observation 传递依赖存在 | 1.13.x 无修复（last_affected 1.13.15），修复线 1.15.12/1.16.6 需升 Boot 3.4/4.0 | 不引入 actuator / 指标导出；保留 `RateLimitFilter`；Tomcat 默认 header/参数上限未放开 |
+| CVE-2026-41842 | spring-webmvc 6.1.21 | 版本化静态资源 DoS | **不可达**：无 `addResourceHandlers`/`VersionResourceResolver`/`ResourceUrlProvider`；`aps-admin` 无 `static/` 目录，后端不托管静态资源 | 6.1.x 无修复（last_affected 6.1.21），修复线 6.2.19/7.0.8 需升 Boot 3.4/4.0 | 静态资源由前端独立服务托管；后端仅 `/api/v1/**` 与文档端点 |
+| CVE-2026-41845 | spring-webmvc 6.1.21 | `JavaScriptUtils.javaScriptEscape` XSS | **不可达**：无视图渲染、无模板引擎、无 `JavaScriptUtils` 调用 | 同上（6.1.x 无修复线） | API 仅输出 JSON；前端 Vue 侧自行转义，后端不产出 HTML/JS 片段 |
+| CVE-2026-41850 | spring-expression 6.1.21 | 用户可控 SpEL 算法复杂度 DoS | **不可达**：全仓无 `SpelExpressionParser`/`EvaluationContext` 直接调用；无 Thymeleaf / Spring Security 表达式求值；DSL 为白名单声明式解析（第八节） | 6.1.x 无修复（last_affected 6.1.21），修复线 6.2.19/7.0.8 | 不接受任何 SpEL 输入；约束 DSL 仅走 `ConstraintDslParser` 白名单校验 |
+
+**结论**：7 条 Critical/High 全部落在“同分支无修复 + 当前代码路径不可达”的组合内，均给出补偿措施；`M3-QA-03` 的“无高危、无 Critical”可按“已消 41 条 + 7 条有据豁免”结案。彻底闭合需要一次跨线升级（Spring Boot 3.4/3.5 或 4.x），建议作为下一里程碑的独立任务。
+
+### 10.5 残余 Medium / Low（23 条，供跟踪）
+
+| 构件 | Critical | High | Medium | Low |
+| --- | ---: | ---: | ---: | ---: |
+| spring-webmvc | 1 | 2 | 8 | 2 |
+| spring-expression | 0 | 1 | 1 | 1 |
+| spring-core | 0 | 1 | 0 | 1 |
+| spring-boot | 0 | 1 | 0 | 0 |
+| spring-boot-autoconfigure | 0 | 0 | 1 | 0 |
+| spring-websocket | 0 | 0 | 2 | 0 |
+| micrometer-core | 0 | 1 | 0 | 0 |
+| logback-core | 0 | 0 | 1 | 3 |
+| commons-lang3 | 0 | 0 | 1 | 0 |
+| log4j-api | 0 | 0 | 1 | 0 |
+| poi-ooxml | 0 | 0 | 1 | 0 |
+
+> Medium/Low 逐条明细见本轮原始数据 `D:\tools\_aps-fatbuild\dep-upgrade\osv-after-deps.json`（工作区外）。
+
+### 10.6 方法与限制
+
+- 本次复扫仍为 OSV.dev API 精确版本匹配；**trivy 口径依旧不可用**（漏洞库下载限制未解除），故不含容器 OS 层 CVE。
+- 可达性结论为静态核对 + 依赖树核对，**未做带 PoC 的运行时验证**；若后续引入视图技术、actuator 或 SpEL，需重新判定第 1/4/7 条。
+- 本次变更净范围：`pom.xml`（2 个版本属性）、新 fat jar 与其备份、`docs/qa/m3-security-scan.md` 本节；未 commit / push。

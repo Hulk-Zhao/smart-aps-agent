@@ -1,13 +1,13 @@
-# mfg-aps-platform（衡策 APS 开源版）产品需求文档（PRD）
+# mfg-aps-platform（智能APS 开源版）产品需求文档（PRD）
 
 | 项目 | 内容 |
 |---|---|
-| 产品名称 | mfg-aps-platform（衡策 APS 开源版） |
+| 产品名称 | mfg-aps-platform（智能APS 开源版） |
 | 文档版本 | v1.0-draft |
 | 文档状态 | 待评审 |
 | 编写日期 | 2026-11-03 |
 | 目标读者 | 产品、研发、测试、架构、实施、开源社区贡献者 |
-| 关联文档 | 《开源 APS 竞品调研报告》《mfg-agent-platform 集成规范》《衡策 APS 部署手册》 |
+| 关联文档 | 《开源 APS 竞品调研报告》《mfg-agent-platform 集成规范》《智能APS 部署手册》 |
 
 **修订历史**
 
@@ -23,7 +23,7 @@
 
 ### 1.1 产品定位
 
-**mfg-aps-platform（衡策 APS 开源版）** 是一款面向**离散制造行业**（优先覆盖 SMT 电子组装、储能 PACK 两大场景）的**开源智能排产系统**，定位为 ERP 与 MES 之间的「计划大脑」。
+**mfg-aps-platform（智能APS 开源版）** 是一款面向**离散制造行业**（优先覆盖 SMT 电子组装、储能 PACK 两大场景）的**开源智能排产系统**，定位为 ERP 与 MES 之间的「计划大脑」。
 
 产品采用 **「传统约束求解算法 + 大模型 Agent 异常重排」双引擎架构**：
 - **算法引擎**：以 Timefold Solver（Apache-2.0）为默认求解器，预留 Google OR-Tools CP-SAT 适配接口，负责大规模、多约束、可解释的生产排程求解；
@@ -53,7 +53,7 @@
 
 ### 1.4 差异化竞争力（对标竞品）
 
-| 能力 | Timefold | frePPLe | JVS-APS | **衡策 APS** |
+| 能力 | Timefold | frePPLe | JVS-APS | **智能APS** |
 |---|---|---|---|---|
 | 开源协议 | Apache-2.0 | MIT（新版）/ AGPLv3（旧版） | 需确认 | **Apache-2.0** |
 | 开箱即用 | ✗ | ✓ | ✓ | **✓** |

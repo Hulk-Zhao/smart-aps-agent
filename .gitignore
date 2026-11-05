@@ -43,6 +43,11 @@ tmp/
 
 # 本地临时产物
 .screenshots/
+.scratch/
+
+# Maven 诊断产物（effective-pom dump）
+/aps-service/aps-service-effective-pom
+/aps-service/aps-service-effective-pom.xml
 
 # 运行期取证产物（classpath dump 等）
 /aps-admin/cp.txt

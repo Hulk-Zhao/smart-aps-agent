@@ -1,15 +1,20 @@
 package com.hengce.aps.solver.timefold.constraint;
 
+import com.hengce.aps.common.util.SoftWeightConfigHasher;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 8 条核心软约束的权重注册表（权重之和必须为 100，与策略规则 C19 一致）。
  *
- * <p>求解适配器（{@code TimefoldSolverAdapter}）由其他流维护，因此这里以进程内静态配置的方式
- * 暴露权重：求解编排在调用 {@code SolverEngine.solve} 前调用 {@link #activate(Map)}，
- * 求解结束后调用 {@link #disable()}。默认关闭，保证 M1 仅硬约束的既有行为不被改变。</p>
+ * <p><b>线程私有（A0 去静态化）</b>：权重存放在 {@link ThreadLocal}，只对“执行
+ * {@code activate → SolverFactory.create/buildSolver → solve → disable}”的同一线程可见。
+ * 同一 JVM 内多个求解任务并行时，各自激活自己的权重，不会再出现“A 任务 disable 掉
+ * B 任务权重”的跨任务污染。</p>
+ *
+ * <p>线程池复用约束：{@link #disable()} 必须执行 {@code remove()} 而不是写入空映射，
+ * 否则线程归还池后仍残留上一任务的映射；同时禁止使用 {@code InheritableThreadLocal}，
+ * 避免父线程权重被自动继承到工作线程。</p>
  */
 public final class SoftConstraintWeights {
 
@@ -20,7 +25,11 @@ public final class SoftConstraintWeights {
 
     private static final Map<String, Integer> DEFAULTS;
 
-    private static final AtomicReference<Map<String, Integer>> ACTIVE = new AtomicReference<>(Map.of());
+    /**
+     * 当前线程生效的权重；未激活时为默认空映射。禁止改为 InheritableThreadLocal。
+     */
+    private static final ThreadLocal<Map<String, Integer>> ACTIVE =
+            ThreadLocal.withInitial(Map::of);
 
     static {
         Map<String, Integer> defaults = new LinkedHashMap<>();
@@ -78,10 +87,12 @@ public final class SoftConstraintWeights {
     }
 
     /**
-     * 关闭软约束，恢复 M1 的仅硬约束行为。
+     * 关闭当前线程的软约束，恢复 M1 的仅硬约束行为。
+     *
+     * <p>使用 {@code remove()} 清空线程局部变量，避免线程池复用后把上一任务的权重带给下一个任务。</p>
      */
     public static void disable() {
-        ACTIVE.set(Map.of());
+        ACTIVE.remove();
     }
 
     /**
@@ -92,6 +103,17 @@ public final class SoftConstraintWeights {
      */
     public static int weightOf(String code) {
         return ACTIVE.get().getOrDefault(code, 0);
+    }
+
+    /**
+     * 软权重配置的稳定哈希（A0）：基准报告用它绑定“当时用的是哪套权重”。
+     *
+     * @param weights 权重映射，{@code null} 视同空映射（仅硬约束）
+     * @return {@code sha256:<hex>}
+     * @see SoftWeightConfigHasher
+     */
+    public static String configHash(Map<String, Integer> weights) {
+        return SoftWeightConfigHasher.hash(weights);
     }
 
     /**

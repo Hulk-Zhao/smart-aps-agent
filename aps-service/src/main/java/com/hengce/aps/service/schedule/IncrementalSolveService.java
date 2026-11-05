@@ -104,22 +104,43 @@ public class IncrementalSolveService {
                             + "按场景级判定拒绝增量重排");
         }
 
+        // 基准求解任务固化的订单范围就是“当前版本”范围；显式与缺省两条路径都不得越出该范围。
+        Set<String> baseScope = new LinkedHashSet<>(baseOrderNos(base.configJson()));
+        if (baseScope.isEmpty()) {
+            // 收紧（2026-11-05）：无范围基准若回退场景全量，会静默把其他客户/批次的订单纳入重排，
+            // 造成事后难以辨认的数据污染；拒绝只让用户补做一次全量求解。
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "基准求解任务 solveTaskId=" + base.solveTaskId()
+                            + " 未记录订单范围，无法做范围的增量重排；请先对该场景执行一次全量求解");
+        }
         List<TaskRef> sceneTasks = incrementalRepository.findTasks(tenantId, sandboxId);
+        List<TaskRef> scopedTasks = sceneTasks.stream()
+                .filter(task -> task.orderNo() != null && baseScope.contains(task.orderNo()))
+                .toList();
         Set<Long> affected = new HashSet<>();
         if (request.getAffectedTaskIds() != null && !request.getAffectedTaskIds().isEmpty()) {
             Set<Long> sceneIds = new HashSet<>();
             for (TaskRef task : sceneTasks) {
                 sceneIds.add(task.taskId());
             }
+            Set<Long> scopedIds = new HashSet<>();
+            for (TaskRef task : scopedTasks) {
+                scopedIds.add(task.taskId());
+            }
             for (Long taskId : request.getAffectedTaskIds()) {
                 if (taskId == null || !sceneIds.contains(taskId)) {
                     throw new BizException(ErrorCode.NOT_FOUND,
                             "affectedTaskIds 中存在不属于该场景的任务: " + taskId);
                 }
+                if (!scopedIds.contains(taskId)) {
+                    throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                            "affectedTaskIds 中存在不属于基准求解范围的订单任务: " + taskId
+                                    + "（基准求解范围: " + baseScope + "）");
+                }
                 affected.add(taskId);
             }
         } else {
-            for (TaskRef task : sceneTasks) {
+            for (TaskRef task : scopedTasks) {
                 affected.add(task.taskId());
             }
         }
@@ -144,7 +165,8 @@ public class IncrementalSolveService {
             }
         }
         if (orderNos.isEmpty()) {
-            throw new BizException(ErrorCode.BAD_REQUEST, "没有可增量重排的订单（相关任务均已冻结/锁定）");
+            throw new BizException(ErrorCode.BAD_REQUEST,
+                    "没有可增量重排的订单（基准求解范围内无任务，或相关任务均已冻结/锁定）");
         }
 
         List<String> orders = List.copyOf(orderNos);
@@ -181,11 +203,39 @@ public class IncrementalSolveService {
                 ? "增量重排：baseSolveTaskId=" + base.solveTaskId()
                 : request.getReason().trim();
         UUID planId = incrementalRepository.insertDraftVersion(tenantId, sandboxId, planNo, versionNo,
-                reason, AuditContext.getCurrentUserId());
+                reason, AuditContext.getCurrentUserId(), orders);
 
-        SolveTaskDetail detail = lifecycleService.submit(solveRequest, idempotencyKey);
+        SolveTaskDetail detail = lifecycleService.submit(solveRequest, idempotencyKey, false);
         return new IncrementalSolveResult(planId, detail.taskId(), base.solveTaskId(), sandboxId,
                 orders.size(), orders, skippedLockedTasks, detail);
+    }
+
+    /**
+     * 读取基准求解任务提交时固化的订单范围。
+     *
+     * <p>旧数据可能没有 {@code orderNos}（仅存引擎参数），此时返回空集合，调用方必须拒绝
+     * 增量重排（{@code 42200}），不得回退“场景全量”：无范围的全量重排会静默把同场景其他
+     * 客户/批次的订单纳入，造成事后难以辨认的数据污染。</p>
+     *
+     * @param configJson 基准求解配置 JSON
+     * @return 订单号列表；缺失时为空
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> baseOrderNos(String configJson) {
+        if (configJson == null || configJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            Map<String, Object> config = OBJECT_MAPPER.readValue(configJson, MAP_TYPE);
+            Object orderNos = config.get("orderNos");
+            if (!(orderNos instanceof List<?> list)) {
+                return List.of();
+            }
+            return list.stream().filter(value -> value instanceof String)
+                    .map(value -> (String) value).toList();
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("基准求解配置解析失败", exception);
+        }
     }
 
     @SuppressWarnings("unchecked")

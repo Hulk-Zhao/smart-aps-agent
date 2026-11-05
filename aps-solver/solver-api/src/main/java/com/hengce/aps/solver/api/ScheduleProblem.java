@@ -1,5 +1,6 @@
 package com.hengce.aps.solver.api;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -20,6 +21,10 @@ import java.util.UUID;
  * @param frozenAssignments 冻结/锁定的既有分配
  * @param constraints 约束快照
  * @param setupMatrix 换型矩阵条目（C12 §17.3，可空；空表示全部使用静态换型工时）
+ * @param baseTime 求解基准时间（UTC，已向下取整到小时）；为空表示由求解器取当前时刻。
+ *                 装配侧与求解器必须使用同一个基准时间，否则日历展开窗口与开始时间候选
+ *                 会各自漂移，同一份数据在不同真实时刻得不到同一题面
+ * @param initialAssignments 预热初始解（既有排产结果，普通分配而非冻结）；为空表示冷启动
  */
 public record ScheduleProblem(
         String tenantId,
@@ -31,7 +36,9 @@ public record ScheduleProblem(
         List<SchedulingResource> resources,
         List<TaskAssignment> frozenAssignments,
         List<ConstraintSpec> constraints,
-        List<SetupMatrixEntry> setupMatrix
+        List<SetupMatrixEntry> setupMatrix,
+        LocalDateTime baseTime,
+        List<TaskAssignment> initialAssignments
 ) {
 
     /**
@@ -50,6 +57,8 @@ public record ScheduleProblem(
                 frozenAssignments == null ? List.of() : frozenAssignments);
         constraints = List.copyOf(constraints == null ? List.of() : constraints);
         setupMatrix = List.copyOf(setupMatrix == null ? List.of() : setupMatrix);
+        initialAssignments = List.copyOf(
+                initialAssignments == null ? List.of() : initialAssignments);
     }
 
     /**
@@ -76,6 +85,35 @@ public record ScheduleProblem(
             List<TaskAssignment> frozenAssignments,
             List<ConstraintSpec> constraints) {
         this(tenantId, sandboxId, solveTaskId, strategyId, direction, orders, resources,
-                frozenAssignments, constraints, List.of());
+                frozenAssignments, constraints, List.of(), null, List.of());
+    }
+
+    /**
+     * 兼容不含基准时间与预热初始解的调用方。
+     *
+     * @param tenantId 租户标识
+     * @param sandboxId 场景标识
+     * @param solveTaskId 求解任务主键
+     * @param strategyId 排产策略标识
+     * @param direction 排产方向
+     * @param orders 订单快照
+     * @param resources 资源快照
+     * @param frozenAssignments 冻结分配
+     * @param constraints 约束快照
+     * @param setupMatrix 换型矩阵
+     */
+    public ScheduleProblem(
+            String tenantId,
+            UUID sandboxId,
+            Long solveTaskId,
+            UUID strategyId,
+            String direction,
+            List<SchedulingOrder> orders,
+            List<SchedulingResource> resources,
+            List<TaskAssignment> frozenAssignments,
+            List<ConstraintSpec> constraints,
+            List<SetupMatrixEntry> setupMatrix) {
+        this(tenantId, sandboxId, solveTaskId, strategyId, direction, orders, resources,
+                frozenAssignments, constraints, setupMatrix, null, List.of());
     }
 }

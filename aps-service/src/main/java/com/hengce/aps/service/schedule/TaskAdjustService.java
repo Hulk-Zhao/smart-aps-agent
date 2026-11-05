@@ -16,6 +16,7 @@ import com.hengce.aps.infrastructure.persistence.schedule.TaskAdjustmentReposito
 import com.hengce.aps.infrastructure.persistence.schedule.TaskAdjustmentRepository.AdjustTaskRow;
 import com.hengce.aps.infrastructure.persistence.schedule.TaskAdjustmentRepository.AdjustmentRow;
 import com.hengce.aps.solver.api.AvailabilityWindow;
+import com.hengce.aps.service.audit.AuditValues;
 import com.hengce.aps.service.masterdata.order.FreezeLock;
 import com.hengce.aps.service.masterdata.order.OrderView;
 import java.math.BigDecimal;
@@ -661,7 +662,7 @@ public class TaskAdjustService {
     private void writeAudit(UUID tenantId, long taskId, Map<String, Object> before,
                             Map<String, Object> after) {
         auditLogRepository.record(tenantId, AUDIT_TASK_ADJUSTED, AUDIT_RESOURCE_TASK,
-                String.valueOf(taskId), before, after);
+                String.valueOf(taskId), AuditValues.redact(before), AuditValues.redact(after));
     }
 
     private static Map<String, Object> auditBefore(Map<String, Object> snapshot) {

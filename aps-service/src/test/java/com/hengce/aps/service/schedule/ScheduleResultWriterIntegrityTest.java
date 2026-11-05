@@ -22,6 +22,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -97,7 +98,7 @@ class ScheduleResultWriterIntegrityTest {
         assertEquals(3, outcome.taskCount());
         assertTrue(repository.deleteCalled);
         assertEquals(3, repository.insertedRows.size());
-        assertEquals(1, repository.lastDeletedOrderIds.size());
+        assertEquals(1, repository.lastDeletedOperations.size());
     }
 
     private static ScheduleProblemAssembler.AssembledProblem assembled(int operationCount) {
@@ -143,7 +144,7 @@ class ScheduleResultWriterIntegrityTest {
 
         private boolean deleteCalled;
 
-        private List<UUID> lastDeletedOrderIds = List.of();
+        private Map<UUID, Set<Integer>> lastDeletedOperations = Map.of();
 
         private final List<NewTaskRow> insertedRows = new ArrayList<>();
 
@@ -164,9 +165,10 @@ class ScheduleResultWriterIntegrityTest {
         }
 
         @Override
-        public List<Long> deleteTasks(UUID tenantId, UUID sandboxId, List<UUID> orderIds) {
+        public List<Long> deleteTasks(UUID tenantId, UUID sandboxId,
+                                      Map<UUID, Set<Integer>> operationIndicesByOrder) {
             deleteCalled = true;
-            lastDeletedOrderIds = orderIds;
+            lastDeletedOperations = operationIndicesByOrder;
             existingTaskRowCount = 0;
             return List.of();
         }

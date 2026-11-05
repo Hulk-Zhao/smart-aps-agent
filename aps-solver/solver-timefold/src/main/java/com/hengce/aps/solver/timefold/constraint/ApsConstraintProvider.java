@@ -35,6 +35,7 @@ public class ApsConstraintProvider implements ConstraintProvider {
                 resourceNoOverlap(factory),
                 calendarAvailability(factory),
                 operationDependency(factory),
+                orderNotBefore(factory),
                 frozenResource(factory),
                 frozenStartTime(factory),
                 primaryResourceOnly(factory),
@@ -115,6 +116,23 @@ public class ApsConstraintProvider implements ConstraintProvider {
                 .filter(ConstraintPredicates::dependencyViolated)
                 .penalize(HardSoftScore.ONE_HARD)
                 .asConstraint(ConstraintCodes.OPERATION_DEPENDENCY);
+    }
+
+    /**
+     * 跨窗口下界（硬约束）：订单窗口内工序不得早于该订单窗口外 FROZEN 任务的最大结束时间。
+     *
+     * <p>{@code findFrozenTasks} 按求解窗口过滤后，落在窗口起点之前的 FROZEN 前序不在题面里，
+     * 工序依赖边自然也不存在；若再不给订单级下界，求解器会把后续工序排到已完工工序之前，
+     * 得到“0hard 但现实不可执行”的计划。下界由装配侧按订单计算并写入任务。</p>
+     *
+     * @param factory 约束工厂
+     * @return 约束
+     */
+    private Constraint orderNotBefore(ConstraintFactory factory) {
+        return factory.forEach(TaskPlan.class)
+                .filter(ConstraintPredicates::orderNotBeforeViolated)
+                .penalize(HardSoftScore.ONE_HARD)
+                .asConstraint(ConstraintCodes.ORDER_NOT_BEFORE);
     }
 
     private Constraint frozenResource(ConstraintFactory factory) {

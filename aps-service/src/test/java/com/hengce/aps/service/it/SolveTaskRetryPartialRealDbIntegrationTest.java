@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -18,9 +20,13 @@ import com.hengce.aps.service.schedule.EngineRoute;
 import com.hengce.aps.service.schedule.ScheduleProblemAssembler;
 import com.hengce.aps.service.schedule.ScheduleResultWriter;
 import com.hengce.aps.service.schedule.ScheduleService;
+import com.hengce.aps.service.schedule.SolvePostProcessorChain;
 import com.hengce.aps.service.schedule.SolveProgressPublisher;
 import com.hengce.aps.service.schedule.SolveRetryClock;
 import com.hengce.aps.service.schedule.SolveTaskLifecycleService;
+import com.hengce.aps.service.mrp.MrpBlockingChecker;
+import com.hengce.aps.service.mrp.MrpBlockingDecision;
+import com.hengce.aps.service.mrp.MrpStatus;
 import com.hengce.aps.service.strategy.StrategyService;
 import com.hengce.aps.solver.api.ScheduleProblem;
 import com.hengce.aps.solver.api.ScheduleSolution;
@@ -240,8 +246,12 @@ class SolveTaskRetryPartialRealDbIntegrationTest {
     private SolveTaskLifecycleService lifecycle(ScheduleService scheduleService, int maxRetries,
                                                 long delaySeconds) {
         SolveProgressPublisher publisher = new SolveProgressPublisher(event -> { }, "none");
+        MrpBlockingChecker mrpBlockingChecker = mock(MrpBlockingChecker.class);
+        when(mrpBlockingChecker.evaluate(any(), anyList(), anyBoolean()))
+                .thenReturn(new MrpBlockingDecision(false, MrpStatus.FULL, List.of(), "通过"));
         return new SolveTaskLifecycleService(solveTaskRepository, justificationRepository, scheduleService,
-                publisher, true, true, 8, 0, retryClock, maxRetries, delaySeconds);
+                publisher, mrpBlockingChecker, true, true, 8, 0, retryClock, maxRetries, delaySeconds,
+                new SolvePostProcessorChain(List.of()), 0, 0);
     }
 
     private static SolveConfig config(int timeoutSeconds) {
@@ -306,11 +316,11 @@ class SolveTaskRetryPartialRealDbIntegrationTest {
     }
 
     /**
-     * 可注入重试时钟：记录退避时长但立即返回，测试不真实休眠 30 秒。
+     * 可注入重试时钟：记录退避时长但不阻塞调用线程，测试不真实休眠 30 秒。
      */
     private static final class RecordingRetryClock implements SolveRetryClock {
 
-        private final List<Duration> waits = new ArrayList<>();
+        private final List<Duration> waits = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         private final AtomicLong ticks = new AtomicLong();
 
@@ -320,11 +330,17 @@ class SolveTaskRetryPartialRealDbIntegrationTest {
         }
 
         @Override
-        public synchronized void await(Duration delay) {
+        public void await(Duration delay) {
             waits.add(delay);
         }
 
-        synchronized List<Duration> waits() {
+        @Override
+        public java.util.concurrent.Future<?> schedule(Duration delay, Runnable task) {
+            waits.add(delay);
+            return java.util.concurrent.CompletableFuture.runAsync(task);
+        }
+
+        List<Duration> waits() {
             return List.copyOf(waits);
         }
     }

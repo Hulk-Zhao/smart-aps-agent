@@ -172,6 +172,8 @@ public class OrderGanttService {
      * @param orderId 订单主键（任务跳转锚点）
      * @param orderNo 订单号
      * @param materialCode 产品物料编码
+     * @param materialName 产品物料名称（C50），可空
+     * @param materialSpec 产品物料规格（C50），可空
      * @param productFamily 产品族（物料分类编码），可空
      * @param dueDate 交期日
      * @param dueDateLine 交期线（交期日 23:59:59 UTC），可空
@@ -183,7 +185,8 @@ public class OrderGanttService {
      * @param lateTaskCount 晚交任务数
      * @param tasks 任务条
      */
-    public record OrderLane(UUID orderId, String orderNo, String materialCode, String productFamily,
+    public record OrderLane(UUID orderId, String orderNo, String materialCode, String materialName,
+                            String materialSpec, String productFamily,
                             LocalDate dueDate, OffsetDateTime dueDateLine, String priority,
                             String freezeStatus, String orderStatus, boolean late, Long lateMinutes,
                             int lateTaskCount, List<OrderTaskView> tasks) {
@@ -225,6 +228,8 @@ public class OrderGanttService {
         private final UUID orderId;
         private final String orderNo;
         private final String materialCode;
+        private final String materialName;
+        private final String materialSpec;
         private final String productFamily;
         private final LocalDate dueDate;
         private final OffsetDateTime dueDateLine;
@@ -237,6 +242,8 @@ public class OrderGanttService {
             this.orderId = row.orderId();
             this.orderNo = row.orderNo();
             this.materialCode = row.materialCode();
+            this.materialName = row.materialName();
+            this.materialSpec = row.materialSpec();
             this.productFamily = row.productFamily();
             this.dueDate = row.dueDate();
             this.dueDateLine = dueDateLine;
@@ -262,7 +269,8 @@ public class OrderGanttService {
             }
             Long lateMinutes = latestLateEnd == null ? null
                     : Duration.between(dueDateLine, latestLateEnd).toMinutes();
-            return new OrderLane(orderId, orderNo, materialCode, productFamily, dueDate, dueDateLine,
+            return new OrderLane(orderId, orderNo, materialCode, materialName, materialSpec,
+                    productFamily, dueDate, dueDateLine,
                     priority, freezeStatus, orderStatus, lateCount > 0, lateMinutes, lateCount,
                     List.copyOf(tasks));
         }

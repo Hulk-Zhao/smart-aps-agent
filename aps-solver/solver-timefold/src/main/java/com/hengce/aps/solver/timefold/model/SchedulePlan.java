@@ -45,6 +45,12 @@ public class SchedulePlan {
     private boolean setupMatrixFallback;
 
     /**
+     * 初始解是否来自既有排产结果（全部任务都已初始化）；为 {@code true} 时跳过构造启发式，
+     * 直接进入局部搜索改进。
+     */
+    private boolean warmStarted;
+
+    /**
      * Timefold 克隆所需的无参构造。
      */
     public SchedulePlan() {
@@ -145,5 +151,13 @@ public class SchedulePlan {
 
     public void setSetupMatrixFallback(boolean setupMatrixFallback) {
         this.setupMatrixFallback = setupMatrixFallback;
+    }
+
+    public boolean isWarmStarted() {
+        return warmStarted;
+    }
+
+    public void setWarmStarted(boolean warmStarted) {
+        this.warmStarted = warmStarted;
     }
 }

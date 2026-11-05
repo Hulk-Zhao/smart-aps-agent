@@ -6,6 +6,8 @@ import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository;
 import com.hengce.aps.infrastructure.persistence.schedule.ScheduleRepository.NewTaskRow;
 import com.hengce.aps.solver.api.ConstraintJustification;
 import com.hengce.aps.solver.api.ScheduleSolution;
+import com.hengce.aps.solver.api.SchedulingOperation;
+import com.hengce.aps.solver.api.SchedulingOrder;
 import com.hengce.aps.solver.api.TaskAssignment;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -17,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -105,14 +108,23 @@ public class ScheduleResultWriter {
                 }
             }
         }
-        if (persisted.size() != expectedTaskCount) {
+        if (persisted.size() != assembled.expectedWriteTaskCount()) {
             throw new BusinessException(ErrorCode.INTERNAL_ERROR,
-                    "求解结果落库口径不一致，拒绝落库（未删除既有任务）：期望 " + expectedTaskCount
+                    "求解结果落库口径不一致，拒绝落库（未删除既有任务）：期望 " + assembled.expectedWriteTaskCount()
                             + " 个任务，可写入 " + persisted.size() + " 个");
         }
 
+        // 只删本次题面内的工序；窗口外已完工的 FROZEN 工序不在题面内，必须保留真实执行记录。
+        Map<UUID, Set<Integer>> solveOperations = new LinkedHashMap<>();
+        for (SchedulingOrder order : assembled.problem().orders()) {
+            if (writeOrderIds.contains(order.orderId())) {
+                solveOperations.put(order.orderId(), order.operations().stream()
+                        .map(SchedulingOperation::operationIndex)
+                        .collect(Collectors.toSet()));
+            }
+        }
         List<Long> removedTaskIds = scheduleRepository.deleteTasks(
-                assembled.tenantId(), assembled.sandboxId(), assembled.orderIds());
+                assembled.tenantId(), assembled.sandboxId(), solveOperations);
         scheduleRepository.deleteJustificationsByTaskIds(removedTaskIds);
 
         Map<String, Long> taskIdByLabel = new LinkedHashMap<>();

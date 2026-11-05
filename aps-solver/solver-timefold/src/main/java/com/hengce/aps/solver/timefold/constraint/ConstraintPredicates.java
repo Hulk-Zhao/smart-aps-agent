@@ -111,6 +111,21 @@ final class ConstraintPredicates {
     }
 
     /**
+     * 跨窗口下界是否被违反：任务开始时间早于订单窗口外 FROZEN 任务的最大结束时间。
+     *
+     * <p>{@code orderNotBefore} 为空或任务未排位时不判定，不产生惩罚。</p>
+     *
+     * @param task 任务
+     * @return {@code true} 表示违反
+     */
+    static boolean orderNotBeforeViolated(TaskPlan task) {
+        LocalDateTime lowerBound = task.getOrderNotBefore();
+        return lowerBound != null
+                && task.getStartTime() != null
+                && task.getStartTime().isBefore(lowerBound);
+    }
+
+    /**
      * 有效锁类型（C21 §24.3 优先级 {@code FROZEN > lockType > frozen:boolean}）。
      *
      * <p>{@link TaskPlan} 没有任务状态字段，{@code lockType=FROZEN} 即 FROZEN 层；

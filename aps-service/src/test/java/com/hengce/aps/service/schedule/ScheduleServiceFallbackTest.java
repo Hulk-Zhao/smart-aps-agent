@@ -159,6 +159,46 @@ class ScheduleServiceFallbackTest {
         assertEquals(EngineRoute.DETAIL_LOCK_CONTENTION, outcome.metrics().get("engineFallbackDetail"));
     }
 
+    /**
+     * A0：适配器把“槽位等待超时”写进 {@code metrics.extra.engineFallbackReason=SOLVER_BUSY} 时，
+     * 上层必须原样保留该原因（不可重试），而不是退回 ENGINE_ERROR 触发 30 秒重试。
+     */
+    @Test
+    void solverBusyReasonFromAdapterShouldBePreservedAndNotRetried() {
+        Map<String, Object> busyMetrics = new java.util.LinkedHashMap<>();
+        busyMetrics.put("engine", "timefold");
+        busyMetrics.put("engineFallbackReason", com.hengce.aps.solver.api.task.SolveRetryReasons.SOLVER_BUSY);
+        ScheduleSolution busy = new ScheduleSolution("FAILED", null, List.of(), List.of(),
+                new SolveMetrics(500L, "TERMINATED", List.of(), 0, busyMetrics),
+                "求解器正被其他求解任务占用，等待 5 秒仍未释放，请稍后重试");
+        SolverAdapter adapter = new SolverAdapter() {
+            @Override
+            public SolverEngine engine() {
+                return SolverEngine.TIMEFOLD;
+            }
+
+            @Override
+            public ScheduleSolution solve(ScheduleProblem problem, SolveConfig config) {
+                return busy;
+            }
+        };
+        ScheduleService service = new ScheduleService(List.of(adapter), assembler, resultWriter,
+                solveTaskRepository, strategyService, true, false);
+        when(assembler.assemble(any(), any())).thenReturn(assembled());
+
+        ScheduleService.ExecutionOutcome outcome = service.execute(request(), 7L, config(60),
+                adapter, () -> false, (phase, progress, bestScore) -> { });
+
+        assertEquals(SolveTaskStatus.FAILED, outcome.status());
+        assertEquals(com.hengce.aps.solver.api.task.SolveRetryReasons.SOLVER_BUSY,
+                outcome.metrics().get("engineFallbackReason"));
+        assertEquals(EngineRoute.DETAIL_LOCK_CONTENTION, outcome.metrics().get("engineFallbackDetail"));
+        assertEquals(Boolean.TRUE, outcome.metrics().get("engineFallback"));
+        assertFalse(com.hengce.aps.solver.api.task.SolveRetryReasons.isRetryable(
+                com.hengce.aps.solver.api.task.SolveRetryReasons.SOLVER_BUSY),
+                "SOLVER_BUSY 不得进入重试白名单");
+    }
+
     @Test
     void integrityGuardFailureShouldNotBeMarkedAsEngineFallback() {
         ScheduleSolution complete = new ScheduleSolution("SOLVED",

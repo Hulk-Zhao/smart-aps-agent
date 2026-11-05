@@ -9,8 +9,10 @@ import com.hengce.aps.solver.api.ScheduleSolution;
 import com.hengce.aps.solver.api.SchedulingOperation;
 import com.hengce.aps.solver.api.SchedulingOrder;
 import com.hengce.aps.solver.api.SchedulingResource;
+import com.hengce.aps.solver.api.ScorePoint;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.TaskAssignment;
+import com.hengce.aps.solver.api.task.SolveRetryReasons;
 import com.hengce.aps.solver.timefold.constraint.ApsConstraintProvider;
 import com.hengce.aps.solver.timefold.constraint.ConstraintJustifications;
 import com.hengce.aps.solver.timefold.constraint.SoftConstraintWeights;
@@ -41,21 +43,20 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * 软约束权重的并发隔离取证（真跑 Timefold，不用 mock）。
  *
- * <p>{@link SoftConstraintWeights} 是进程级静态注册表（{@code AtomicReference}），本身没有请求作用域；
- * 隔离依赖 {@link TimefoldSolverAdapter} 的进程级静态锁 {@code SOLVER_LOCK}，其临界区覆盖
- * {@code activate → SolverFactory.create → buildSolver → solve → disable} 全段。
- * 本用例用两个<b>同时</b>发出的求解请求（各自独立的适配器实例、不同权重）验证：</p>
+ * <p>A0 起 {@link SoftConstraintWeights} 改为线程私有（{@link ThreadLocal}），
+ * {@link TimefoldSolverAdapter} 不再使用进程级 {@code SOLVER_LOCK}，改用实例级公平信号量
+ * 控制求解槽位。本用例用同一实例上<b>同时</b>发出的两个求解请求（不同权重）验证：</p>
  * <ul>
  *   <li>两个同时发出的请求分别等于各自单跑应得的分数（短题面，分数确定）；</li>
- *   <li>先发起 3 秒长求解、200ms 后再发一个不带权重的快求解时，后者被静态锁挡住约 2.8 秒，
- *       且 {@code softScore==0}（没有沾到对方的权重）；</li>
- *   <li>争用时后到方拿到明确的 {@code FAILED} + “求解器正被其他求解任务占用”，而不是静默算歪；</li>
- *   <li>已建成的求解会话在注册表被清空后仍按建厂时的权重计分（权重只在建厂时读取）。</li>
+ *   <li>长求解进行中，快求解不会被阻塞，两段求解区间在时间上重叠，且各算各的权重；</li>
+ *   <li>槽位显式配置为 1、等待上限 2 秒时，后到方拿到明确的 {@code FAILED} +
+ *       {@code engineFallbackReason=SOLVER_BUSY}（不可重试），而不是静默算歪；</li>
+ *   <li>已建成的求解会话在权重被清空后仍按建厂时的权重计分（权重只在建厂时读取）；</li>
+ *   <li>求解过程填充 {@code metrics.scoreHistory}（时间戳 + 分数）。</li>
  * </ul>
  *
  * <p>确定分题面（{@link #pinnedProblem()}）：单个冻结任务固定在 2026-01-05 08:00、加工 30 分钟，
@@ -79,9 +80,14 @@ class SoftWeightsConcurrencyTest {
     private static final long WEIGHTED_SOFT_SCORE = -20580L;
 
     /**
-     * 串行化判据：后到方被挡在临界区外的时间必须不低于 2 秒（持锁方跑满 3 秒，后到方在持锁方进入临界区后发起）。
+     * 默认槽位数必须至少为 2：同 JVM 内两个求解任务要能真正并行。
      */
-    private static final long BLOCKED_MIN_MILLIS = 2000L;
+    @Test
+    void defaultAdapterMustAllowAtLeastTwoConcurrentSolvers() {
+        TimefoldSolverAdapter adapter = new TimefoldSolverAdapter();
+        assertTrue(adapter.solverSlotPermits() >= 2,
+                "默认求解槽位不足 2，无法同 JVM 并行求解: " + adapter.solverSlotPermits());
+    }
 
     @AfterEach
     void tearDown() {
@@ -109,7 +115,8 @@ class SoftWeightsConcurrencyTest {
                 "权重 40 的并发请求被另一套权重污染: " + describe(baseline, weighted));
         assertEquals(0L, baseline.hardScore().longValueExact());
         assertEquals(0L, weighted.hardScore().longValueExact());
-        assertFalse(SoftConstraintWeights.isEnabled(), "并发结束后注册表必须为空");
+        assertTrue(baseline.weightsCleared() && weighted.weightsCleared(),
+                "并发结束后各求解线程的权重必须清空");
     }
 
     /**
@@ -128,26 +135,28 @@ class SoftWeightsConcurrencyTest {
         assertEquals("SOLVED", omitted.solution().status());
         assertEquals(expectedWeighted, weighted.softScore().longValueExact());
         assertEquals(0L, omitted.softScore().longValueExact(),
-                "未带 softWeights 的并发请求拿到了别人的软得分，说明注册表跨请求泄漏: "
+                "未带 softWeights 的并发请求拿到了别人的软得分，说明权重跨线程泄漏: "
                         + describe(weighted, omitted));
-        assertFalse(SoftConstraintWeights.isEnabled(), "并发结束后注册表必须为空");
+        assertTrue(weighted.weightsCleared() && omitted.weightsCleared(),
+                "并发结束后各求解线程的权重必须清空");
     }
 
     /**
-     * 串行化取证：先发起一个 3 秒的长求解，200ms 后发起一个不带宽度的快求解。
-     * 若静态锁生效，快求解会被挡在临界区外约 2.8 秒，且拿不到对方的权重（{@code softScore==0}）；
-     * 长求解按自己的权重产生负软得分。
+     * 并行取证：同一实例上先发起一个 3 秒长求解，200ms 后发起一个不带权重的快求解。
+     * A0 去锁后快求解不再被挡，两段求解区间必须重叠；各自只用自己的权重（快求解 {@code softScore==0}）。
      */
     @Test
-    void longSolveMustBlockSecondRequestAndKeepResidueOut() throws Exception {
-        CountDownLatch started = new CountDownLatch(1);
+    void longAndFastSolvesMustRunConcurrentlyWithIsolatedWeights() throws Exception {
+        TimefoldSolverAdapter adapter = new TimefoldSolverAdapter();
+        CountDownLatch holderStarted = new CountDownLatch(1);
         try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
-            Future<Run> longRun = pool.submit(
-                    () -> solveInThread("weighted", busyProblem(), timedConfig(Map.of("softWeights", weights(40)), 3),
-                            started));
-            started.countDown();
-            awaitWeightsActivated();
-            Run probe = solveInThread("omitted-probe", busyProblem(), fastConfig(Map.of()), new CountDownLatch(0));
+            Future<Run> longRun = pool.submit(() -> solveInThread(adapter, "weighted",
+                    busyProblem(), timedConfig(Map.of("softWeights", weights(40)), 3), holderStarted));
+            holderStarted.countDown();
+            // 等长求解真正进入求解阶段；ThreadLocal 已不可从外部线程观测，改用固定 200ms 起跑窗。
+            Thread.sleep(200L);
+            Run probe = solveInThread(adapter, "omitted-probe", busyProblem(), fastConfig(Map.of()),
+                    new CountDownLatch(0));
             Run weighted = longRun.get(60, TimeUnit.SECONDS);
 
             assertEquals("SOLVED", weighted.solution().status(),
@@ -158,42 +167,72 @@ class SoftWeightsConcurrencyTest {
             assertEquals("SOLVED", probe.solution().status(),
                     "快求解失败: " + probe.solution().message());
             assertEquals(0L, probe.softScore().longValueExact(),
-                    "不带宽度的快求解在长求解进行中拿到了软得分，说明注册表跨请求泄漏: "
+                    "不带权重的快求解在长求解进行中拿到了软得分，说明权重跨线程泄漏: "
                             + describe(weighted, probe));
-            assertTrue(probe.durationMillis() >= BLOCKED_MIN_MILLIS,
-                    "快求解只用了 " + probe.durationMillis() + "ms 就返回，说明没有被静态锁挡住: "
+            long overlapNanos = Math.min(weighted.endNanos(), probe.endNanos())
+                    - Math.max(weighted.beginNanos(), probe.beginNanos());
+            assertTrue(probe.beginNanos() < weighted.endNanos(),
+                    "快求解在长求解结束后才开始（重叠 " + overlapNanos / 1_000_000L
+                            + "ms），说明去锁失败或槽位仍为 1: " + describe(weighted, probe));
+            assertTrue(probe.durationMillis() < 1500L,
+                    "快求解被阻塞了 " + probe.durationMillis() + "ms，说明仍在串行化: "
                             + describe(weighted, probe));
+            assertTrue(weighted.weightsCleared() && probe.weightsCleared(),
+                    "求解结束必须清空当前线程的权重");
         }
-        assertFalse(SoftConstraintWeights.isEnabled(), "并发结束后注册表必须为空");
     }
 
     /**
-     * 争用取证：持锁方 4 秒、后到方等待上限 2 秒，后到方必须拿到明确的 {@code FAILED} 与“求解器正被
-     * 其他求解任务占用”说明，而不是静默用着别人的权重返回 {@code SOLVED}。
+     * 争用取证：显式 1 个槽位、等待上限 2 秒，持槽方 4 秒；后到方必须拿到明确的 {@code FAILED} +
+     * {@code engineFallbackReason=SOLVER_BUSY}，且该原因不可重试。
      */
     @Test
-    void contendedRequestMustFailExplicitlyInsteadOfStealingWeights() throws Exception {
+    void contendedRequestMustFailWithNonRetryableSolverBusy() throws Exception {
+        TimefoldSolverAdapter adapter = new TimefoldSolverAdapter(1, 2);
         CountDownLatch started = new CountDownLatch(1);
         try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
-            Future<Run> holder = pool.submit(
-                    () -> solveInThread("weighted-holder", busyProblem(), timedConfig(Map.of("softWeights", weights(40)), 4),
-                            started));
+            Future<Run> holder = pool.submit(() -> solveInThread(adapter, "weighted-holder",
+                    busyProblem(), timedConfig(Map.of("softWeights", weights(40)), 4), started));
             started.countDown();
-            awaitWeightsActivated();
-            Run rejected = solveInThread("omitted-rejected", busyProblem(),
+            Thread.sleep(200L);
+            Run rejected = solveInThread(adapter, "omitted-rejected", busyProblem(),
                     timedConfig(Map.of(), 2), new CountDownLatch(0));
             Run holderRun = holder.get(60, TimeUnit.SECONDS);
 
             assertEquals("FAILED", rejected.solution().status(),
                     "后到方应明确失败而不是静默求解: " + rejected.solution().message());
             assertTrue(rejected.solution().message().contains("求解器正被其他求解任务占用"),
-                    "失败原因必须指向锁争用，实际: " + rejected.solution().message());
+                    "失败原因必须指向槽位争用，实际: " + rejected.solution().message());
+            Object reason = rejected.solution().metrics().extra().get("engineFallbackReason");
+            assertEquals(TimefoldSolverAdapter.SOLVER_BUSY, reason,
+                    "槽位等待超时必须标记为 SOLVER_BUSY，实际: " + reason);
+            assertFalse(SolveRetryReasons.isRetryable(TimefoldSolverAdapter.SOLVER_BUSY),
+                    "SOLVER_BUSY 属于容量拒绝，不得进入重试白名单");
             assertEquals("SOLVED", holderRun.solution().status(),
-                    "持锁方必须正常完成: " + holderRun.solution().message());
+                    "持槽方必须正常完成: " + holderRun.solution().message());
             assertTrue(holderRun.softScore().longValueExact() < 0,
-                    "持锁方必须按自己的权重计分: " + describe(holderRun, rejected));
+                    "持槽方必须按自己的权重计分: " + describe(holderRun, rejected));
         }
-        assertFalse(SoftConstraintWeights.isEnabled(), "并发结束后注册表必须为空");
+    }
+
+    /**
+     * 观测取证：{@code BestSolutionChangedEvent} 必须填充 {@code metrics.scoreHistory}（时间戳 + 分数）。
+     */
+    @Test
+    void scoreHistoryMustBeFilledDuringSolve() {
+        ScheduleSolution solution = new TimefoldSolverAdapter()
+                .solve(busyProblem(), timedConfig(Map.of("softWeights", weights(40)), 2));
+
+        assertEquals("SOLVED", solution.status(), "求解失败: " + solution.message());
+        assertFalse(solution.metrics().scoreHistory().isEmpty(),
+                "scoreHistory 为空，说明未监听 BestSolutionChangedEvent");
+        long previous = -1L;
+        for (ScorePoint point : solution.metrics().scoreHistory()) {
+            assertTrue(point.elapsedMs() >= previous, "scoreHistory 时间戳必须单调不减");
+            assertTrue(point.hardScore() != null && point.softScore() != null,
+                    "scoreHistory 采样点必须带硬/软分");
+            previous = point.elapsedMs();
+        }
     }
 
     /**
@@ -234,43 +273,32 @@ class SoftWeightsConcurrencyTest {
 
     /**
      * 两个线程在同一个闸门后同时起跑：同一份题面，只有权重（或有无权重）不同。
-     * 每个线程都用独立的 {@link TimefoldSolverAdapter} 实例，因此能命中同一把静态锁。
+     * 共享同一个适配器实例（对应 Spring 单例），槽位默认 >= 2，因此两个请求可以真正并行。
      */
     private static Run[] runBoth(ScheduleProblem problem, String firstLabel, SolveConfig firstConfig,
             String secondLabel, SolveConfig secondConfig) throws Exception {
+        TimefoldSolverAdapter adapter = new TimefoldSolverAdapter();
         CountDownLatch gate = new CountDownLatch(1);
         try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
             Future<Run> first = pool.submit(
-                    () -> solveInThread(firstLabel, problem, firstConfig, gate));
+                    () -> solveInThread(adapter, firstLabel, problem, firstConfig, gate));
             Future<Run> second = pool.submit(
-                    () -> solveInThread(secondLabel, problem, secondConfig, gate));
+                    () -> solveInThread(adapter, secondLabel, problem, secondConfig, gate));
             gate.countDown();
             return new Run[] {first.get(60, TimeUnit.SECONDS), second.get(60, TimeUnit.SECONDS)};
         }
     }
 
     /**
-     * 等持锁方真正进入临界区（注册表已激活）再发起后到请求，避免线程调度导致起点反序。
-     */
-    private static void awaitWeightsActivated() throws InterruptedException {
-        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (!SoftConstraintWeights.isEnabled()) {
-            if (System.nanoTime() > deadlineNanos) {
-                fail("持锁方 10 秒内未进入临界区，注册表始终未激活");
-            }
-            Thread.sleep(5);
-        }
-    }
-
-    /**
      * 单线程求解，闸门放行后才真正调用适配器，保证两个请求的起点尽量接近。
      */
-    private static Run solveInThread(String label, ScheduleProblem problem, SolveConfig config,
-            CountDownLatch gate) throws InterruptedException {
+    private static Run solveInThread(TimefoldSolverAdapter adapter, String label, ScheduleProblem problem,
+            SolveConfig config, CountDownLatch gate) throws InterruptedException {
         gate.await();
         long beginNanos = System.nanoTime();
-        ScheduleSolution solution = new TimefoldSolverAdapter().solve(problem, config);
-        return new Run(label, solution, beginNanos, System.nanoTime());
+        ScheduleSolution solution = adapter.solve(problem, config);
+        return new Run(label, solution, beginNanos, System.nanoTime(),
+                !SoftConstraintWeights.isEnabled());
     }
 
     private static String describe(Run first, Run second) {
@@ -381,9 +409,10 @@ class SoftWeightsConcurrencyTest {
     }
 
     /**
-     * 一次求解的观测记录：标签、结果、起止纳秒。
+     * 一次求解的观测记录：标签、结果、起止纳秒、求解线程的权重是否已清空。
      */
-    private record Run(String label, ScheduleSolution solution, long beginNanos, long endNanos) {
+    private record Run(String label, ScheduleSolution solution, long beginNanos, long endNanos,
+                       boolean weightsCleared) {
 
         BigDecimal softScore() {
             return solution.score() == null ? null : solution.score().softScore();

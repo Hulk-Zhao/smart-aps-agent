@@ -8,6 +8,7 @@ import com.hengce.aps.infrastructure.persistence.strategy.ConstraintDslMapper;
 import com.hengce.aps.solver.api.ConstraintSpec;
 import com.hengce.aps.solver.dsl.ConstraintDslCompiler;
 import com.hengce.aps.solver.dsl.ConstraintDslDocument;
+import com.hengce.aps.solver.dsl.ConstraintDslEngineMapping;
 import com.hengce.aps.solver.dsl.ConstraintDslParser;
 import com.hengce.aps.solver.dsl.ConstraintDslSerializer;
 import com.hengce.aps.solver.dsl.DslValidationException;
@@ -146,7 +147,8 @@ public class ConstraintDslService {
             return toView(target);
         }
         // 激活前重新校验库内 YAML，避免绕过写入时的校验
-        parseOrThrow(target.getYamlText());
+        ConstraintDslDocument document = parseOrThrow(target.getYamlText());
+        requireEngineSupported(target, document);
         ConstraintDsl previous = constraintDslMapper.selectActiveByCode(target.getCode());
         try {
             deactivate(previous);
@@ -176,6 +178,8 @@ public class ConstraintDslService {
         if (ConstraintDslStatus.ACTIVE.name().equals(target.getStatus())) {
             throw new BizException(ErrorCode.STATE_CONFLICT, "目标版本已是激活版本，无需回滚");
         }
+        ConstraintDslDocument document = parseOrThrow(target.getYamlText());
+        requireEngineSupported(target, document);
         ConstraintDsl current = constraintDslMapper.selectActiveByCode(target.getCode());
         try {
             deactivate(current);
@@ -200,7 +204,9 @@ public class ConstraintDslService {
             return;
         }
         active.setStatus(ConstraintDslStatus.ROLLBACK.name());
-        if (constraintDslMapper.updateById(active) == 0) {
+        if (constraintDslMapper.update(null, Wrappers.<ConstraintDsl>lambdaUpdate()
+                .eq(ConstraintDsl::getId, active.getId())
+                .set(ConstraintDsl::getStatus, ConstraintDslStatus.ROLLBACK.name())) == 0) {
             throw new IllegalStateException("旧激活版本已被并发修改: " + active.getCode());
         }
     }
@@ -210,7 +216,9 @@ public class ConstraintDslService {
             return;
         }
         previous.setStatus(ConstraintDslStatus.ACTIVE.name());
-        constraintDslMapper.updateById(previous);
+        constraintDslMapper.update(null, Wrappers.<ConstraintDsl>lambdaUpdate()
+                .eq(ConstraintDsl::getId, previous.getId())
+                .set(ConstraintDsl::getStatus, ConstraintDslStatus.ACTIVE.name()));
     }
 
     private ConstraintDsl findOrThrow(UUID id) {
@@ -229,6 +237,25 @@ public class ConstraintDslService {
             return parser.load(yamlText);
         } catch (DslValidationException exception) {
             throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, formatIssues(exception.getReport()));
+        }
+    }
+
+    /**
+     * 激活/回滚前校验目标 DSL 是否能被求解引擎忠实执行。
+     *
+     * <p>引擎没有对应语义的参数（例如 unit=HOUR、groupBy=MATERIAL、metric=TASK_COUNT、
+     * maxPriority）必须在这里以 42200 点名拒绝；静默忽略会让用户误以为约束已生效。</p>
+     *
+     * @param target 目标版本
+     * @param document 已解析的 DSL 文档
+     */
+    private void requireEngineSupported(ConstraintDsl target, ConstraintDslDocument document) {
+        ConstraintDslEngineMapping.Analysis analysis =
+                ConstraintDslEngineMapping.analyze(compiler.compile(document));
+        if (!analysis.supported()) {
+            throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY,
+                    "约束 DSL code=" + target.getCode() + " v" + target.getVersionNo()
+                            + " 无法接入求解引擎: " + String.join("；", analysis.problems()));
         }
     }
 

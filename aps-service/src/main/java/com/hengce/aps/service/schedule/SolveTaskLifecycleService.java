@@ -10,6 +10,7 @@ import com.hengce.aps.infrastructure.persistence.schedule.ConstraintJustificatio
 import com.hengce.aps.infrastructure.persistence.schedule.SolveTaskRepository;
 import com.hengce.aps.infrastructure.persistence.schedule.SolveTaskRepository.SolveTaskRecord;
 import com.hengce.aps.solver.api.ScheduleProblem;
+import com.hengce.aps.solver.api.ScheduleSolution;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.SolveHandle;
 import com.hengce.aps.solver.api.SolveRequest;
@@ -18,6 +19,9 @@ import com.hengce.aps.solver.api.task.SolveProgress;
 import com.hengce.aps.solver.api.task.SolveRetryReasons;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
+import com.hengce.aps.service.mrp.MrpBlockingChecker;
+import com.hengce.aps.service.mrp.MrpBlockingDecision;
+import com.hengce.aps.service.schedule.portfolio.SolveQueueContext;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -40,6 +44,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,10 +60,12 @@ import org.springframework.stereotype.Service;
  * 处理取消与超时、引擎不可用/异常降级。执行本身委托给 {@link ScheduleService}，
  * 本类不复制问题装配与结果落库逻辑。</p>
  *
- * <p>并发约束：单工作线程 + 有界队列，保证每个场景同时最多 1 个 RUNNING；
- * 队列满时按引擎不可用降级为 FAILED 并写 {@code engineFallback} 标记。
- * 取消优先调用引擎 {@code terminateEarly}，引擎未实现异步句柄时以
- * {@link Future#cancel(boolean)} 线程中断兜底，并在落库前通过停止信号丢弃结果。</p>
+ * <p>并发约束（A1 起）：工作线程数与求解槽位对齐（默认 = {@code aps.solve.max-concurrent-solvers}
+ * 解析结果，可用 {@code aps.solve.worker-concurrency} 收窄），因此不同场景可同时有多个
+ * {@code RUNNING}；队列仍有界，队列满时按引擎不可用降级为 FAILED 并写 {@code engineFallback} 标记。
+ * 从提交到真正开始执行的等待写入 {@code metrics.queueWaitMs}，并累加进
+ * {@code metrics.portfolio.slotWaitMs}。取消优先调用引擎 {@code terminateEarly}，
+ * 引擎未实现异步句柄时以 {@link Future#cancel(boolean)} 线程中断兜底，并在落库前通过停止信号丢弃结果。</p>
  */
 @Service
 public class SolveTaskLifecycleService {
@@ -74,6 +81,11 @@ public class SolveTaskLifecycleService {
      * 进度推送间隔（毫秒）。
      */
     private static final long PROGRESS_TICK_MILLIS = 500L;
+
+    /**
+     * 非状态变化进度帧的最小发布间隔（C20：≤1 帧/秒）。
+     */
+    private static final long PROGRESS_MIN_INTERVAL_MILLIS = 1000L;
 
     /**
      * M2 唯一降级模式。
@@ -99,6 +111,8 @@ public class SolveTaskLifecycleService {
      * 进度发布器。
      */
     private final SolveProgressPublisher progressPublisher;
+
+    private final MrpBlockingChecker mrpBlockingChecker;
 
     /**
      * 工作线程池。
@@ -146,12 +160,23 @@ public class SolveTaskLifecycleService {
     private final long retryDelaySeconds;
 
     /**
+     * 求解后置钩子调用链（A0 接缝；空实现时为空链）。
+     */
+    private final SolvePostProcessorChain postProcessorChain;
+
+    /**
+     * 工作线程并发度（与求解槽位对齐），仅用于日志/诊断。
+     */
+    private final int workerConcurrency;
+
+    /**
      * 构造生命周期服务。
      *
      * @param solveTaskRepository 求解任务持久层
      * @param justificationRepository 归因持久层
      * @param scheduleService 排产执行服务
      * @param progressPublisher 进度发布器
+     * @param mrpBlockingChecker MRP 齐套阻塞判定（C25：全量与增量口径统一）
      * @param asyncEnabled 是否异步执行
      * @param fallbackEnabled 是否写降级标记
      * @param queueCapacity 有界队列容量
@@ -159,32 +184,53 @@ public class SolveTaskLifecycleService {
      * @param retryClock 重试时钟
      * @param retryMaxRetries 首次之外的最大重试次数
      * @param retryDelaySeconds 固定重试间隔（秒）
+     * @param postProcessorChain 求解后置钩子链
+     * @param maxConcurrentSolvers 求解槽位数；0 表示按 CPU 自动解析
+     * @param workerConcurrency 工作线程并发度；0 表示与槽位对齐
      */
     public SolveTaskLifecycleService(SolveTaskRepository solveTaskRepository,
                                      ConstraintJustificationRepository justificationRepository,
                                      ScheduleService scheduleService,
                                      SolveProgressPublisher progressPublisher,
+                                     MrpBlockingChecker mrpBlockingChecker,
                                      @Value("${aps.solve.async-enabled:true}") boolean asyncEnabled,
                                      @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled,
                                      @Value("${aps.solve.queue-capacity:32}") int queueCapacity,
                                      @Value("${aps.solve.timeout-grace-seconds:5}") int timeoutGraceSeconds,
                                      SolveRetryClock retryClock,
                                      @Value("${aps.solve.retry.max-retries:1}") int retryMaxRetries,
-                                     @Value("${aps.solve.retry.delay-seconds:30}") long retryDelaySeconds) {
+                                     @Value("${aps.solve.retry.delay-seconds:30}") long retryDelaySeconds,
+                                     SolvePostProcessorChain postProcessorChain,
+                                     @Value("${aps.solve.max-concurrent-solvers:0}") int maxConcurrentSolvers,
+                                     @Value("${aps.solve.worker-concurrency:0}") int workerConcurrency) {
         this.solveTaskRepository = solveTaskRepository;
         this.justificationRepository = justificationRepository;
         this.scheduleService = scheduleService;
         this.progressPublisher = progressPublisher;
+        this.mrpBlockingChecker = mrpBlockingChecker;
         this.asyncEnabled = asyncEnabled;
         this.fallbackEnabled = fallbackEnabled;
         this.timeoutGraceSeconds = Math.max(0, timeoutGraceSeconds);
         this.retryClock = retryClock == null ? new SystemSolveRetryClock() : retryClock;
         this.retryMaxRetries = Math.max(0, retryMaxRetries);
         this.retryDelaySeconds = Math.max(0L, retryDelaySeconds);
-        this.worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        this.postProcessorChain = postProcessorChain == null
+                ? new SolvePostProcessorChain(List.of()) : postProcessorChain;
+        // A1：工作线程与求解槽位对齐；槽位口径与 TimefoldSolverAdapter 一致
+        // （显式配置优先，否则 max(2, min(cores-2, 4))）。显式 worker 并发不得高于槽位，
+        // 避免“任务都跑起来但全部卡在适配器信号量上”的假并发。
+        int slots = maxConcurrentSolvers > 0
+                ? maxConcurrentSolvers
+                : Math.max(2, Math.min(Runtime.getRuntime().availableProcessors() - 2, 4));
+        int workers = workerConcurrency > 0 ? Math.min(workerConcurrency, slots) : slots;
+        this.workerConcurrency = Math.max(1, workers);
+        AtomicInteger workerSeq = new AtomicInteger();
+        this.worker = new ThreadPoolExecutor(this.workerConcurrency, this.workerConcurrency,
+                0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(Math.max(1, queueCapacity)),
                 runnable -> {
-                    Thread thread = new Thread(runnable, "aps-solve-worker");
+                    Thread thread = new Thread(runnable,
+                            "aps-solve-worker-" + workerSeq.incrementAndGet());
                     thread.setDaemon(true);
                     return thread;
                 },
@@ -204,6 +250,40 @@ public class SolveTaskLifecycleService {
      * @return 任务详情（PENDING 或已进入 RUNNING）
      */
     public SolveTaskDetail submit(SolveRequest request, String idempotencyKey) {
+        return submit(request, idempotencyKey, true, null);
+    }
+
+    /**
+     * 受理求解任务，可选择是否重复执行 MRP 齐套阻塞判定。
+     *
+     * @param request 求解请求
+     * @param idempotencyKey 幂等键，可空
+     * @param checkMrpBlocking 是否在受理阶段执行齐套阻塞判定；增量入口已判定过可传 {@code false}
+     * @return 任务详情（PENDING 或已进入 RUNNING）
+     */
+    public SolveTaskDetail submit(SolveRequest request, String idempotencyKey, boolean checkMrpBlocking) {
+        return submit(request, idempotencyKey, checkMrpBlocking, null);
+    }
+
+    /**
+     * 在当前调用线程内同步执行求解，用于必须拿到终态结果的 Agent what-if。
+     *
+     * <p>复用 {@link #submit(SolveRequest, String, boolean, Boolean)} 的同一受理/执行/落库路径，
+     * 不复制问题装配、求解与结果落库逻辑；幂等语义不变。若幂等键命中的是历史异步任务，
+     * 由调用方检查状态后再决定是否可用。</p>
+     *
+     * @param request 求解请求
+     * @param idempotencyKey 幂等键，可空
+     * @param checkMrpBlocking 是否执行齐套阻塞判定
+     * @return 已进入终态的任务详情
+     */
+    public SolveTaskDetail submitSynchronous(SolveRequest request, String idempotencyKey,
+                                             boolean checkMrpBlocking) {
+        return submit(request, idempotencyKey, checkMrpBlocking, Boolean.TRUE);
+    }
+
+    private SolveTaskDetail submit(SolveRequest request, String idempotencyKey, boolean checkMrpBlocking,
+                                   Boolean forceSynchronous) {
         if (request == null) {
             throw new BizException(ErrorCode.BAD_REQUEST, "请求体不能为空");
         }
@@ -216,6 +296,12 @@ public class SolveTaskLifecycleService {
         if (request.sandboxId() != null && !solveTaskRepository.sandboxExists(tenantId, sandboxId)) {
             throw new BizException(ErrorCode.NOT_FOUND, "场景不存在: " + sandboxId);
         }
+        if (checkMrpBlocking) {
+            MrpBlockingDecision decision = mrpBlockingChecker.evaluate(sandboxId, request.orderNos(), true);
+            if (decision.blocked()) {
+                throw new BizException(ErrorCode.UNPROCESSABLE_ENTITY, decision.message());
+            }
+        }
         String key = normalizeIdempotencyKey(idempotencyKey);
         if (key != null) {
             Optional<SolveTaskRecord> existing = solveTaskRepository.findByIdempotencyKey(tenantId, key);
@@ -224,10 +310,13 @@ public class SolveTaskLifecycleService {
             }
         }
 
+        // 订单范围必须随配置固化：缺省增量重排据此判定“当前版本”范围，不能只存引擎参数。
+        List<String> scopeOrderNos = scheduleService.effectiveOrderNos(request);
         long taskId;
         try {
             taskId = solveTaskRepository.create(tenantId, sandboxId, request.strategyId(),
-                    engineCode(route.effectiveEngine()), toJson(config), key, "PENDING");
+                    engineCode(route.effectiveEngine()),
+                    ScheduleService.toConfigJson(config, scopeOrderNos), key, "PENDING");
         } catch (DuplicateKeyException exception) {
             return solveTaskRepository.findByIdempotencyKey(tenantId, key)
                     .map(this::detail)
@@ -244,7 +333,7 @@ public class SolveTaskLifecycleService {
                 "QUEUED", null, 0L, null, null, "已受理，等待求解"));
         RunningTask run = new RunningTask(taskId, tenantId, route, config);
         running.put(taskId, run);
-        if (!asyncEnabled) {
+        if (!asyncEnabled || Boolean.TRUE.equals(forceSynchronous)) {
             runSynchronously(run, request);
             return detail(taskId);
         }
@@ -299,6 +388,8 @@ public class SolveTaskLifecycleService {
         int updated = solveTaskRepository.finish(tenantId, taskId, SolveTaskStatus.CANCELLED.name(),
                 null, null, toJson(metrics), "用户取消求解任务");
         if (updated > 0) {
+            firePostProcessors(taskId, tenantId, SolveTaskStatus.CANCELLED.name(), null, null,
+                    metrics, "用户取消求解任务", null, null);
             publishTerminal(taskId, SolveTaskStatus.CANCELLED, null, metrics, "用户取消求解任务");
         }
         if (run != null) {
@@ -307,6 +398,12 @@ public class SolveTaskLifecycleService {
             if (run.future != null) {
                 run.future.cancel(true);
             }
+            // A0：退避期间工作线程已释放，取消必须同时停掉重试定时器与进度 ticker，
+            // 否则定时器到期会把已取消的任务重新拉回工作线程。
+            run.active.set(false);
+            cancelFuture(run.tickerFuture);
+            cancelFuture(run.watchdogFuture);
+            cancelFuture(run.retryFuture);
             running.remove(taskId);
         }
         return detail(taskId);
@@ -326,7 +423,11 @@ public class SolveTaskLifecycleService {
     }
 
     private void runSynchronously(RunningTask run, SolveRequest request) {
+        UUID callerTenantId = TenantContext.getTenantId();
         TenantContext.setTenantId(run.tenantId);
+        // 同步路径不经过工作队列，排队等待记 0。
+        run.queueWaitMs = 0;
+        SolveQueueContext.set(0);
         try {
             if (solveTaskRepository.markRunning(run.tenantId, run.taskId) == 0) {
                 return;
@@ -343,35 +444,139 @@ public class SolveTaskLifecycleService {
             }
             finishFallback(run, "ENGINE_ERROR", safeMessage(exception));
         } finally {
+            SolveQueueContext.clear();
             run.active.set(false);
             running.remove(run.taskId);
-            TenantContext.clear();
+            // 同步路径在当前调用线程内执行：恢复调用方租户上下文，
+            // 否则 submit 返回后的 detail/沙箱 compare 会丢失租户而查不到刚刚落库的任务。
+            if (callerTenantId == null) {
+                TenantContext.clear();
+            } else {
+                TenantContext.setTenantId(callerTenantId);
+            }
         }
     }
 
     private void executeTask(RunningTask run, SolveRequest request) {
         TenantContext.setTenantId(run.tenantId);
+        // 从提交到工作线程真正开始执行的等待：写入 metrics.queueWaitMs，
+        // 并累加进 portfolio.slotWaitMs（A1 可观测）。
+        run.queueWaitMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - run.queuedNanos);
+        SolveQueueContext.set(run.queueWaitMs);
         try {
             if (run.shouldStop()) {
+                cleanup(run);
                 return;
             }
             if (solveTaskRepository.markRunning(run.tenantId, run.taskId) == 0) {
+                cleanup(run);
                 return;
             }
             run.startedNanos = System.nanoTime();
             scheduleTicker(run);
-            ScheduleService.ExecutionOutcome outcome = executeWithRetry(run, request, true);
-            finishOutcome(run, outcome);
+            executeAttemptLoop(run, request);
         } catch (RuntimeException exception) {
             LOGGER.warn("求解任务 {} 执行异常", run.taskId, exception);
             finishFallback(run, "ENGINE_ERROR", safeMessage(exception));
-        } finally {
-            run.active.set(false);
-            cancelFuture(run.tickerFuture);
-            cancelFuture(run.watchdogFuture);
-            running.remove(run.taskId);
-            TenantContext.clear();
+            cleanup(run);
         }
+    }
+
+    /**
+     * 异步重试编排（A0）：每次尝试结束后，如果还能重试，就把下一次尝试交给
+     * {@link SolveRetryClock#schedule} 定时触发，<b>工作线程立即释放</b>，
+     * 30 秒退避不再占着 {@code aps-solve-worker}。
+     *
+     * <p>终态时写入 {@code attemptCount/retryReasons/retryAt} 并完成落库与清理。</p>
+     *
+     * @param run 运行上下文
+     * @param request 求解请求
+     */
+    private void executeAttemptLoop(RunningTask run, SolveRequest request) {
+        int maxAttempts = 1 + retryMaxRetries;
+        ScheduleService.ExecutionOutcome outcome = null;
+        while (run.attempts.get() < maxAttempts) {
+            if (run.shouldStop()) {
+                cleanup(run);
+                return;
+            }
+            int attemptNo = run.attempts.incrementAndGet();
+            cancelFuture(run.watchdogFuture);
+            scheduleWatchdog(run);
+            SolveAttempt attempt = executeAttempt(run, request, true, attemptNo);
+            outcome = attempt.outcome();
+            cancelFuture(run.watchdogFuture);
+            if (attempt.retryReason() == null || run.attempts.get() >= maxAttempts || run.shouldStop()) {
+                break;
+            }
+            run.retryReasons.add(attempt.retryReason());
+            run.retryAt.add(retryClock.nowUtc().toString());
+            scheduleRetry(run, request, attempt.retryReason());
+            return;
+        }
+        if (outcome == null) {
+            outcome = failureOutcome(run, SolveRetryReasons.ENGINE_ERROR, "求解任务已终止，未执行");
+        }
+        finishOutcome(run, stampAttempts(outcome, run.attempts.get(), run.retryReasons, run.retryAt));
+        cleanup(run);
+    }
+
+    /**
+     * 安排下一次尝试：延迟到点后把尝试重新提交给求解工作线程。
+     *
+     * @param run 运行上下文
+     * @param request 求解请求
+     * @param reason 触发重试的原因
+     */
+    private void scheduleRetry(RunningTask run, SolveRequest request, String reason) {
+        int nextAttempt = run.attempts.get() + 1;
+        publish(run, 0.10, run.lastPhase.get(), run.lastScore.get(),
+                "求解失败（" + reason + "），" + retryDelaySeconds + " 秒后进行第 " + nextAttempt + " 次尝试");
+        run.retryFuture = retryClock.schedule(Duration.ofSeconds(retryDelaySeconds), () -> {
+            try {
+                worker.execute(() -> resumeAttemptLoop(run, request));
+            } catch (RejectedExecutionException exception) {
+                finishFallback(run, "SOLVER_UNAVAILABLE", "重试任务无法进入求解队列");
+                cleanup(run);
+            }
+        });
+    }
+
+    /**
+     * 定时器到期后的续跑入口；在求解工作线程执行。
+     *
+     * @param run 运行上下文
+     * @param request 求解请求
+     */
+    private void resumeAttemptLoop(RunningTask run, SolveRequest request) {
+        TenantContext.setTenantId(run.tenantId);
+        SolveQueueContext.set(run.queueWaitMs);
+        try {
+            if (run.shouldStop()) {
+                cleanup(run);
+                return;
+            }
+            executeAttemptLoop(run, request);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("求解任务 {} 重试执行异常", run.taskId, exception);
+            finishFallback(run, "ENGINE_ERROR", safeMessage(exception));
+            cleanup(run);
+        }
+    }
+
+    /**
+     * 终态清理：释放进度/看门狗/重试定时器并移除运行上下文。
+     *
+     * @param run 运行上下文
+     */
+    private void cleanup(RunningTask run) {
+        run.active.set(false);
+        cancelFuture(run.tickerFuture);
+        cancelFuture(run.watchdogFuture);
+        cancelFuture(run.retryFuture);
+        running.remove(run.taskId, run);
+        SolveQueueContext.clear();
+        TenantContext.clear();
     }
 
     /**
@@ -504,7 +709,8 @@ public class SolveTaskLifecycleService {
         metrics.put("retryReasons", List.copyOf(retryReasons));
         metrics.put("retryAt", List.copyOf(retryAt));
         return new ScheduleService.ExecutionOutcome(outcome.status(), outcome.scoreHard(),
-                outcome.scoreSoft(), metrics, outcome.message(), outcome.validationFailure(), outcome.tasks());
+                outcome.scoreSoft(), metrics, outcome.message(), outcome.validationFailure(), outcome.tasks(),
+                outcome.problem(), outcome.solution());
     }
 
     /**
@@ -578,9 +784,12 @@ public class SolveTaskLifecycleService {
         metrics.put("attemptCount", Math.max(1, run.attempts.get()));
         applyFallback(metrics, "TIMEOUT");
         run.route.applyFallback(metrics);
+        stampQueueWait(metrics, run.queueWaitMs);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId,
                 SolveTaskStatus.TIMEOUT.name(), null, null, toJson(metrics), message);
         if (updated > 0) {
+            firePostProcessors(run.taskId, run.tenantId, SolveTaskStatus.TIMEOUT.name(), null, null,
+                    metrics, message, null, null);
             publishTerminal(run.taskId, SolveTaskStatus.TIMEOUT, null, metrics, message);
         }
         scheduleService.terminateEarly(run.route.effectiveEngine(),
@@ -588,6 +797,9 @@ public class SolveTaskLifecycleService {
         if (run.future != null) {
             run.future.cancel(true);
         }
+        cancelFuture(run.retryFuture);
+        run.active.set(false);
+        running.remove(run.taskId, run);
     }
 
     private void finishOutcome(RunningTask run, ScheduleService.ExecutionOutcome outcome) {
@@ -600,9 +812,13 @@ public class SolveTaskLifecycleService {
         metrics.putIfAbsent("phase",
                 outcome.status() == SolveTaskStatus.SOLVED ? "DONE" : outcome.status().name());
         metrics.putIfAbsent("progress", 1.0);
+        stampQueueWait(metrics, run.queueWaitMs);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId, outcome.status().name(),
                 outcome.scoreHard(), outcome.scoreSoft(), toJson(metrics), outcome.message());
         if (updated > 0) {
+            firePostProcessors(run.taskId, run.tenantId, outcome.status().name(),
+                    outcome.scoreHard(), outcome.scoreSoft(), metrics, outcome.message(),
+                    outcome.problem(), outcome.solution());
             Long resultTaskId = outcome.status() == SolveTaskStatus.SOLVED ? run.taskId : null;
             publishTerminal(run.taskId, outcome.status(), resultTaskId, metrics, outcome.message());
         }
@@ -619,11 +835,57 @@ public class SolveTaskLifecycleService {
         metrics.put("assignedTaskCount", 0);
         applyFallback(metrics, reason);
         run.route.applyFallback(metrics);
+        stampQueueWait(metrics, run.queueWaitMs);
         int updated = solveTaskRepository.finish(run.tenantId, run.taskId, status.name(),
                 null, null, toJson(metrics), message);
         if (updated > 0) {
+            firePostProcessors(run.taskId, run.tenantId, status.name(), null, null, metrics, message,
+                    null, null);
             publishTerminal(run.taskId, status, null, metrics, message);
         }
+    }
+
+    /**
+     * 触发求解后置钩子（A0 接缝）；钩子异常已在链内被拦截，这里再兜一层，
+     * 确保任何后置处理都不会吞掉/改写主流程结果。
+     *
+     * @param taskId 任务主键
+     * @param tenantId 租户
+     * @param status 终态
+     * @param scoreHard 硬分，可空
+     * @param scoreSoft 软分，可空
+     * @param metrics 已合并路由/降级的度量
+     * @param message 终态说明
+     */
+    private void firePostProcessors(long taskId, UUID tenantId, String status, Long scoreHard, Long scoreSoft,
+                                    Map<String, Object> metrics, String message,
+                                    ScheduleProblem problem, ScheduleSolution solution) {
+        try {
+            postProcessorChain.fire(new SolveFinishEvent(taskId, tenantId, status, scoreHard, scoreSoft,
+                    metrics, message, problem, solution));
+        } catch (RuntimeException exception) {
+            LOGGER.warn("求解后置钩子调用失败（不影响任务终态）: taskId={}", taskId, exception);
+        }
+    }
+
+    /**
+     * 把工作队列等待写入 metrics，并累加到 portfolio.slotWaitMs（A1 可观测）。
+     *
+     * @param metrics 已构建的度量
+     * @param queueWaitMs 排队等待毫秒
+     */
+    private static void stampQueueWait(Map<String, Object> metrics, long queueWaitMs) {
+        metrics.putIfAbsent("queueWaitMs", Math.max(0, queueWaitMs));
+        Object raw = metrics.get("portfolio");
+        if (!(raw instanceof Map<?, ?> portfolio)) {
+            return;
+        }
+        Map<String, Object> copy = new LinkedHashMap<>();
+        portfolio.forEach((key, value) -> copy.put(String.valueOf(key), value));
+        long base = copy.get("slotWaitMs") instanceof Number number
+                ? Math.max(0, number.longValue()) : 0;
+        copy.put("slotWaitMs", base + Math.max(0, queueWaitMs));
+        metrics.put("portfolio", copy);
     }
 
     private void applyFallback(Map<String, Object> metrics, String reason) {
@@ -637,12 +899,25 @@ public class SolveTaskLifecycleService {
     }
 
     private void publish(RunningTask run, double progress, String phase, String bestScore, String message) {
+        String previousPhase = run.lastPhase.get();
+        boolean phaseChanged = phase != null && !phase.equals(previousPhase);
+        long lastPublishNanos = run.lastPublishNanos.get();
+        long now = System.nanoTime();
+        // 阶段切换必须立即推送；普通进度/最优解帧按 1 秒节流（QA2-04）。
+        if (!phaseChanged && lastPublishNanos != 0L
+                && now - lastPublishNanos < TimeUnit.MILLISECONDS.toNanos(PROGRESS_MIN_INTERVAL_MILLIS)) {
+            if (bestScore != null) {
+                run.lastScore.set(bestScore);
+            }
+            return;
+        }
         if (phase != null) {
             run.lastPhase.set(phase);
         }
         if (bestScore != null) {
             run.lastScore.set(bestScore);
         }
+        run.lastPublishNanos.set(now);
         progressPublisher.publish(new SolveProgress(run.taskId, SolveTaskStatus.RUNNING.name(),
                 progress, phase, bestScore, elapsedMillis(run.startedNanos), null, null, message));
     }
@@ -843,6 +1118,16 @@ public class SolveTaskLifecycleService {
         private final UUID handleId = UUID.randomUUID();
 
         /**
+         * 进入队列的纳秒时间（A1：排队等待观测）。
+         */
+        private final long queuedNanos = System.nanoTime();
+
+        /**
+         * 从入队到工作线程开始执行的毫秒数。
+         */
+        private volatile long queueWaitMs;
+
+        /**
          * 是否已取消。
          */
         private final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -873,6 +1158,11 @@ public class SolveTaskLifecycleService {
         private final AtomicReference<String> lastScore = new AtomicReference<>();
 
         /**
+         * 最近一次进度帧发布时刻（纳秒），用于 1 秒节流。
+         */
+        private final AtomicLong lastPublishNanos = new AtomicLong();
+
+        /**
          * 工作线程 Future。
          */
         private volatile Future<?> future;
@@ -886,6 +1176,21 @@ public class SolveTaskLifecycleService {
          * 超时看门狗。
          */
         private volatile Future<?> watchdogFuture;
+
+        /**
+         * 重试定时器句柄（A0：到期后再把尝试提交回工作线程）。
+         */
+        private volatile Future<?> retryFuture;
+
+        /**
+         * 已记录的重试原因（按发生顺序）。
+         */
+        private final List<String> retryReasons = new ArrayList<>();
+
+        /**
+         * 已记录的重试时间戳（按发生顺序，ISO-8601 UTC）。
+         */
+        private final List<String> retryAt = new ArrayList<>();
 
         /**
          * 开始求解的纳秒时间戳；0 表示尚未进入 RUNNING。

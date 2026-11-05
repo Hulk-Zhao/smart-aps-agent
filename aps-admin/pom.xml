@@ -22,6 +22,10 @@
         </dependency>
         <dependency>
             <groupId>com.hengce.aps</groupId>
+            <artifactId>aps-agent</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.hengce.aps</groupId>
             <artifactId>solver-timefold</artifactId>
         </dependency>
         <dependency>

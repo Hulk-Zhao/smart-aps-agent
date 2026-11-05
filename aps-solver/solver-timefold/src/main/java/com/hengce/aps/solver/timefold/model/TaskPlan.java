@@ -84,6 +84,15 @@ public class TaskPlan {
     private LocalDateTime pinnedStartTime;
 
     /**
+     * 跨窗口下界（UTC）：本订单有 FROZEN 任务落在求解窗口起点之前时，取这些任务的
+     * 最大结束时间；窗口内工序不得早于该时刻开始。为空表示无下界。
+     *
+     * <p>没有它，被窗口过滤掉的 FROZEN 前序在模型里“消失”，求解器会把后续工序
+     * 排到已完工工序之前，得出 0hard 但现实不可执行的计划。</p>
+     */
+    private LocalDateTime orderNotBefore;
+
+    /**
      * C21 锁定类型：NONE / TIME_WINDOW / RESOURCE / FROZEN；为空等价 NONE。
      */
     private String lockType;
@@ -201,10 +210,13 @@ public class TaskPlan {
         Long resolved = SetupMatrixResolver.resolve(
                 setupMatrixEntries,
                 getResourceId(),
+                getResourceGroupId(),
                 operationCode,
                 materialCode,
+                productFamily,
                 previousTask.getOperationCode(),
-                previousTask.getMaterialCode());
+                previousTask.getMaterialCode(),
+                previousTask.getProductFamily());
         return resolved == null ? staticSetupSeconds : resolved;
     }
 
@@ -417,6 +429,24 @@ public class TaskPlan {
         return pinnedStartTime;
     }
 
+    /**
+     * 跨窗口下界（UTC）；为空表示该订单没有落在窗口起点之前的 FROZEN 任务。
+     *
+     * @return 下界时刻
+     */
+    public LocalDateTime getOrderNotBefore() {
+        return orderNotBefore;
+    }
+
+    /**
+     * 设置跨窗口下界。
+     *
+     * @param orderNotBefore 下界时刻（UTC），可空
+     */
+    public void setOrderNotBefore(LocalDateTime orderNotBefore) {
+        this.orderNotBefore = orderNotBefore;
+    }
+
     public String getLockType() {
         return lockType;
     }
@@ -505,5 +535,15 @@ public class TaskPlan {
      */
     public UUID getResourceId() {
         return resource == null ? null : resource.getResourceId();
+    }
+
+    /**
+     * 当前任务所在资源组主键，用于 C43 资源组级换型矩阵匹配。
+     *
+     * @return 资源组主键，未分配或未维护时为空
+     */
+    public UUID getResourceGroupId() {
+        return resource == null || resource.getSource() == null
+                ? null : resource.getSource().groupId();
     }
 }

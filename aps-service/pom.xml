@@ -28,6 +28,11 @@
             <groupId>com.hengce.aps</groupId>
             <artifactId>aps-infrastructure</artifactId>
         </dependency>
+        <!-- V05-01 Agent 框架：explain 需要 LlmGateway / agent_run 记录；aps-agent 仅依赖 aps-common，无环路 -->
+        <dependency>
+            <groupId>com.hengce.aps</groupId>
+            <artifactId>aps-agent</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.hengce.aps</groupId>
             <artifactId>solver-api</artifactId>
@@ -89,6 +94,13 @@
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
             <version>${flyway.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- C52/C53 验证求解接缝的真实 Timefold 样本测试；仅测试作用域，
+             生产装配仍由 aps-admin 引入 -->
+        <dependency>
+            <groupId>com.hengce.aps</groupId>
+            <artifactId>solver-timefold</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

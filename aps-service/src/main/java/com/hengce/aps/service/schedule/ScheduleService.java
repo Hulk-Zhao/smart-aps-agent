@@ -6,12 +6,18 @@ import com.hengce.aps.common.exception.BizException;
 import com.hengce.aps.common.exception.ErrorCode;
 import com.hengce.aps.common.tenant.TenantContext;
 import com.hengce.aps.infrastructure.persistence.schedule.SolveTaskRepository;
+import com.hengce.aps.service.schedule.ScheduleProblemAssembler.ActiveConstraintDsl;
+import com.hengce.aps.service.schedule.portfolio.PortfolioOutcome;
+import com.hengce.aps.service.schedule.portfolio.ScoreTimelines;
+import com.hengce.aps.service.schedule.portfolio.SolvePortfolioCoordinator;
+import com.hengce.aps.service.schedule.portfolio.SolveQueueContext;
 import com.hengce.aps.service.strategy.StrategyRuleView;
 import com.hengce.aps.service.strategy.StrategyService;
 import com.hengce.aps.service.strategy.StrategyView;
 import com.hengce.aps.solver.api.ScheduleProblem;
 import com.hengce.aps.solver.api.ScheduleSolution;
 import com.hengce.aps.solver.api.ScoreFact;
+import com.hengce.aps.solver.api.ScorePoint;
 import com.hengce.aps.solver.api.ScheduledTask;
 import com.hengce.aps.solver.api.SolveConfig;
 import com.hengce.aps.solver.api.SolveEnvelopeMapper;
@@ -21,10 +27,13 @@ import com.hengce.aps.solver.api.SolveResult;
 import com.hengce.aps.solver.api.SolveStatus;
 import com.hengce.aps.solver.api.SolverAdapter;
 import com.hengce.aps.solver.api.SolverEngine;
+import com.hengce.aps.common.util.SoftWeightConfigHasher;
+import com.hengce.aps.solver.api.task.SolveRetryReasons;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.EnumMap;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,6 +41,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -43,9 +53,10 @@ import org.springframework.stereotype.Service;
  * 以兼容既有调用方，异步入口 {@code POST /solve-tasks} 走生命周期服务。</p>
  *
  * <p>M2-SE-06 引擎异常/超时/不可用降级：失败时在 metrics 写入
- * {@code engineFallback=true}、{@code engineFallbackReason=TIMEOUT|ENGINE_ERROR|SOLVER_UNAVAILABLE}、
+ * {@code engineFallback=true}、{@code engineFallbackReason=TIMEOUT|ENGINE_ERROR|SOLVER_UNAVAILABLE|SOLVER_BUSY}、
  * {@code fallbackMode=HARD_ONLY}、{@code fallbackAt}；DSL/参数校验失败只记
  * {@code validationFailure=true}，不降级、不写引擎降级标记。</p>
+ * <p>A0：{@code SOLVER_BUSY} 由适配器在求解槽位等待超时时写入，属于不可重试的容量拒绝。</p>
  */
 @Service
 public class ScheduleService {
@@ -94,6 +105,14 @@ public class ScheduleService {
     public static final String SOFT_WEIGHTS_KEY = "softWeights";
 
     /**
+     * 约束 DSL 归因键：写入求解配置后必须原样出现在 metrics，便于 explain/排查引用。
+     */
+    private static final List<String> CONSTRAINT_DSL_METRIC_KEYS = List.of(
+            "constraintDslId", "constraintDslCode", "constraintDslVersion",
+            "constraintDslChecksum", "constraintDslWeightTotal", "constraintDslWeights",
+            "softWeightSource", "softWeightsOverridden");
+
+    /**
      * 软约束规则条数（C19）。
      */
     private static final int SOFT_RULE_COUNT = 8;
@@ -139,7 +158,12 @@ public class ScheduleService {
     private final EngineRouter engineRouter;
 
     /**
-     * 构造排产服务。
+     * Portfolio 运行时（A1）；测试/旧装配可为 null，此时保持单候选语义。
+     */
+    private final SolvePortfolioCoordinator portfolioCoordinator;
+
+    /**
+     * 兼容既有装配/测试的构造器：portfolio 关闭。
      *
      * @param solverAdapters 已装配的求解适配器
      * @param assembler 问题装配器
@@ -154,6 +178,29 @@ public class ScheduleService {
                            StrategyService strategyService,
                            @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled,
                            @Value("${aps.solve.engine.ortools-enabled:false}") boolean ortoolsEnabled) {
+        this(solverAdapters, assembler, resultWriter, solveTaskRepository, strategyService,
+                fallbackEnabled, ortoolsEnabled, null);
+    }
+
+    /**
+     * Spring 装配入口（A1）：注入 Portfolio 运行时。
+     *
+     * @param solverAdapters 已装配的求解适配器
+     * @param assembler 问题装配器
+     * @param resultWriter 结果写入器
+     * @param solveTaskRepository 求解任务持久层
+     * @param strategyService 策略服务，读取软规则权重
+     * @param fallbackEnabled 引擎降级开关
+     * @param ortoolsEnabled OR-Tools 实现开关
+     * @param portfolioCoordinator portfolio 运行时，可空
+     */
+    @Autowired
+    public ScheduleService(List<SolverAdapter> solverAdapters, ScheduleProblemAssembler assembler,
+                           ScheduleResultWriter resultWriter, SolveTaskRepository solveTaskRepository,
+                           StrategyService strategyService,
+                           @Value("${aps.solve.fallback-enabled:true}") boolean fallbackEnabled,
+                           @Value("${aps.solve.engine.ortools-enabled:false}") boolean ortoolsEnabled,
+                           SolvePortfolioCoordinator portfolioCoordinator) {
         Map<SolverEngine, SolverAdapter> registry = new EnumMap<>(SolverEngine.class);
         for (SolverAdapter adapter : solverAdapters) {
             registry.put(adapter.engine(), adapter);
@@ -165,6 +212,7 @@ public class ScheduleService {
         this.strategyService = strategyService;
         this.fallbackEnabled = fallbackEnabled;
         this.engineRouter = new EngineRouter(strategyService, fallbackEnabled, ortoolsEnabled);
+        this.portfolioCoordinator = portfolioCoordinator;
     }
 
     /**
@@ -233,6 +281,44 @@ public class ScheduleService {
     }
 
     /**
+     * 把 ACTIVE 约束 DSL 的 8 条权重接入本次求解配置。
+     *
+     * <p>DSL 是用户在页面上显式激活的语义，优先于 strategyId 的历史权重；覆盖发生时
+     * 在 metrics 写 {@code softWeightsOverridden=true} 并打 WARN，避免“看起来用了策略、
+     * 实际用了 DSL”这种不可观测的静默替换。</p>
+     *
+     * @param config 原配置
+     * @param dsl 本次装配读取到的 ACTIVE DSL；无则为 null
+     * @return 注入 DSL 权重与归因字段后的配置
+     */
+    private SolveConfig applyActiveConstraintDsl(SolveConfig config, ActiveConstraintDsl dsl) {
+        if (dsl == null) {
+            return config;
+        }
+        Map<String, Object> parameters = new LinkedHashMap<>(
+                config.parameters() == null ? Map.of() : config.parameters());
+        boolean overridden = parameters.containsKey(SOFT_WEIGHTS_KEY);
+        parameters.put(SOFT_WEIGHTS_KEY, dsl.weights());
+        parameters.put("constraintDslId", String.valueOf(dsl.dslId()));
+        parameters.put("constraintDslCode", dsl.code());
+        parameters.put("constraintDslVersion", dsl.versionNo());
+        parameters.put("constraintDslChecksum", dsl.checksum());
+        parameters.put("constraintDslWeightTotal",
+                dsl.weights().values().stream().mapToInt(Integer::intValue).sum());
+        parameters.put("constraintDslWeights", dsl.weights());
+        parameters.put("softWeightSource", "ACTIVE_DSL");
+        parameters.put("softWeightsOverridden", overridden);
+        if (overridden) {
+            LOGGER.warn("ACTIVE 约束 DSL 覆盖了既有 softWeights: code={} v{}",
+                    dsl.code(), dsl.versionNo());
+        }
+        return new SolveConfig(config.engine(), config.timeoutSeconds(), config.moveThreadCount(),
+                config.acceptor(), config.randomSeed(), config.maximumStepCount(),
+                config.unimprovedSecondsSpentLimit(), config.direction(),
+                config.useFrozenAssignments(), Map.copyOf(parameters));
+    }
+
+    /**
      * 读取当前生效策略的 8 条软规则权重。
      *
      * <p>无策略、策略不存在或规则不满足“8 条且合计 100”时不注入权重；适配器在无权重时
@@ -287,6 +373,34 @@ public class ScheduleService {
     }
 
     /**
+     * 计算本次求解实际覆盖的订单号，用于写入 {@code solve_task.config.orderNos}。
+     *
+     * @param request 求解请求
+     * @return 实际参与求解的订单号
+     */
+    public List<String> effectiveOrderNos(SolveRequest request) {
+        return assembler.effectiveOrderNos(request);
+    }
+
+    /**
+     * 把求解配置与本次订单范围序列化为 {@code solve_task.config}。
+     *
+     * <p>保持配置字段仍在 JSON 顶层（{@code parameters} 等既有读取路径不变），仅追加
+     * {@code orderNos}；该范围是增量重排判定“当前版本”的唯一依据，不能只存引擎参数。</p>
+     *
+     * @param config 求解配置
+     * @param orderNos 本次求解实际覆盖的订单号
+     * @return 配置 JSON
+     */
+    @SuppressWarnings("unchecked")
+    static String toConfigJson(SolveConfig config, List<String> orderNos) {
+        Map<String, Object> json = config == null ? new LinkedHashMap<>()
+                : new LinkedHashMap<>(OBJECT_MAPPER.convertValue(config, Map.class));
+        json.put("orderNos", orderNos == null ? List.of() : orderNos);
+        return toJson(json);
+    }
+
+    /**
      * 兼容旧调用的同步提交。
      *
      * @param request 求解请求
@@ -301,8 +415,10 @@ public class ScheduleService {
         UUID tenantId = TenantContext.getTenantId();
         UUID sandboxId = request.sandboxId() == null
                 ? ScheduleProblem.DEFAULT_SANDBOX_ID : request.sandboxId();
+        List<String> scopeOrderNos = effectiveOrderNos(request);
         long solveTaskId = solveTaskRepository.create(tenantId, sandboxId, request.strategyId(),
-                route.effectiveEngine().getCode().toUpperCase(Locale.ROOT), toJson(config), null, "RUNNING");
+                route.effectiveEngine().getCode().toUpperCase(Locale.ROOT),
+                toConfigJson(config, scopeOrderNos), null, "RUNNING");
         ExecutionOutcome outcome = mergeRouting(execute(request, solveTaskId, config, adapter,
                 () -> false, (phase, progress, bestScore) -> { }), route);
         solveTaskRepository.finish(tenantId, solveTaskId, outcome.status().name(),
@@ -333,6 +449,7 @@ public class ScheduleService {
         ScheduleProblemAssembler.AssembledProblem assembled;
         try {
             assembled = assembler.assemble(request, config);
+            config = applyActiveConstraintDsl(config, assembled.activeConstraintDsl());
         } catch (BizException exception) {
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, null, durationMs);
@@ -361,16 +478,51 @@ public class ScheduleService {
 
         // 在 try 外声明：完整性守卫失败时要回填该解的分数与已排位数（不写降级标记）。
         ScheduleSolution solution = null;
+        PortfolioOutcome portfolio = null;
         try {
             progressSink.update("SOLVING", 0.10, null);
-            solution = adapter.solve(assembled.problem(), config);
+            if (portfolioCoordinator != null && portfolioCoordinator.isEnabled()) {
+                portfolio = portfolioCoordinator.run(assembled.problem(), config, adapter,
+                        new SolvePortfolioCoordinator.PortfolioContext(
+                                solveTaskId, assembled.expectedTaskCount(), stopSignal, progressSink));
+                solution = portfolio.solution();
+            } else {
+                solution = adapter.solve(assembled.problem(), config);
+            }
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, solution, durationMs);
+            if (portfolio != null) {
+                metrics.put("portfolio", portfolio.observation());
+            }
             // 保留 null 值：metrics.bestScore 必须恒存在（C20），值可为 null；
             // 详情装配侧用 null 友好的不可变拷贝，不再因显式 null 抛 NPE。
             metrics.put("bestScore", bestScore(solution));
+            if (portfolio != null && portfolio.cancelled()) {
+                // 取消路径也保留 portfolio 证据（候选状态/降级原因），便于事后定位是否已穿透所有候选。
+                metrics.put("phase", "CANCELLED");
+                metrics.put("progress", 1.0);
+                return new ExecutionOutcome(SolveTaskStatus.CANCELLED, null, null, metrics,
+                        "任务已终止", false, List.of(), assembled.problem(), solution);
+            }
+            if (portfolio != null && portfolio.timedOut()) {
+                metrics.put("expectedTaskCount", assembled.expectedTaskCount());
+                metrics.put("assignedTaskCount", 0);
+                metrics.put("excludedOrders", List.of());
+                return fallbackOrFailed(metrics, "TIMEOUT", portfolio.message(), null, List.of(),
+                        assembled.problem());
+            }
+            if (portfolio != null && solution == null) {
+                String reason = portfolio.failureReason() == null
+                        ? "ENGINE_ERROR" : portfolio.failureReason();
+                metrics.put("expectedTaskCount", assembled.expectedTaskCount());
+                metrics.put("assignedTaskCount", 0);
+                metrics.put("excludedOrders", List.of());
+                return fallbackOrFailed(metrics, reason, portfolio.message(), null, List.of(),
+                        assembled.problem());
+            }
             if (solution == null) {
-                return fallbackOrFailed(metrics, "ENGINE_ERROR", "求解器未返回结果", null, List.of());
+                return fallbackOrFailed(metrics, "ENGINE_ERROR", "求解器未返回结果", null, List.of(),
+                        assembled.problem());
             }
             // C20 §24.2：期望任务数 = Σ ScheduleProblem.orders[*].operations.size()，
             // 装配阶段被剔除的订单进入 excludedOrders 且不计入（当前装配对无路线订单直接拒绝，
@@ -380,12 +532,14 @@ public class ScheduleService {
             metrics.put("assignedTaskCount", solution.assignments().size());
             metrics.put("excludedOrders", List.of());
             if (!"SOLVED".equalsIgnoreCase(solution.status())) {
-                String reason = "TIMEOUT".equalsIgnoreCase(solution.status()) ? "TIMEOUT" : "ENGINE_ERROR";
+                String reason = "TIMEOUT".equalsIgnoreCase(solution.status())
+                        ? "TIMEOUT" : engineFailureReason(solution);
                 String failure = solution.message() == null ? "求解未得到可行解" : solution.message();
-                return fallbackOrFailed(metrics, reason, failure, solution, List.of());
+                return fallbackOrFailed(metrics, reason, failure, solution, List.of(),
+                        assembled.problem());
             }
             if (stopSignal.shouldStop()) {
-                return stopped(config, solution, startNanos);
+                return stopped(config, solution, startNanos, assembled.problem());
             }
 
             // 完整性前置校验：分数只能说明“没有硬惩罚”，不能保证“任务数全排满”。
@@ -394,7 +548,7 @@ public class ScheduleService {
                 return failed(metrics,
                         "求解结果不完整：期望 " + expectedTaskCount + " 个任务，实际排位 "
                                 + assignedTaskCount + " 个；拒绝落库（既有任务保持原样）",
-                        solution);
+                        solution, assembled.problem());
             }
 
             progressSink.update("PERSISTING", 0.90, bestScore(solution));
@@ -403,10 +557,11 @@ public class ScheduleService {
             metrics.put("justificationCount", writeOutcome.justificationCount());
             metrics.put("phase", "DONE");
             metrics.put("progress", 1.0);
-            progressSink.update("DONE", 1.0, bestScore(solution));
+            // QA2-05：不再落库后先发 RUNNING+DONE 进度帧；终态由 publishTerminal 输出。
             SolveResult base = SolveEnvelopeMapper.toResult(request, solution);
             return new ExecutionOutcome(SolveTaskStatus.SOLVED, score(solution, true), score(solution, false),
-                    metrics, enrichMessage(base.message(), solution), false, base.tasks());
+                    metrics, enrichMessage(base.message(), solution), false, base.tasks(),
+                    assembled.problem(), solution);
         } catch (ScheduleIntegrityException exception) {
             // 数据完整性守卫（如整表重叠）失败：引擎正常返回，是落库前最后一道闸门拦下了计划。
             // 按契约记 FAILED/FAILED 并保留明细，不写 engineFallback*/degraded（没走降级路径）。
@@ -415,7 +570,7 @@ public class ScheduleService {
             guardMetrics.put("expectedTaskCount", assembled.expectedTaskCount());
             guardMetrics.put("assignedTaskCount", solution == null ? 0 : solution.assignments().size());
             guardMetrics.put("excludedOrders", List.of());
-            return failed(guardMetrics, exception.getMessage(), solution);
+            return failed(guardMetrics, exception.getMessage(), solution, assembled.problem());
         } catch (BizException exception) {
             long durationMs = elapsedMillis(startNanos);
             Map<String, Object> metrics = baseMetrics(config, null, durationMs);
@@ -424,32 +579,45 @@ public class ScheduleService {
                 metrics.put("phase", "FAILED");
                 metrics.put("progress", 1.0);
                 return new ExecutionOutcome(SolveTaskStatus.FAILED, null, null, metrics,
-                        exception.getMessage(), true, List.of());
+                        exception.getMessage(), true, List.of(), assembled.problem(), null);
             }
-            return fallbackOrFailed(metrics, "ENGINE_ERROR", exception.getMessage(), null, List.of());
+            return fallbackOrFailed(metrics, "ENGINE_ERROR", exception.getMessage(), null, List.of(),
+                    assembled.problem());
         } catch (RuntimeException exception) {
             long durationMs = elapsedMillis(startNanos);
             if (stopSignal.shouldStop()) {
-                return stopped(config, null, startNanos);
+                return stopped(config, null, startNanos, assembled.problem());
             }
             boolean timedOut = durationMs >= timeoutBudgetMillis(config);
             return fallbackOrFailed(baseMetrics(config, null, durationMs),
-                    timedOut ? "TIMEOUT" : "ENGINE_ERROR", safeMessage(exception), null, List.of());
+                    timedOut ? "TIMEOUT" : "ENGINE_ERROR", safeMessage(exception), null, List.of(),
+                    assembled.problem());
         }
     }
 
     private ExecutionOutcome stopped(SolveConfig config, ScheduleSolution solution, long startNanos) {
+        return stopped(config, solution, startNanos, null);
+    }
+
+    private ExecutionOutcome stopped(SolveConfig config, ScheduleSolution solution, long startNanos,
+                                     ScheduleProblem problem) {
         Map<String, Object> metrics = baseMetrics(config, solution, elapsedMillis(startNanos));
         metrics.put("phase", "CANCELLED");
         metrics.put("progress", 1.0);
         return new ExecutionOutcome(SolveTaskStatus.CANCELLED,
                 solution == null ? null : score(solution, true),
                 solution == null ? null : score(solution, false),
-                metrics, "任务已终止", false, List.of());
+                metrics, "任务已终止", false, List.of(), problem, solution);
     }
 
     private ExecutionOutcome fallbackOrFailed(Map<String, Object> metrics, String reason, String message,
                                               ScheduleSolution solution, List<ScheduledTask> tasks) {
+        return fallbackOrFailed(metrics, reason, message, solution, tasks, null);
+    }
+
+    private ExecutionOutcome fallbackOrFailed(Map<String, Object> metrics, String reason, String message,
+                                              ScheduleSolution solution, List<ScheduledTask> tasks,
+                                              ScheduleProblem problem) {
         SolveTaskStatus status = "TIMEOUT".equals(reason) ? SolveTaskStatus.TIMEOUT : SolveTaskStatus.FAILED;
         metrics.put("phase", status.name());
         metrics.put("progress", 1.0);
@@ -488,7 +656,7 @@ public class ScheduleService {
         return new ExecutionOutcome(status,
                 solution == null ? null : score(solution, true),
                 solution == null ? null : score(solution, false),
-                metrics, finalMessage, false, tasks);
+                metrics, finalMessage, false, tasks, problem, solution);
     }
 
     /**
@@ -515,16 +683,21 @@ public class ScheduleService {
      */
     private ExecutionOutcome failed(Map<String, Object> metrics, String message,
                                     ScheduleSolution solution) {
+        return failed(metrics, message, solution, null);
+    }
+
+    private ExecutionOutcome failed(Map<String, Object> metrics, String message,
+                                    ScheduleSolution solution, ScheduleProblem problem) {
         metrics.put("phase", "FAILED");
         metrics.put("progress", 1.0);
         return new ExecutionOutcome(SolveTaskStatus.FAILED,
                 solution == null ? null : score(solution, true),
                 solution == null ? null : score(solution, false),
-                metrics, message, false, List.of());
+                metrics, message, false, List.of(), problem, solution);
     }
 
     /**
-     * 区分降级的具体成因：配置问题（目标引擎不可用）与容量问题（求解锁争用）不得混为同一个原因。
+     * 区分降级的具体成因：配置问题（目标引擎不可用）与容量问题（求解槽位争用）不得混为同一个原因。
      *
      * @param reason 降级原因
      * @param message 引擎返回的说明
@@ -537,10 +710,31 @@ public class ScheduleService {
         if ("TIMEOUT".equals(reason)) {
             return EngineRoute.DETAIL_SOLVER_TIMEOUT;
         }
+        if (SolveRetryReasons.SOLVER_BUSY.equals(reason)) {
+            return EngineRoute.DETAIL_LOCK_CONTENTION;
+        }
         if (message != null && message.startsWith(LOCK_CONTENTION_MESSAGE_PREFIX)) {
             return EngineRoute.DETAIL_LOCK_CONTENTION;
         }
         return EngineRoute.DETAIL_ENGINE_EXCEPTION;
+    }
+
+    /**
+     * 从引擎结果的 {@code metrics.extra} 读取 {@code engineFallbackReason}。
+     *
+     * <p>A0 用 {@code SOLVER_BUSY} 表达“求解槽位等待超时”，该原因不可重试；
+     * 其余非 SOLVED 结果仍按既有口径归为 {@code ENGINE_ERROR}，避免扩大重试面。</p>
+     *
+     * @param solution 引擎结果
+     * @return 降级原因
+     */
+    private static String engineFailureReason(ScheduleSolution solution) {
+        Map<String, Object> extra = solution.metrics() == null || solution.metrics().extra() == null
+                ? Map.of() : solution.metrics().extra();
+        Object raw = extra.get("engineFallbackReason");
+        String reason = raw == null ? null : String.valueOf(raw);
+        return SolveRetryReasons.SOLVER_BUSY.equals(reason)
+                ? SolveRetryReasons.SOLVER_BUSY : "ENGINE_ERROR";
     }
 
     /**
@@ -558,7 +752,8 @@ public class ScheduleService {
             route.applyFallback(metrics);
         }
         return new ExecutionOutcome(outcome.status(), outcome.scoreHard(), outcome.scoreSoft(),
-                metrics, outcome.message(), outcome.validationFailure(), outcome.tasks());
+                metrics, outcome.message(), outcome.validationFailure(), outcome.tasks(),
+                outcome.problem(), outcome.solution());
     }
 
     private static long timeoutBudgetMillis(SolveConfig config) {
@@ -619,12 +814,72 @@ public class ScheduleService {
                 metrics.put(key, extra.get(key));
             }
         }
+        // 约束 DSL 归因：本次用了哪条、哪个版本、8 条权重各是多少，必须能从任务度量里读到。
+        Map<String, Object> parameters = config.parameters() == null ? Map.of() : config.parameters();
+        for (String key : CONSTRAINT_DSL_METRIC_KEYS) {
+            if (parameters.containsKey(key)) {
+                metrics.put(key, parameters.get(key));
+            }
+        }
+        // A0 基准绑定：权重哈希 + 终止预算必须随任务持久化，报告/回归才能证明“用的是哪套权重、哪种终止”。
+        metrics.put("configHash", SoftWeightConfigHasher.hash(effectiveSoftWeights(parameters)));
+        metrics.put("unimprovedSecondsSpentLimit", config.unimprovedSecondsSpentLimit());
+        metrics.put("maximumStepCount", config.maximumStepCount());
+        metrics.put("terminationMode", config.maximumStepCount() > 0 ? "STEP_COUNT" : "WALL_CLOCK");
         if (solution != null && solution.metrics() != null
                 && solution.metrics().terminationReason() != null) {
             // 不输出 stepCount/unimprovedStepCount：Timefold 2.8.0 社区版无步数口径，恒 0 会被读成“0 步”。
             metrics.put("terminationReason", solution.metrics().terminationReason());
         }
+        // C54：scoreHistory 恒存在（无点时为 []），最多 200 点；timeToBestMs 无事件时为 null。
+        List<ScorePoint> history = solution == null || solution.metrics() == null
+                ? List.of() : solution.metrics().scoreHistory();
+        ScoreTimelines.Timeline timeline = ScoreTimelines.limit(history);
+        metrics.put("scoreHistory", pointMaps(timeline.points()));
+        metrics.put("timeToBestMs", timeline.timeToBestMs());
+        // A1：排队等待可观测（生命周期在工作线程入口写入）。
+        metrics.put("queueWaitMs", SolveQueueContext.current());
         return metrics;
+    }
+
+    /**
+     * 评分点转可序列化 Map（避免 ObjectMapper 直接处理 record 的模块依赖）。
+     *
+     * @param points 评分点
+     * @return Map 列表
+     */
+    private static List<Map<String, Object>> pointMaps(List<ScorePoint> points) {
+        List<Map<String, Object>> maps = new ArrayList<>(points.size());
+        for (ScorePoint point : points) {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("elapsedMs", point.elapsedMs());
+            map.put("step", point.step());
+            map.put("hardScore", point.hardScore());
+            map.put("softScore", point.softScore());
+            maps.add(map);
+        }
+        return maps;
+    }
+
+    /**
+     * 从请求参数提取实际生效的软权重，供 {@code configHash} 绑定；非数字值忽略，
+     * 不在此处做合法性校验（合法性由引擎适配器负责，度量构建不得因权重非法而抛错）。
+     *
+     * @param parameters 求解参数
+     * @return 规则编码到权重
+     */
+    private static Map<String, Integer> effectiveSoftWeights(Map<String, Object> parameters) {
+        Object raw = parameters.get(SOFT_WEIGHTS_KEY);
+        if (!(raw instanceof Map<?, ?> map)) {
+            return Map.of();
+        }
+        Map<String, Integer> weights = new LinkedHashMap<>();
+        map.forEach((code, weight) -> {
+            if (code != null && weight instanceof Number number) {
+                weights.put(String.valueOf(code), number.intValue());
+            }
+        });
+        return weights;
     }
 
     private static String enrichMessage(String message, ScheduleSolution solution) {
@@ -688,6 +943,8 @@ public class ScheduleService {
      * @param message 说明
      * @param validationFailure 是否为校验失败（不降级）
      * @param tasks 求解结果任务（仅同步兼容路径使用）
+     * @param problem 题面引用（A1 钩子载荷，可空）
+     * @param solution 结果引用（A1 钩子载荷，可空）
      */
     public record ExecutionOutcome(
             SolveTaskStatus status,
@@ -696,7 +953,31 @@ public class ScheduleService {
             Map<String, Object> metrics,
             String message,
             boolean validationFailure,
-            List<ScheduledTask> tasks
+            List<ScheduledTask> tasks,
+            ScheduleProblem problem,
+            ScheduleSolution solution
     ) {
+
+        /**
+         * 兼容既有 7 参调用：不携带 problem/solution 引用。
+         *
+         * @param status 终态
+         * @param scoreHard 硬分，可空
+         * @param scoreSoft 软分，可空
+         * @param metrics 指标
+         * @param message 说明
+         * @param validationFailure 是否为校验失败
+         * @param tasks 求解结果任务
+         */
+        public ExecutionOutcome(
+                SolveTaskStatus status,
+                Long scoreHard,
+                Long scoreSoft,
+                Map<String, Object> metrics,
+                String message,
+                boolean validationFailure,
+                List<ScheduledTask> tasks) {
+            this(status, scoreHard, scoreSoft, metrics, message, validationFailure, tasks, null, null);
+        }
     }
 }

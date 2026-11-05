@@ -33,6 +33,11 @@ public final class ConstraintCodes {
     public static final String OPERATION_DEPENDENCY = "operationDependency";
 
     /**
+     * 跨窗口下界：订单窗口内工序不得早于该订单窗口外 FROZEN 任务的最大结束时间。
+     */
+    public static final String ORDER_NOT_BEFORE = "orderNotBefore";
+
+    /**
      * 冻结任务资源不可变。
      */
     public static final String FROZEN_RESOURCE = "frozenResource";

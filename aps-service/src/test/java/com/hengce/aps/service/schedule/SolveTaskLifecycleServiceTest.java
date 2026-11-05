@@ -7,6 +7,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -25,6 +27,9 @@ import com.hengce.aps.solver.api.SolveRequest;
 import com.hengce.aps.solver.api.SolverEngine;
 import com.hengce.aps.solver.api.task.SolveTaskDetail;
 import com.hengce.aps.solver.api.task.SolveTaskStatus;
+import com.hengce.aps.service.mrp.MrpBlockingChecker;
+import com.hengce.aps.service.mrp.MrpBlockingDecision;
+import com.hengce.aps.service.mrp.MrpStatus;
 import java.sql.SQLException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -39,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataIntegrityViolationException;
 
@@ -223,6 +229,30 @@ class SolveTaskLifecycleServiceTest {
         assertTrue(detail.degraded());
     }
 
+    @Test
+    @DisplayName("全量求解与增量同口径：齐套未通过时受理阶段返回 42200，不创建 solve_task")
+    void submitShouldBlockFullSolveWhenMrpShortage() {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        SolveProgressPublisher publisher = new SolveProgressPublisher(event -> { }, "none");
+        ConstraintJustificationRepository justificationRepository = new ConstraintJustificationRepository(null);
+        MrpBlockingChecker blocker = mock(MrpBlockingChecker.class);
+        when(blocker.evaluate(any(), anyList(), anyBoolean()))
+                .thenReturn(new MrpBlockingDecision(true, MrpStatus.SHORTAGE, List.of("M-001"),
+                        "MRP 齐套未通过（SHORTAGE），缺料物料: M-001"));
+        SolveTaskLifecycleService lifecycle = new SolveTaskLifecycleService(repository,
+                justificationRepository, scheduleService, publisher, blocker,
+                false, true, 8, 0, new RecordingRetryClock(), 0, 0L,
+                new SolvePostProcessorChain(List.of()), 0, 0);
+
+        BizException exception = assertThrows(BizException.class,
+                () -> lifecycle.submit(request(), null));
+
+        assertEquals(ErrorCode.UNPROCESSABLE_ENTITY, exception.getErrorCode());
+        assertTrue(exception.getMessage().contains("M-001"), "42200 响应必须带缺料明细");
+        assertEquals(0, repository.countAll(), "齐套未通过不得创建 solve_task");
+    }
+
     private static SolveTaskLifecycleService lifecycle(FakeSolveTaskRepository repository,
                                                       ScheduleService scheduleService,
                                                       boolean asyncEnabled,
@@ -238,10 +268,40 @@ class SolveTaskLifecycleServiceTest {
                                                       SolveRetryClock retryClock,
                                                       int maxRetries,
                                                       long delaySeconds) {
+        return lifecycle(repository, scheduleService, asyncEnabled, fallbackEnabled, retryClock,
+                maxRetries, delaySeconds, new SolvePostProcessorChain(List.of()));
+    }
+
+    private static SolveTaskLifecycleService lifecycle(FakeSolveTaskRepository repository,
+                                                      ScheduleService scheduleService,
+                                                      boolean asyncEnabled,
+                                                      boolean fallbackEnabled,
+                                                      SolveRetryClock retryClock,
+                                                      int maxRetries,
+                                                      long delaySeconds,
+                                                      SolvePostProcessorChain postProcessorChain) {
+        return lifecycle(repository, scheduleService, asyncEnabled, fallbackEnabled, retryClock,
+                maxRetries, delaySeconds, postProcessorChain, 0, 0);
+    }
+
+    private static SolveTaskLifecycleService lifecycle(FakeSolveTaskRepository repository,
+                                                      ScheduleService scheduleService,
+                                                      boolean asyncEnabled,
+                                                      boolean fallbackEnabled,
+                                                      SolveRetryClock retryClock,
+                                                      int maxRetries,
+                                                      long delaySeconds,
+                                                      SolvePostProcessorChain postProcessorChain,
+                                                      int maxConcurrentSolvers,
+                                                      int workerConcurrency) {
         SolveProgressPublisher publisher = new SolveProgressPublisher(event -> { }, "none");
         ConstraintJustificationRepository justificationRepository = new ConstraintJustificationRepository(null);
+        MrpBlockingChecker mrpBlockingChecker = mock(MrpBlockingChecker.class);
+        when(mrpBlockingChecker.evaluate(any(), anyList(), anyBoolean()))
+                .thenReturn(new MrpBlockingDecision(false, MrpStatus.FULL, List.of(), "通过"));
         return new SolveTaskLifecycleService(repository, justificationRepository, scheduleService, publisher,
-                asyncEnabled, fallbackEnabled, 8, 0, retryClock, maxRetries, delaySeconds);
+                mrpBlockingChecker, asyncEnabled, fallbackEnabled, 8, 0, retryClock, maxRetries, delaySeconds,
+                postProcessorChain, maxConcurrentSolvers, workerConcurrency);
     }
 
     private static ScheduleService mockScheduleService(int timeoutSeconds) {
@@ -372,6 +432,152 @@ class SolveTaskLifecycleServiceTest {
         release.countDown();
     }
 
+    @Test
+    void postProcessorShouldFireOnSuccessEvenIfAnotherProcessorThrows() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenReturn(outcome(SolveTaskStatus.SOLVED));
+        RecordingPostProcessor recorder = new RecordingPostProcessor();
+        SolvePostProcessorChain chain = new SolvePostProcessorChain(List.of(
+                event -> {
+                    throw new IllegalStateException("processor boom");
+                }, recorder));
+
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true,
+                new RecordingRetryClock(), 0, 0L, chain);
+        SolveTaskDetail submitted = lifecycle.submit(request(), null);
+        SolveTaskDetail finished = awaitTerminal(lifecycle, submitted.taskId(), 3000);
+
+        assertEquals(SolveTaskStatus.SOLVED.name(), finished.status(),
+                "后置处理器抛异常不得影响求解终态");
+        assertEquals(1, recorder.events().size(), "SOLVED 必须触发一次后置钩子");
+        SolveFinishEvent event = recorder.events().get(0);
+        assertEquals("SOLVED", event.status());
+        assertEquals(Long.valueOf(-10L), event.scoreSoft());
+        assertTrue(event.metrics().containsKey("phase"));
+    }
+
+    @Test
+    void postProcessorShouldFireOnFailure() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenThrow(new IllegalStateException("timefold crashed"));
+        RecordingPostProcessor recorder = new RecordingPostProcessor();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true,
+                new RecordingRetryClock(), 0, 0L, new SolvePostProcessorChain(List.of(recorder)));
+
+        SolveTaskDetail failed = awaitTerminal(lifecycle, lifecycle.submit(request(), null).taskId(), 3000);
+
+        assertEquals(SolveTaskStatus.FAILED.name(), failed.status());
+        assertEquals(1, recorder.events().size());
+        assertEquals("FAILED", recorder.events().get(0).status());
+        assertEquals("ENGINE_ERROR", recorder.events().get(0).metrics().get("engineFallbackReason"));
+    }
+
+    @Test
+    void postProcessorShouldFireOnTimeout() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(1);
+        CountDownLatch release = new CountDownLatch(1);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    release.await(10, TimeUnit.SECONDS);
+                    return outcome(SolveTaskStatus.SOLVED);
+                });
+        RecordingPostProcessor recorder = new RecordingPostProcessor();
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true,
+                new RecordingRetryClock(), 0, 0L, new SolvePostProcessorChain(List.of(recorder)));
+
+        SolveTaskDetail timedOut = awaitTerminal(lifecycle, lifecycle.submit(request(), null).taskId(), 6000);
+        release.countDown();
+
+        assertEquals(SolveTaskStatus.TIMEOUT.name(), timedOut.status());
+        assertEquals(1, recorder.events().size(), "TIMEOUT 必须触发后置钩子");
+        assertEquals("TIMEOUT", recorder.events().get(0).status());
+        assertEquals("TIMEOUT", recorder.events().get(0).metrics().get("engineFallbackReason"));
+    }
+
+    /**
+     * A1 验收：工作线程与槽位对齐后，两个 SolveTask 必须真的同时处于 RUNNING；
+     * 第三个任务排队等待写入 {@code queueWaitMs} 并累加进 {@code portfolio.slotWaitMs}。
+     */
+    @Test
+    void twoSolveTasksShouldRunConcurrentlyAndExposeQueueWait() throws Exception {
+        FakeSolveTaskRepository repository = new FakeSolveTaskRepository();
+        ScheduleService scheduleService = mockScheduleService(60);
+        CountDownLatch solving = new CountDownLatch(2);
+        CountDownLatch release = new CountDownLatch(1);
+        when(scheduleService.execute(any(), anyLong(), any(), any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    solving.countDown();
+                    release.await(10, TimeUnit.SECONDS);
+                    return outcomeWithPortfolio(SolveTaskStatus.SOLVED);
+                });
+        SolveTaskLifecycleService lifecycle = lifecycle(repository, scheduleService, true, true,
+                new RecordingRetryClock(), 0, 0L, new SolvePostProcessorChain(List.of()), 4, 2);
+
+        SolveTaskDetail first = lifecycle.submit(request(), null);
+        SolveTaskDetail second = lifecycle.submit(request(), null);
+
+        assertTrue(solving.await(3, TimeUnit.SECONDS), "两个 SolveTask 必须同时进入求解（workerConcurrency=2）");
+        assertEquals(SolveTaskStatus.RUNNING.name(), lifecycle.detail(first.taskId()).status());
+        assertEquals(SolveTaskStatus.RUNNING.name(), lifecycle.detail(second.taskId()).status(),
+                "第二个任务必须也是 RUNNING，而不是排队等待");
+
+        SolveTaskDetail queued = lifecycle.submit(request(), null);
+        awaitStatus(lifecycle, queued.taskId(), SolveTaskStatus.PENDING, 2000);
+        Thread.sleep(150L);
+        release.countDown();
+
+        SolveTaskDetail firstDone = awaitTerminal(lifecycle, first.taskId(), 5000);
+        SolveTaskDetail secondDone = awaitTerminal(lifecycle, second.taskId(), 5000);
+        SolveTaskDetail queuedDone = awaitTerminal(lifecycle, queued.taskId(), 5000);
+        assertEquals(SolveTaskStatus.SOLVED.name(), firstDone.status());
+        assertEquals(SolveTaskStatus.SOLVED.name(), secondDone.status());
+        assertEquals(SolveTaskStatus.SOLVED.name(), queuedDone.status());
+        assertEquals(Long.valueOf(-10L), firstDone.scoreSoft(), "各自分数独立返回");
+        assertEquals(Long.valueOf(-10L), secondDone.scoreSoft());
+
+        long queueWaitMs = ((Number) queuedDone.metrics().get("queueWaitMs")).longValue();
+        assertTrue(queueWaitMs >= 100L, "排队等待必须可观测，实际 queueWaitMs=" + queueWaitMs);
+        Map<?, ?> portfolio = (Map<?, ?>) queuedDone.metrics().get("portfolio");
+        assertNotNull(portfolio, "排队等待要累加进 portfolio.slotWaitMs");
+        assertEquals(queueWaitMs, ((Number) portfolio.get("slotWaitMs")).longValue(),
+                "slotWaitMs 必须包含工作队列等待");
+        assertTrue(((Number) firstDone.metrics().get("queueWaitMs")).longValue() < 100L,
+                "立即拿到 worker 的任务几乎没有排队等待");
+    }
+
+    private static ScheduleService.ExecutionOutcome outcomeWithPortfolio(SolveTaskStatus status) {
+        Map<String, Object> metrics = new java.util.LinkedHashMap<>();
+        metrics.put("phase", status.name());
+        metrics.put("progress", 1.0);
+        Map<String, Object> portfolio = new java.util.LinkedHashMap<>();
+        portfolio.put("enabled", true);
+        portfolio.put("slotWaitMs", 0L);
+        metrics.put("portfolio", portfolio);
+        return new ScheduleService.ExecutionOutcome(status, 0L, -10L, metrics, "ok", false, List.of());
+    }
+
+    /**
+     * 记录终态事件的后置处理器。
+     */
+    private static final class RecordingPostProcessor implements SolvePostProcessor {
+
+        private final List<SolveFinishEvent> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public void onSolveFinished(SolveFinishEvent event) {
+            events.add(event);
+        }
+
+        List<SolveFinishEvent> events() {
+            return List.copyOf(events);
+        }
+    }
+
     private static ScheduleService.ExecutionOutcome outcome(SolveTaskStatus status) {
         Map<String, Object> metrics = new java.util.LinkedHashMap<>();
         metrics.put("phase", status.name());
@@ -393,7 +599,7 @@ class SolveTaskLifecycleServiceTest {
     }
 
     /**
-     * 可注入重试时钟：记录退避时长但立即返回，等价于“不真实休眠”。
+     * 可注入重试时钟：记录退避时长但不阻塞调用线程；重试任务在公共池触发后再回到求解工作线程。
      */
     private static final class RecordingRetryClock implements SolveRetryClock {
 
@@ -409,6 +615,12 @@ class SolveTaskLifecycleServiceTest {
         @Override
         public void await(java.time.Duration delay) {
             waits.add(delay);
+        }
+
+        @Override
+        public java.util.concurrent.Future<?> schedule(java.time.Duration delay, Runnable task) {
+            waits.add(delay);
+            return java.util.concurrent.CompletableFuture.runAsync(task);
         }
 
         List<java.time.Duration> waits() {
@@ -456,6 +668,10 @@ class SolveTaskLifecycleServiceTest {
         private boolean sandboxMissing;
 
         private boolean sandboxFkViolation;
+
+        int countAll() {
+            return rows.size();
+        }
 
         void markSandboxMissing() {
             this.sandboxMissing = true;

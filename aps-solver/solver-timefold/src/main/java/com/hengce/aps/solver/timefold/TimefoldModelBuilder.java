@@ -20,6 +20,8 @@ import com.hengce.aps.solver.timefold.duration.TaskDuration;
 import com.hengce.aps.solver.timefold.model.ResourcePlan;
 import com.hengce.aps.solver.timefold.model.SchedulePlan;
 import com.hengce.aps.solver.timefold.model.TaskPlan;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -40,6 +42,8 @@ import java.util.UUID;
  * 三项降级标记写入计划解并随结果进入 {@code SolveMetrics.extra}。</p>
  */
 public final class TimefoldModelBuilder {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(TimefoldModelBuilder.class);
 
     /**
      * 开始时间候选的粒度（小时）。
@@ -85,7 +89,13 @@ public final class TimefoldModelBuilder {
         for (TaskAssignment frozen : problem.frozenAssignments()) {
             frozenByKey.put(taskKey(frozen.orderId(), frozen.operationIndex()), frozen);
         }
+        Map<String, TaskAssignment> initialByKey = new LinkedHashMap<>();
+        for (TaskAssignment initial : problem.initialAssignments()) {
+            initialByKey.put(taskKey(initial.orderId(), initial.operationIndex()), initial);
+        }
 
+        LocalDateTime base = problem.baseTime() == null ? currentBaseTime() : problem.baseTime();
+        int initializedTaskCount = 0;
         List<TaskPlan> tasks = new ArrayList<>();
         for (SchedulingOrder order : problem.orders()) {
             List<SchedulingOperation> operations = order.operations().stream()
@@ -101,13 +111,36 @@ public final class TimefoldModelBuilder {
                         operation, resource, resourceById, windowsByResource));
                 tasks.add(task);
                 placeFrozenTask(task, frozen, resourcePlans);
+                if (task.isPinned() || placeInitialTask(task, initialByKey.get(
+                        taskKey(order.orderId(), operation.operationIndex())), resourcePlans)) {
+                    initializedTaskCount++;
+                }
+            }
+        }
+
+        if (!initialByKey.isEmpty()) {
+            // 预热：按既有开始时间排序资源列表，使 previousTask 与实际相邻前序一致，
+            // 还原既有计划的换型工时；否则列表顺序随机会让换型值变化，凭空产生硬违约。
+            for (ResourcePlan resourcePlan : resourcePlans.values()) {
+                resourcePlan.getTasks().sort(Comparator.comparing(
+                        TaskPlan::getStartTime, Comparator.nullsLast(Comparator.naturalOrder())));
             }
         }
 
         DependencyGraph dependencyGraph = DependencyGraphBuilder.build(problem.orders());
-        List<LocalDateTime> startTimes = buildStartTimeRange(tasks);
+        // 只有“所有资源都配置了可用时段”时，候选开始时间才能按窗口并集裁剪；
+        // 任一资源无日历时它被视为全天可用，裁剪会误删该资源的合法开始时间。
+        boolean fullCalendar = resourceById.keySet().stream().allMatch(resourceId -> {
+            List<TimeWindow> windows = windowsByResource.get(resourceId);
+            return windows != null && !windows.isEmpty();
+        });
+        List<LocalDateTime> startTimes = buildStartTimeRange(
+                tasks, base, fullCalendar ? windowsByResource : Map.of());
         SchedulePlan plan = new SchedulePlan(
                 startTimes, new ArrayList<>(resourcePlans.values()), tasks, dependencyGraph.edges());
+        // 只有“全部任务都拿到了既有排产结果”才能跳过构造启发式；否则初始解不完整，
+        // 必须退回冷启动（构造启发式会重新排满）。
+        plan.setWarmStarted(!tasks.isEmpty() && initializedTaskCount == tasks.size());
         plan.setCalendarFallback(calendarFallback);
         plan.setDependencyFallback(dependencyGraph.fallback());
         plan.setSetupMatrixFallback(problem.setupMatrix().isEmpty());
@@ -169,6 +202,7 @@ public final class TimefoldModelBuilder {
             }
         }
         HardSoftScore score = best.getScore() == null ? HardSoftScore.ZERO : best.getScore();
+        int frozenStartOutsideCalendar = frozenStartOutsideCalendarCount(best.getTasks());
         int unassignedTaskCount = (int) best.getTasks().stream()
                 .filter(task -> task.getResourceId() == null || task.getStartTime() == null)
                 .count();
@@ -177,6 +211,10 @@ public final class TimefoldModelBuilder {
         if (usable) {
             // 时限到达但结果可用（覆盖完整 + hard=0）时仍判 SOLVED，不因“超时”抹掉合法结果。
             status = "SOLVED";
+        } else if (unassignedTaskCount == 0 && frozenStartOutsideCalendar > 0) {
+            // 任务已排满且冻结起点非法：任何重排都无法消除该硬违约，应明确判为不可行，
+            // 而不是因为时限到达被改判 TIMEOUT（TIMEOUT 语义是“构造未完成、部分解丢弃”）。
+            status = "INFEASIBLE";
         } else if (timeLimitReached) {
             // 时限到达且结果不可用：一律 TIMEOUT，不得用 ENGINE_ERROR 兜时间上限。
             status = "TIMEOUT";
@@ -192,6 +230,8 @@ public final class TimefoldModelBuilder {
         extra.put("calendarFallback", best.isCalendarFallback());
         extra.put("dependencyFallback", best.isDependencyFallback());
         extra.put("setupMatrixFallback", best.isSetupMatrixFallback());
+        // 冻结任务固定起点非法时不做静默合法化：违约保留在结果里，并在此显式计数。
+        extra.put("frozenStartOutsideCalendarCount", frozenStartOutsideCalendar);
         extra.putAll(solverExtra);
         return new ScheduleSolution(
                 status,
@@ -294,8 +334,41 @@ public final class TimefoldModelBuilder {
         }
         task.setOperationCode(operation.operationCode());
         task.setMaterialCode(order.materialCode());
+        task.setOrderNotBefore(order.notBefore());
         applySoftAttributes(task, order);
         return task;
+    }
+
+    /**
+     * 把既有排产结果作为预热初始解放入资源序列。
+     *
+     * <p>只要资源在本次题面内就放入初始解，即使时间落在 horizon 外：这些任务作为
+     * “未改进的起点”，由局部搜索把它们移回窗口内并修掉日历违约。冻结/固定任务
+     * 已由 {@link #placeFrozenTask} 放置，这里直接跳过。</p>
+     *
+     * @param task 计划任务
+     * @param initial 既有分配，可空
+     * @param resourcePlans 资源计划
+     * @return {@code true} 表示已作为初始解放置
+     */
+    private static boolean placeInitialTask(
+            TaskPlan task,
+            TaskAssignment initial,
+            Map<UUID, ResourcePlan> resourcePlans) {
+        if (initial == null || task.isPinned() || task.isFrozen()) {
+            return false;
+        }
+        LocalDateTime start = toLocal(initial.startTime());
+        if (start == null) {
+            return false;
+        }
+        ResourcePlan resourcePlan = resourcePlans.get(initial.resourceId());
+        if (resourcePlan == null) {
+            return false;
+        }
+        task.setStartTime(start);
+        resourcePlan.getTasks().add(task);
+        return true;
     }
 
     /**
@@ -359,6 +432,36 @@ public final class TimefoldModelBuilder {
         if (resourcePlan != null) {
             resourcePlan.getTasks().add(task);
         }
+        if (!allowedAt(task, task.getPinnedStartTime())) {
+            // 确定性策略：冻结起点原样保留（不移动、不丢弃、不静默合法化）。它不可移动，
+            // 日历硬违约无法通过重排消除；我们让 calendarAvailability 如实扣分，并由
+            // metrics.frozenStartOutsideCalendarCount、WARN 日志与结果 message 标记不可行。
+            LOGGER.warn("冻结任务起点不在可用窗口内，按固定解保留: orderNo={} operationIndex={} "
+                            + "start={} resourceId={}",
+                    task.getOrderNo(), task.getOperationIndex(),
+                    task.getPinnedStartTime(), task.getPinnedResourceId());
+        }
+    }
+
+    /**
+     * 统计“有固定起点且最终起点仍不满足可用时段”的任务数。
+     *
+     * <p>用求解后的实际开始时间判定，因此换型矩阵导致的实际换型变长也能被计入
+     * （候选裁剪本身仍按静态换型近似）。</p>
+     *
+     * @param tasks 计划任务
+     * @return 数量；{@code 0} 表示没有冻结任务落在日历外
+     */
+    static int frozenStartOutsideCalendarCount(List<TaskPlan> tasks) {
+        int count = 0;
+        for (TaskPlan task : tasks) {
+            if (task.getPinnedStartTime() != null
+                    && task.getStartTime() != null
+                    && !task.isWithinAvailability()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
@@ -423,23 +526,165 @@ public final class TimefoldModelBuilder {
                 .orElseThrow(() -> new IllegalArgumentException("排产问题缺少可用资源"));
     }
 
-    private static List<LocalDateTime> buildStartTimeRange(List<TaskPlan> tasks) {
-        LocalDateTime base = LocalDateTime.now(ZoneOffset.UTC)
+    /**
+     * 当前时刻向下取整到小时（UTC）；仅在题面未指定基准时间时使用。
+     *
+     * @return 基准时间
+     */
+    static LocalDateTime currentBaseTime() {
+        return LocalDateTime.now(ZoneOffset.UTC)
                 .withMinute(0)
                 .withSecond(0)
                 .withNano(0);
-        List<LocalDateTime> startTimes = new ArrayList<>();
+    }
+
+    /**
+     * 构建开始时间候选集。
+     *
+     * <p>传入资源可用窗口时，只保留“{@code start + 任务占用时长} 完整落在可用窗口内”的整点：
+     * 任务占用块为 {@code [start, start + 静态换型 + 加工时长)}，必须同时满足主资源与辅助资源的
+     * 可用时段要求（口径与 {@code ResourceAvailability.allows} 一致）。只判断 {@code start}
+     * 是否落在窗口会漏掉“任务尾部跨过窗口终点”的候选，导致 2 小时任务在 8 小时班次末尾开始、
+     * 必然触发 {@code calendarAvailability} 硬违约。</p>
+     *
+     * <p>裁剪只剔除“对任何可移动任务都不可用”的整点：任一任务原本可用的候选都会被保留，
+     * 因此不会把本来可行的计划裁成不可行。</p>
+     *
+     * <p><b>已赋值起点策略（冻结/预热）</b>：pinned/预热起点一律补入值域。Timefold 在初始化时
+     * 会校验“已赋值必须属于值域”，若为了合法性把非法冻结起点排除出值域，求解会直接
+     * {@code FAILED}（回归用例 {@code frozenStartOutsideCalendarIsKeptFixedAndReported} 已固化）。
+     * 因此冻结任务的非法起点<b>原样保留</b>：它不可移动（{@code @PlanningPin} 与
+     * {@code frozenStartTime} 硬约束），我们既不移动也不丢弃，而是让它以
+     * {@code calendarAvailability} 硬违约显式暴露，并通过 {@code metrics.extra} 的
+     * {@code frozenStartOutsideCalendarCount}、构建期 WARN 与结果 message 如实标记不可行。
+     * 非冻结的预热任务仍可移动，非法预热起点交由局部搜索修回窗口；修不掉同样以硬违约可见，
+     * 不会静默当作合法。</p>
+     *
+     * @param tasks 计划任务
+     * @param base 基准时间（UTC 整点）
+     * @param windowsByResource 资源可用窗口；为空表示不裁剪
+     * @return 升序候选开始时间
+     */
+    private static List<LocalDateTime> buildStartTimeRange(
+            List<TaskPlan> tasks, LocalDateTime base,
+            Map<UUID, List<TimeWindow>> windowsByResource) {
+        List<LocalDateTime> fullGrid = new ArrayList<>();
         for (int hour = 0; hour <= HORIZON_HOURS; hour += START_TIME_STEP_HOURS) {
-            startTimes.add(base.plusHours(hour));
+            fullGrid.add(base.plusHours(hour));
+        }
+        List<LocalDateTime> startTimes;
+        if (windowsByResource.isEmpty()) {
+            startTimes = new ArrayList<>(fullGrid);
+        } else {
+            int unionSegments = mergedWindows(windowsByResource).size();
+            startTimes = new ArrayList<>();
+            for (LocalDateTime candidate : fullGrid) {
+                if (fitsAnyMovableTask(candidate, tasks)) {
+                    startTimes.add(candidate);
+                }
+            }
+            if (startTimes.isEmpty()) {
+                // 没有任何候选能完整容纳任务（例如所有任务时长都超过窗口）时退回完整网格，
+                // 避免候选为空导致求解除零；不可行由硬约束给出负分。
+                startTimes = new ArrayList<>(fullGrid);
+            }
+            LOGGER.info("开始时间候选裁剪: {} -> {} 个（按任务时长完整落入窗口，窗口并集 {} 段）",
+                    fullGrid.size(), startTimes.size(), unionSegments);
         }
         for (TaskPlan task : tasks) {
+            // 已赋值起点必须属于值域：Timefold 初始化校验会拒绝“赋值不在值域”的实体
+            // （已用回归用例验证，移除非法冻结起点会让求解直接 FAILED）。因此这里不做过滤，
+            // 非法冻结起点的可见性由 placeFrozenTask 日志、metrics 计数与 calendarAvailability
+            // 硬约束共同保证，而不是把它从值域里“藏起来”。
             LocalDateTime pinned = task.getPinnedStartTime();
             if (pinned != null && !startTimes.contains(pinned)) {
                 startTimes.add(pinned);
             }
+            // 预热初始解的时间可能落在 horizon 外；原样加入候选以保持预热保真。
+            // 非冻结任务仍可移动，非法预热起点由局部搜索修回窗口；修不掉则硬违约如实可见。
+            LocalDateTime warm = task.getStartTime();
+            if (warm != null && !startTimes.contains(warm)) {
+                startTimes.add(warm);
+            }
         }
         startTimes.sort(Comparator.naturalOrder());
         return startTimes;
+    }
+
+    /**
+     * 判断任务在给定起点下的占用块是否完整落在其全部可用时段内。
+     *
+     * <p>占用块口径与 {@link #fitsAnyMovableTask} 一致：静态换型 + 加工时长。与换型矩阵的
+     * 差异见该方法的说明（矩阵换型可能更长，此处只做候选裁剪的近似）。</p>
+     *
+     * @param task 计划任务
+     * @param start 开始时间
+     * @return {@code true} 表示完整落在可用时段内；无窗口要求视为 7×24
+     */
+    private static boolean allowedAt(TaskPlan task, LocalDateTime start) {
+        List<ResourceAvailability> requirements = task.getAvailabilityRequirements();
+        if (requirements.isEmpty()) {
+            return true;
+        }
+        LocalDateTime end = start.plusSeconds(
+                task.getStaticSetupSeconds() + task.getRunSeconds());
+        return requirements.stream().allMatch(requirement -> requirement.allows(start, end));
+    }
+
+    /**
+     * 判断开始时间是否至少能被一个可移动任务完整占用。
+     *
+     * <p>占用块按静态换型 + 加工时长估算（与任务初始的 {@code getEndTime()} 口径一致），
+     * 并要求完整落在该任务的每个可用时段要求内；任一项要求不满足，该任务就不能使用该开始时间。
+     * 只要存在一个可移动任务可用，候选就保留——这样只剔除对全部任务都不可用的整点，
+     * 不会误删短任务合法但贴边的候选。</p>
+     *
+     * @param start 候选开始时间
+     * @param tasks 计划任务
+     * @return {@code true} 表示至少一个可移动任务可完整占用
+     */
+    private static boolean fitsAnyMovableTask(LocalDateTime start, List<TaskPlan> tasks) {
+        for (TaskPlan task : tasks) {
+            if (task.isFrozen() || task.isPinned()) {
+                continue;
+            }
+            List<ResourceAvailability> requirements = task.getAvailabilityRequirements();
+            if (requirements.isEmpty()) {
+                // 空要求等价 7×24：任何候选都可用，此时不裁剪。
+                return true;
+            }
+            LocalDateTime end = start.plusSeconds(
+                    task.getStaticSetupSeconds() + task.getRunSeconds());
+            if (requirements.stream().allMatch(requirement -> requirement.allows(start, end))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 合并所有资源的可用窗口为按时间升序、互不重叠的并集。
+     *
+     * @param windowsByResource 资源可用窗口
+     * @return 合并后的窗口
+     */
+    private static List<TimeWindow> mergedWindows(Map<UUID, List<TimeWindow>> windowsByResource) {
+        List<TimeWindow> all = new ArrayList<>();
+        for (List<TimeWindow> windows : windowsByResource.values()) {
+            all.addAll(windows);
+        }
+        all.sort(Comparator.comparing(TimeWindow::start));
+        List<TimeWindow> merged = new ArrayList<>();
+        for (TimeWindow window : all) {
+            if (!merged.isEmpty() && !window.start().isAfter(merged.get(merged.size() - 1).end())) {
+                TimeWindow last = merged.remove(merged.size() - 1);
+                merged.add(new TimeWindow(last.start(),
+                        window.end().isAfter(last.end()) ? window.end() : last.end()));
+            } else {
+                merged.add(window);
+            }
+        }
+        return merged;
     }
 
     private static TaskAssignment toAssignment(ResourcePlan resource, TaskPlan task, int index) {
@@ -492,6 +737,12 @@ public final class TimefoldModelBuilder {
         }
         if (!fallbacks.isEmpty()) {
             message.append("；降级: ").append(String.join("；", fallbacks));
+        }
+        int frozenStartOutsideCalendar = frozenStartOutsideCalendarCount(plan.getTasks());
+        if (frozenStartOutsideCalendar > 0) {
+            message.append("；存在 ").append(frozenStartOutsideCalendar)
+                    .append(" 个冻结任务起点落在可用时段外，按固定解保留并判为不可行")
+                    .append("（见 metrics.frozenStartOutsideCalendarCount 与 calendarAvailability 归因）");
         }
         return message.toString();
     }

@@ -29,6 +29,13 @@ logging:
   level:
     org.flywaydb: INFO
 
+# P2-7：prod 默认关闭 springdoc，dev 显式打开便于联调
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+
 # 通知 outbox 轮询驱动（C33）：dev 显式打开；prod 保持 application.yml 的默认 false
 aps:
   notification:
